@@ -7,8 +7,8 @@ process ensureRaw {
     storeDir "$params.outdir/$obsid/raw"
     // allow multiple retries
     maxRetries 5
-    // exponential backoff: sleep for 10 * 2^attempt seconds after each fail
-    errorStrategy { sleep(Math.pow(2, task.attempt) * 10000 as long); return 'retry' }
+    // exponential backoff: sleep for 2^attempt minutes after each fail
+    errorStrategy { sleep(Math.pow(2, task.attempt) * 60000 as long); return 'retry' }
 
     input:
     val obsid
@@ -46,7 +46,7 @@ process ensureRaw {
         return 1
     }
 
-    # download any ready jobs, suppress errors
+    # download any ready jobs, exit if success, else suppress errors
     get_ready_jobs && exit 0 || true
 
     # try and submit a job, if it's already there this will fail
@@ -94,31 +94,32 @@ process ensureCal {
     storeDir "$params.outdir/${obsid}/cal"
 
     input:
-    tuple val(obsid) path("${obsid}.uvfits")
-    each tuple val(name), val(cal_args), val(apply_args)
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
+        val(name), val(cal_args), val(apply_args)
 
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
+    tuple val(obsid), val(name), path("soln_${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
 
     script:
     """
+    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
     ${params.hyperdrive} di-calibrate ${cal_args} \
         --data "${params.outdir}/$obsid/raw/${obsid}.metafits" "${obsid}.uvfits" \
-        --beam "${params.beam}" \
+        --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
-        --outputs "${obsid}_${name}.fits"
+        --outputs "soln_${obsid}_${name}.fits"
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "${obsid}_${name}.fits" \
+        --solutions "soln_${obsid}_${name}.fits" \
         --outputs "${obsid}_${name}.uvfits"
     """
 }
 
-// QA tasks that can be run on each preprocessed obs
+// QA tasks that can be run on each preprocessed obs or its flags
 process prepQA {
     storeDir "$params.outdir/${obsid}/QA"
     input:
-    tuple val(obsid), path("${obsid}.uvfits"), path("${obsid}*.mwaf")
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("${obsid}*.mwaf")
 
     output:
     // TODO: change this to whatever paths QA outputs
@@ -127,7 +128,7 @@ process prepQA {
     script:
     """
     echo "TODO: QA on preprocessed obs"
-    ls -al ${obsid}.uvfits ${obsid}*.mwaf > qa_prep_results_${obsid}.txt
+    ls -al ${obsid}.metafits ${obsid}.uvfits ${obsid}*.mwaf > qa_prep_results_${obsid}.txt
     """
 }
 
@@ -135,16 +136,16 @@ process prepQA {
 process calQA {
     storeDir "$params.outdir/${obsid}/QA"
     input:
-    val(obsid), val(name), path("${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
+    tuple val(obsid), val(name), path("soln_${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
 
     output:
     // TODO: change this to whatever paths QA outputs
-    path("qa_cal_${name}_results_${obsid}.txt")
+    path("qa_cal_results_${obsid}_${name}.txt")
 
     script:
     """
     echo "TODO: QA on calibration set ${name} for ${obsid}"
-    ls -al ${obsid}_${name}.fits ${obsid}_${name}.uvfits > qa_cal_${name}_results_${obsid}.txt
+    ls -al soln_${obsid}_${name}.fits ${obsid}_${name}.uvfits > qa_cal_results_${obsid}_${name}.txt
     """
 }
 
@@ -160,15 +161,27 @@ workflow {
     // - hyperdrive soln apply args
     // this is sourced from a CSV file with a parameter set on each line.
     // we want to run a different calibration job for each parameter set
-    cal_param_sets = channel.fromPath(params.cal_params_path).splitCsv(header: true)
+    cal_param_sets = channel \
+        .fromPath(params.cal_params_path) \
+        .splitCsv(header: false, skip: 1, strip: true)
 
     ensureRaw(obsids)
     ensurePrep(ensureRaw.out)
-    prepQA(ensurePrep.out)
-    // when any observation is preprocessed, kick off the calibration
-    // uncommenting these breaks things :(
-    // ensureCal(ensurePrep.out, cal_param_sets.collect())
-    // calQA(ensureCal.out)
+    // prep QA on ensureRaw[obsid, metafits] cross ensurePrep[uvfits, mwaf]
+    ensureRaw.out \
+        .cross(ensurePrep.out) \
+        .map( it -> [it[0][0], it[0][1], it[1][1], it[1][2]]) \
+        | prepQA
+
+    // calibrate on the cartesian product of:
+    //  - ensureRaw[obsid, metafits] cross ensurePrep[uvfits]
+    //  - cal_param_set[0:3]
+    ensureRaw.out \
+        .cross(ensurePrep.out) \
+        .map( it -> [it[0][0], it[0][1], it[1][1]])\
+        .combine(cal_param_sets) \
+        | ensureCal \
+        | calQA
 
     // TODO: gather QA results
 }

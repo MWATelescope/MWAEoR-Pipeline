@@ -1,5 +1,4 @@
 name,cal_args,apply_args
-30l_src4k_8s_80kHz,--uvw-min 30 -n 4000,--time-average 8s frequency-average 80kHz
-50l_src4k_8s_80kHz,--uvw-min 50 -n 4000,--time-average 8s frequency-average 80kHz
-30l_src4k_4s_80kHz,--uvw-min 30 -n 4000,--time-average 4s frequency-average 80kHz
-30l_src4k_8s_80kHz,--uvw-min 30 -n 4000,--time-average 8s frequency-average 80kHz
+30l_src4k_8s_80kHz,--uvw-min 30l -n 4000,--time-average 8s --freq-average 80kHz
+50l_src4k_8s_80kHz,--uvw-min 50l -n 4000,--time-average 8s --freq-average 80kHz
+30l_src4k_4s_80kHz,--uvw-min 30l -n 4000,--time-average 4s --freq-average 80kHz
