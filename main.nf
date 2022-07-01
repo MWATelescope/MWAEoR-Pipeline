@@ -21,51 +21,53 @@ process ensureRaw {
     # echo commands, exit on any failures
     set -ex
 
-    # save ASVO job info for this obsid to tsv
-    # also save all jobs to json for debugging
-    function cache_jobs {
-        giant-squid list -j |
-            tee jobs.json |
-            jq -r '.[] \
-                |select(.obsid==$obsid) \
-                |[.jobId,.jobState,.files[0].fileUrl//""] \
-                |@tsv' |
-            tee jobs.tsv
+    function ensure_disk_space {
+        local needed=\$1
+        while read -r avail; do
+            if [[ \$avail -lt \$needed ]]; then
+                echo "Not enough disk space available in \$PWD, need \$needed, have \$avail"
+                exit 1
+            fi
+        done < <(df --output=avail . | tail -n 1)
     }
 
     # download any ASVO jobs for the obsid that are ready
-    function get_ready_jobs {
-        cache_jobs
-        while read jobid state url size; do
-            if [ "\$state" = "Ready" ] && [ -n "\$url" ]; then
-                echo "[obs:$obsid]: Downloading from \$url"
+    function get_first_ready_job {
+        # extract id url and size from ready download vis jobs
+        ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
+            | tee /dev/stderr \
+            | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//""]|@tsv' \
+            | tee ready.tsv
+        while read jobid url size; do
+            ensure_disk_space \$size || exit \$?
+            if [ -n "\$url" ]; then
+                echo "[obs:$obsid]: Downloading job \$jobid from \$url (\$size bytes)"
                 curl \$url | tar -x
                 exit 0
             fi
-        done <jobs.tsv
+        done <ready.tsv
         return 1
     }
 
     # download any ready jobs, exit if success, else suppress errors
-    get_ready_jobs && exit 0 || true
+    get_first_ready_job && exit 0 || true
 
     # try and submit a job, if it's already there this will fail
-    giant-squid submit-vis --delivery "acacia" $obsid -w || true
+    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w || true
 
-    cache_jobs
+    # extract id and state from pending download vis jobs
+    ${params.giant_squid} list -j --types download_visibilities --states queued processing -- $obsid \
+        | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
+        | tee pending.tsv
 
-    # wait for any "Queued" or "Processing" jobs
-    while read jobid state url size; do
-        if [ "\$state" = "Queued" ] || [ "\$state" = "Processing" ]; then
-            echo "[obs:$obsid]: waiting until \$jobid with state \$state is Ready"
-            giant-squid wait \$jobid
-            break
-        fi
-    done <jobs.tsv
-
-    # download any ready jobs, don't suppress errors
-    get_ready_jobs
-    exit \$?
+    # for each pending job for the obsid, wait for completion and try downloading again
+    while read jobid state; do
+        echo "[obs:$obsid]: waiting until \$jobid with state \$state is Ready"
+        ${params.giant_squid} wait -j -- \$jobid
+        # a new job is ready, so try and get it
+        get_first_ready_job && exit 0 || true
+    done <pending.tsv
+    exit 1
     """
 }
 
