@@ -20,6 +20,7 @@ process ensureRaw {
     """
     # echo commands, exit on any failures
     set -ex
+    export MWA_ASVO_API_KEY="${params.asvo_api_key}"
 
     function ensure_disk_space {
         local needed=\$1
@@ -75,6 +76,9 @@ process ensureRaw {
 process ensurePrep {
     storeDir "$params.outdir/${obsid}/prep"
 
+    // label jobs that need a bigger cpu allocation
+    label "cpu"
+
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
 
@@ -94,6 +98,9 @@ process ensurePrep {
 // ensure calibration solutions and vis are present, or calibrate prep with hyperdrive
 process ensureCal {
     storeDir "$params.outdir/${obsid}/cal"
+
+    // label jobs that need a bigger gpu allocation
+    label "gpu"
 
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
