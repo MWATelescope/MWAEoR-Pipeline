@@ -22,6 +22,14 @@ process ensureRaw {
     set -ex
     export MWA_ASVO_API_KEY="${params.asvo_api_key}"
 
+    env | sort
+    df \$TMPDIR
+
+    export http_proxy="http://proxy.per.dug.com:3128"
+    export https_proxy="http://proxy.per.dug.com:3128"
+    export all_proxy="proxy.per.dug.com:3128"
+    export ftp_proxy="http://proxy.per.dug.com:3128"
+
     function ensure_disk_space {
         local needed=\$1
         while read -r avail; do
@@ -53,8 +61,10 @@ process ensureRaw {
     # download any ready jobs, exit if success, else suppress errors
     get_first_ready_job && exit 0 || true
 
-    # try and submit a job, if it's already there this will fail
-    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w || true
+    # try and submit a job, if it's already there this will fail, and we can suppress the
+    # warning, otherwise we can download and exit
+    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w \
+        && get_first_ready_job && exit 0 || true
 
     # extract id and state from pending download vis jobs
     ${params.giant_squid} list -j --types download_visibilities --states queued processing -- $obsid \
@@ -79,19 +89,57 @@ process ensurePrep {
     // label jobs that need a bigger cpu allocation
     label "cpu"
 
+    // this is necessary for singularity
+    stageInMode "copy"
+    module "singularity"
+
+    maxRetries 1
+
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
+    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
 
     output:
     tuple val(obsid), path("${obsid}.uvfits"), path("${obsid}*.mwaf")
 
     script:
     """
+    export flag_template="${obsid}_%%.mwaf"
+    if [ ${obsid} -gt 1300000000 ]; then
+        flag_template="${obsid}_ch%%%.mwaf"
+    fi
     ${params.birli} \
         -u "${obsid}.uvfits" \
-        -f "${obsid}_%%.mwaf" \
-        -m "${params.outdir}/${obsid}/raw/${obsid}.metafits" \
-        "${params.outdir}/${obsid}/raw/${obsid}_2"*.fits
+        -f \$flag_template \
+        -m "${obsid}.metafits" \
+        ${obsid}*.fits
+    """
+}
+
+// QA tasks that can be run on each preprocessed obs or its flags. The exit status of this job determines
+// if this obs is good to use for calibration.
+process prepQA {
+    storeDir "$params.outdir/${obsid}/QA"
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*") // <-preserves names of mwaf files
+
+    output:
+    // TODO: change this to whatever paths QA outputs
+    tuple val(obsid), path("qa_prep_results_${obsid}.txt") optional true
+
+    // if this script returns failure, don't progress this obs to calibration, just ignore
+    errorStrategy 'ignore'
+
+    script:
+    """
+    echo "TODO: QA on preprocessed obs, possibly AOFlagger Occupancy, dead dipole fraction"
+    # example: deliberately fail one obsid
+    # if [${obsid} -eq "1322308000"]; then
+    if false; then
+        exit 1
+    else
+        ls -al ${obsid}.metafits ${obsid}.uvfits ${obsid}*.mwaf | tee qa_prep_results_${obsid}.txt
+        ls -al qa_prep_results_${obsid}.txt
+    fi
     """
 }
 
@@ -101,6 +149,9 @@ process ensureCal {
 
     // label jobs that need a bigger gpu allocation
     label "gpu"
+
+    module "cuda/11.3.1:gcc-rt/9.2.0"
+    stageInMode "copy"
 
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
@@ -113,7 +164,7 @@ process ensureCal {
     """
     export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
     ${params.hyperdrive} di-calibrate ${cal_args} \
-        --data "${params.outdir}/$obsid/raw/${obsid}.metafits" "${obsid}.uvfits" \
+        --data "${obsid}.metafits" "${obsid}.uvfits" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
         --outputs "soln_${obsid}_${name}.fits"
@@ -124,37 +175,30 @@ process ensureCal {
     """
 }
 
-// QA tasks that can be run on each preprocessed obs or its flags
-process prepQA {
-    storeDir "$params.outdir/${obsid}/QA"
-    input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("${obsid}*.mwaf")
-
-    output:
-    // TODO: change this to whatever paths QA outputs
-    path("qa_prep_results_${obsid}.txt")
-
-    script:
-    """
-    echo "TODO: QA on preprocessed obs"
-    ls -al ${obsid}.metafits ${obsid}.uvfits ${obsid}*.mwaf > qa_prep_results_${obsid}.txt
-    """
-}
-
 // QA tasks that can be run on each calibration parameter set
 process calQA {
     storeDir "$params.outdir/${obsid}/QA"
+    errorStrategy 'ignore'
+
     input:
     tuple val(obsid), val(name), path("soln_${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
 
     output:
     // TODO: change this to whatever paths QA outputs
-    path("qa_cal_results_${obsid}_${name}.txt")
+    tuple val(obsid), val(name), path("qa_cal_results_${obsid}_${name}.txt") optional true
 
     script:
     """
     echo "TODO: QA on calibration set ${name} for ${obsid}"
-    ls -al soln_${obsid}_${name}.fits ${obsid}_${name}.uvfits > qa_cal_results_${obsid}_${name}.txt
+
+    # example: deliberately fail one obsid, name
+    // if [${obsid} -eq "1322308000"] && [${name} == "50l_src4k_8s_80kHz"]; then
+    if false; then
+        exit 1
+    else
+        ls -al soln_${obsid}_${name}.fits ${obsid}_${name}.uvfits | tee qa_cal_results_${obsid}_${name}.txt
+        ls -al qa_cal_results_${obsid}_${name}.txt
+    fi
     """
 }
 
@@ -163,34 +207,41 @@ process calQA {
 workflow {
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
 
-    // calibration parameter sets:
-    // - short name
-    // - hyperdrive di-cal args
-    //   - `-n` = `--num-sources`
-    // - hyperdrive soln apply args
-    // this is sourced from a CSV file with a parameter set on each line.
-    // we want to run a different calibration job for each parameter set
-    cal_param_sets = channel \
-        .fromPath(params.cal_params_path) \
-        .splitCsv(header: false, skip: 1, strip: true)
-
+    // ensure raw files are downloaded
     ensureRaw(obsids)
+
+    // ensure preprocessed files have been generated from raw files
     ensurePrep(ensureRaw.out)
-    // prep QA on ensureRaw[obsid, metafits] cross ensurePrep[uvfits, mwaf]
+
+    // QA preprocessed files to prevent a bad obs from reaching calibration
+    // - get the obsid and metafits from ensureRaw 
+    // - cross with the uvfits and mwaf from ensurePrep
     ensureRaw.out \
         .cross(ensurePrep.out) \
         .map( it -> [it[0][0], it[0][1], it[1][1], it[1][2]]) \
         | prepQA
 
-    // calibrate on the cartesian product of:
-    //  - ensureRaw[obsid, metafits] cross ensurePrep[uvfits]
-    //  - cal_param_set[0:3]
+    // create a channel of calibration parameter sets from a csv with columns:
+    // - short name that appears in the output filename
+    // - args for hyperdrive di-cal, where `-n` = `--num-sources`
+    // - args for hyperdrive soln apply args
+    cal_param_sets = channel \
+        .fromPath(params.cal_params_path) \
+        .splitCsv(header: false, skip: 1, strip: true)
+
+    // calibration for each obsid that passes QA, and each parameter set
+    // - get obsid, metafits from ensureRaw cross with uvfits from ensurePrep
+    // - cross with prepQA to reject jobs that failed QA
+    // - combine with each calibration parameter set
     ensureRaw.out \
         .cross(ensurePrep.out) \
-        .map( it -> [it[0][0], it[0][1], it[1][1]])\
+        .map( it -> [it[0][0], it[0][1], it[1][1]]) \
+        .cross(prepQA.out) \
+        .map( it -> [it[0][0], it[0][1], it[0][2]]) \
         .combine(cal_param_sets) \
         | ensureCal \
         | calQA
 
     // TODO: gather QA results
+    // pick "best" param set? 
 }
