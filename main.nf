@@ -99,7 +99,7 @@ process ensurePrep {
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
 
     output:
-    tuple val(obsid), path("${obsid}.uvfits"), path("${obsid}*.mwaf")
+    tuple val(obsid), path("${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
     script:
     """
@@ -111,7 +111,7 @@ process ensurePrep {
         -u "${obsid}.uvfits" \
         -f \$flag_template \
         -m "${obsid}.metafits" \
-        ${obsid}*.fits
+        ${obsid}*.fits | tee birli_prep.log
     """
 }
 
@@ -145,7 +145,7 @@ process prepQA {
 
 // ensure calibration solutions and vis are present, or calibrate prep with hyperdrive
 process ensureCal {
-    storeDir "$params.outdir/${obsid}/cal"
+    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
 
     // label jobs that need a bigger gpu allocation
     label "gpu"
@@ -154,24 +154,65 @@ process ensureCal {
     stageInMode "copy"
 
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
-        val(name), val(cal_args), val(apply_args)
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_params.csv")
 
     output:
-    tuple val(obsid), val(name), path("soln_${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
+    tuple val(obsid), path("soln_${obsid}_*.fits"), path("${obsid}_*.uvfits"), \
+        path("hyp_di-cal_${obsid}_*.log"), path("hyp_apply_${obsid}_*.log")
 
     script:
     """
     export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
-    ${params.hyperdrive} di-calibrate ${cal_args} \
-        --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --beam "${params.beam_path}" \
-        --source-list "${params.sourcelist}" \
-        --outputs "soln_${obsid}_${name}.fits"
-    ${params.hyperdrive} solutions-apply ${apply_args} \
-        --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "soln_${obsid}_${name}.fits" \
-        --outputs "${obsid}_${name}.uvfits"
+    # use this control which GPU we're sending the job to
+    export CUDA_VISIBLE_DEVICES=0
+
+    set -ex
+    export names=""
+    while IFS=, read -r name cal_args apply_args; do
+        # on first iteration, this does nothing. on nth, wait for all background jobs to finish
+        if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
+            wait \$(jobs -rp)
+        fi
+        # hyperdrive di-cal then solutions apply, backgrounded in a subshell on the same gpu
+        (
+            ${params.hyperdrive} di-calibrate \${cal_args} \
+                --data "${obsid}.metafits" "${obsid}.uvfits" \
+                --beam "${params.beam_path}" \
+                --source-list "${params.sourcelist}" \
+                --outputs "soln_${obsid}_\${name}.fits" \
+                > hyp_di-cal_${obsid}_\${name}.log
+            ${params.hyperdrive} solutions-apply \${apply_args} \
+                --data "${obsid}.metafits" "${obsid}.uvfits" \
+                --solutions "soln_${obsid}_\${name}.fits" \
+                --outputs "${obsid}_\${name}.uvfits" \
+                > hyp_apply_${obsid}_\${name}.log
+        ) &
+        names="\${names} \${name}"
+        # increment the target device mod num_gpus
+        CUDA_VISIBLE_DEVICES=\$((CUDA_VISIBLE_DEVICES+1%${params.num_gpus}))
+    done < cal_params.csv
+
+    # wait for all the background jobs to finish
+    wait \$(jobs -rp)
+
+    # check all the files we expect are present.
+    for name in \$names; do
+        # print out important info from log
+        for log in hyp_di-cal_${obsid}_\${name}.log hyp_apply_${obsid}_\${name}.log; do
+            if [ ! -f \$log ]; then
+                echo "ERROR: \$log not found"
+                exit 1
+            else
+                grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" \$log
+            fi
+        done
+        for file in soln_${obsid}_\${name}.fits ${obsid}_\${name}.uvfits; do
+            if [ ! -f \$file ]; then
+                echo "Missing file \$file"
+                exit 1
+            fi
+        done
+    done
     """
 }
 
@@ -227,7 +268,8 @@ workflow {
     // - args for hyperdrive soln apply args
     cal_param_sets = channel \
         .fromPath(params.cal_params_path) \
-        .splitCsv(header: false, skip: 1, strip: true)
+        // .splitCsv(header: false, skip: 1, strip: true)
+        .collect()
 
     // calibration for each obsid that passes QA, and each parameter set
     // - get obsid, metafits from ensureRaw cross with uvfits from ensurePrep
@@ -238,9 +280,9 @@ workflow {
         .map( it -> [it[0][0], it[0][1], it[1][1]]) \
         .cross(prepQA.out) \
         .map( it -> [it[0][0], it[0][1], it[0][2]]) \
-        .combine(cal_param_sets) \
+        .combine(cal_param_sets)
         | ensureCal \
-        | calQA
+        | view
 
     // TODO: gather QA results
     // pick "best" param set? 
