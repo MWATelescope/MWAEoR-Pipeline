@@ -99,7 +99,7 @@ process ensurePrep {
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
 
     output:
-    tuple val(obsid), path("${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
+    tuple val(obsid), path("birli_${obsid}.uvfits"), path("birli_${obsid}.ms.zip"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
     script:
     """
@@ -108,38 +108,34 @@ process ensurePrep {
         flag_template="${obsid}_ch%%%.mwaf"
     fi
     ${params.birli} \
-        -u "${obsid}.uvfits" \
+        -u "birli_${obsid}.uvfits" \
+        -M "birli_${obsid}.ms" \
         -f \$flag_template \
         -m "${obsid}.metafits" \
         ${obsid}*.fits | tee birli_prep.log
+    zip -r "birli_${obsid}.ms.zip" "birli_${obsid}.ms"
     """
 }
 
-// QA tasks that can be run on each preprocessed obs or its flags. The exit status of this job determines
-// if this obs is good to use for calibration.
-process prepQA {
-    storeDir "$params.outdir/${obsid}/QA"
+// QA tasks for flags.
+process flagQA {
+    storeDir "$params.outdir/${obsid}/flag_qa"
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*") // <-preserves names of mwaf files
+    tuple val(obsid), path("${obsid}.metafits"), path("birli_${obsid}.uvfits"), path("*") // <-preserves names of mwaf files
 
     output:
     // TODO: change this to whatever paths QA outputs
-    tuple val(obsid), path("qa_prep_results_${obsid}.txt") optional true
+    tuple val(obsid), path("*.json")
 
     // if this script returns failure, don't progress this obs to calibration, just ignore
     errorStrategy 'ignore'
 
     script:
     """
-    echo "TODO: QA on preprocessed obs, possibly AOFlagger Occupancy, dead dipole fraction"
-    # example: deliberately fail one obsid
-    # if [${obsid} -eq "1322308000"]; then
-    if false; then
-        exit 1
-    else
-        ls -al ${obsid}.metafits ${obsid}.uvfits ${obsid}*.mwaf | tee qa_prep_results_${obsid}.txt
-        ls -al qa_prep_results_${obsid}.txt
-    fi
+    echo "TODO: QA AOFlagger Occupancy, dead dipole fraction"
+    ls -al ${obsid}.metafits *.uvfits *.mwaf
+    touch flag_qa_${obsid}.json
+    exit 0
     """
 }
 
@@ -157,7 +153,7 @@ process ensureCal {
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_params.csv")
 
     output:
-    tuple val(obsid), path("soln_${obsid}_*.fits"), path("${obsid}_*.uvfits"), \
+    tuple val(obsid), path("hyp_soln_${obsid}_*.fits"), path("hyp_${obsid}_*.uvfits"), path("hyp_${obsid}_*.ms.zip"), \
         path("hyp_di-cal_${obsid}_*.log"), path("hyp_apply_${obsid}_*.log")
 
     script:
@@ -179,13 +175,14 @@ process ensureCal {
                 --data "${obsid}.metafits" "${obsid}.uvfits" \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
-                --outputs "soln_${obsid}_\${name}.fits" \
+                --outputs "hyp_soln_${obsid}_\${name}.fits" \
                 > hyp_di-cal_${obsid}_\${name}.log
             ${params.hyperdrive} solutions-apply \${apply_args} \
                 --data "${obsid}.metafits" "${obsid}.uvfits" \
-                --solutions "soln_${obsid}_\${name}.fits" \
-                --outputs "${obsid}_\${name}.uvfits" \
+                --solutions "hyp_soln_${obsid}_\${name}.fits" \
+                --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
                 > hyp_apply_${obsid}_\${name}.log
+            zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
         ) &
         names="\${names} \${name}"
         # increment the target device mod num_gpus
@@ -206,7 +203,7 @@ process ensureCal {
                 grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" \$log
             fi
         done
-        for file in soln_${obsid}_\${name}.fits ${obsid}_\${name}.uvfits; do
+        for file in "hyp_soln_${obsid}_\${name}.fits" "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms.zip"; do
             if [ ! -f \$file ]; then
                 echo "Missing file \$file"
                 exit 1
@@ -218,30 +215,117 @@ process ensureCal {
 
 // QA tasks that can be run on each calibration parameter set
 process calQA {
-    storeDir "$params.outdir/${obsid}/QA"
+    storeDir "$params.outdir/${obsid}/cal_qa"
     errorStrategy 'ignore'
 
     input:
-    tuple val(obsid), val(name), path("soln_${obsid}_${name}.fits"), path("${obsid}_${name}.uvfits")
+    tuple val(obsid), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
 
     output:
     // TODO: change this to whatever paths QA outputs
-    tuple val(obsid), val(name), path("qa_cal_results_${obsid}_${name}.txt") optional true
+    tuple val(obsid), path("*.json")
+
+    stageInMode "copy"
+    module "singularity"
 
     script:
     """
-    echo "TODO: QA on calibration set ${name} for ${obsid}"
+    export name="\$(basename *.fits)"
+    name="\${name%.*}"
+    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
+        cal_qa *.fits *.metafits X --out "\${name}_X.json"
+    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
+        cal_qa *.fits *.metafits Y --out "\${name}_Y.json"
+    """ 
+}
 
-    # example: deliberately fail one obsid, name
-    // if [${obsid} -eq "1322308000"] && [${name} == "50l_src4k_8s_80kHz"]; then
-    if false; then
-        exit 1
-    else
-        ls -al soln_${obsid}_${name}.fits ${obsid}_${name}.uvfits | tee qa_cal_results_${obsid}_${name}.txt
-        ls -al qa_cal_results_${obsid}_${name}.txt
-    fi
+// create dirty iamges of xx,yy,v
+process wscleanDirty {
+    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+    input:
+    tuple val(obsid), val(name), path("*") // *.ms.zip
+
+    output:
+    tuple val(obsid), val(name), path("wsclean_${name}*-{XX,YY,V}-dirty.fits")
+
+    label "cpu"
+    label "img"
+
+    script:
+    """
+    unzip *.ms.zip
+    ${params.wsclean} \
+        -weight briggs -1.0 \
+        -name wsclean_${name} \
+        -size ${params.img_size} ${params.img_size} \
+        -scale ${params.img_scale} \
+        -pol xx,yy,v \
+        -abs-mem ${params.img_mem} \
+        -channels-out ${params.img_channels_out} \
+        *.ms
     """
 }
+
+// create source list from deconvolved image of stokes I
+process wscleanSources {
+    // - shallow deconvolution, 1000 iter just enough for removing sidelobes
+    // - channels: need mfs
+    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+    input:
+    tuple val(obsid), val(name), path("*") // *.ms.zip
+
+    output:
+    tuple val(obsid), val(name), path("wscleanSources_${name}*-I-image.fits"), path("wscleanSources_${name}*-sources.txt")
+
+    // label jobs that need a bigger cpu allocation
+    label "cpu"
+    label "img"
+
+    script:
+    """
+    unzip *.ms.zip
+    export name="\$(basename *.ms)"
+    name="\${name%.*}"
+    # todo: idg?
+    ${params.wsclean} \
+        -mgain 0.95 -weight briggs -1.0 -multiscale \
+        -name wscleanSources_\${name} \
+        -size ${params.img_size} ${params.img_size} \
+        -scale ${params.img_scale} \
+        -niter ${params.img_niter} \
+        -pol i \
+        -auto-threshold ${params.img_auto_threshold} \
+        -auto-mask ${params.img_auto_mask} \
+        -abs-mem ${params.img_mem} \
+        -channels-out ${params.img_channels_out} \
+        -save-source-list \
+        *.ms
+    """
+}
+
+process imgQA {
+    // will need dirty V and clean XX, YY for a single vis file
+    storeDir "$params.outdir/${obsid}/img_qa"
+    errorStrategy 'ignore'
+
+    input:
+    tuple val(obsid), val(name), path("*") // <- "*-image.fits"
+
+    output:
+    tuple val(obsid), path("${name}.json")
+
+    stageInMode "copy"
+    module "singularity"
+
+    script:
+    """
+    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
+        img_qa *.fits --out ${name}.json
+    ls -al
+    """
+}
+
+// todo: process visQa
 
 // ensure calibrated visiblities are present, or apply solutions with hyperdrive
 
@@ -254,13 +338,14 @@ workflow {
     // ensure preprocessed files have been generated from raw files
     ensurePrep(ensureRaw.out)
 
-    // QA preprocessed files to prevent a bad obs from reaching calibration
+    // QA preprocessed flags
     // - get the obsid and metafits from ensureRaw 
     // - cross with the uvfits and mwaf from ensurePrep
     ensureRaw.out \
-        .cross(ensurePrep.out) \
-        .map( it -> [it[0][0], it[0][1], it[1][1], it[1][2]]) \
-        | prepQA
+        .map(it -> it[0..1]) \
+        .join(ensurePrep.out) \
+        .map(it -> it[0..2] + [it[4]]) \
+        | flagQA
 
     // create a channel of calibration parameter sets from a csv with columns:
     // - short name that appears in the output filename
@@ -273,17 +358,53 @@ workflow {
 
     // calibration for each obsid that passes QA, and each parameter set
     // - get obsid, metafits from ensureRaw cross with uvfits from ensurePrep
-    // - cross with prepQA to reject jobs that failed QA
-    // - combine with each calibration parameter set
+    // - combine with calibration parameter sets
     ensureRaw.out \
-        .cross(ensurePrep.out) \
-        .map( it -> [it[0][0], it[0][1], it[1][1]]) \
-        .cross(prepQA.out) \
-        .map( it -> [it[0][0], it[0][1], it[0][2]]) \
-        .combine(cal_param_sets)
-        | ensureCal \
-        | view
+        .map(it -> it[0..1]) \
+        .join(ensurePrep.out)
+        .map(it -> it[0..2]) \
+        .combine(cal_param_sets) \
+        | ensureCal
+
+    // calibration QA
+    // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
+    ensureRaw.out \
+        .map(it -> it[0..1]) \
+        .join(ensureCal.out) \
+        .map( it -> it[0..2]) \
+        .transpose() \
+        | view 
+        // TODO: | calQA
+
+    // qa images of all preprocessed or calibrated measurement sets
+    // - get ms from prep
+    // - mix with ms from cal
+    // - give each image a name (everything before the .ms.zip)
+    ensurePrep.out \
+        .map(it -> [it[0], it[2]]) \
+        .mix(ensureCal.out.map( it -> [it[0], it[3]] )) \
+        .transpose() \
+        .map(it -> [\
+            it[0], \
+            (it[1].getName() =~ /^(.*)\.ms\.zip$/)[0][1], \
+            it[1]\
+        ]) \
+        | wscleanDirty
+        // TODO: | (wscleanDirty & wscleanSources)
+
+    // for every group of dirty images, group by channel number, and imgQA for all pols
+    wscleanDirty.out \
+        .flatMap(it -> \
+            it[2] \
+                // .collect(path -> [path.getName().split('-')[..-3].join('-'), path]) \
+                .collect(path -> [(path.getName() =~ /^(.*)-\w+-\w+.fits$/)[0][1], path]) \
+                .groupBy(tup -> tup[0]) \
+                .entrySet() \
+                .collect(entry -> [it[0], entry.key, entry.value.collect(item -> item[1])]) \
+        ) \
+        | imgQA
+
+    // what about analysis of di cal residuals?
 
     // TODO: gather QA results
-    // pick "best" param set? 
 }
