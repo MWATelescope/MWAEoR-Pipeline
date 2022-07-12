@@ -7,8 +7,8 @@ process ensureRaw {
     storeDir "$params.outdir/$obsid/raw"
     // allow multiple retries
     maxRetries 5
-    // exponential backoff: sleep for 2^attempt minutes after each fail
-    errorStrategy { sleep(Math.pow(2, task.attempt) * 60000 as long); return 'retry' }
+    // exponential backoff: sleep for 2^attempt hours after each fail
+    errorStrategy { sleep(Math.pow(2, task.attempt) * 60*60*1000 as long); return 'retry' }
 
     input:
     val obsid
@@ -25,6 +25,7 @@ process ensureRaw {
     env | sort
     df \$TMPDIR
 
+    # TODO: make this profile dependent
     export http_proxy="http://proxy.per.dug.com:3128"
     export https_proxy="http://proxy.per.dug.com:3128"
     export all_proxy="proxy.per.dug.com:3128"
@@ -33,8 +34,9 @@ process ensureRaw {
     function ensure_disk_space {
         local needed=\$1
         while read -r avail; do
-            if [[ \$avail -lt \$needed ]]; then
-                echo "Not enough disk space available in \$PWD, need \$needed, have \$avail"
+            avail_bytes=\$((\$avail * 1000))
+            if [[ \$avail_bytes -lt \$needed ]]; then
+                echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail_bytes B"
                 exit 1
             fi
         done < <(df --output=avail . | tail -n 1)
