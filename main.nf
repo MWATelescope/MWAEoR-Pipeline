@@ -95,13 +95,11 @@ process ensurePrep {
     stageInMode "copy"
     module "singularity"
 
-    maxRetries 1
-
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
 
     output:
-    tuple val(obsid), path("birli_${obsid}.uvfits"), path("birli_${obsid}.ms.zip"), path("${obsid}*.mwaf"), path("birli_prep.log")
+    tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
     script:
     """
@@ -111,11 +109,11 @@ process ensurePrep {
     fi
     ${params.birli} \
         -u "birli_${obsid}.uvfits" \
-        -M "birli_${obsid}.ms" \
         -f \$flag_template \
         -m "${obsid}.metafits" \
+        --avg-time-res ${params.prep_time_res_s} \
+        --avg-freq-res ${params.prep_freq_res_khz} \
         ${obsid}*.fits | tee birli_prep.log
-    zip -r "birli_${obsid}.ms.zip" "birli_${obsid}.ms"
     """
 }
 
@@ -155,7 +153,7 @@ process ensureCal {
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_params.csv")
 
     output:
-    tuple val(obsid), path("hyp_soln_${obsid}_*.fits"), path("hyp_${obsid}_*.uvfits"), path("hyp_${obsid}_*.ms.zip"), \
+    tuple val(obsid), path("hyp_soln_${obsid}_*.fits"), path("hyp_${obsid}_*.uvfits"), \
         path("hyp_di-cal_${obsid}_*.log"), path("hyp_apply_${obsid}_*.log")
 
     script:
@@ -182,9 +180,8 @@ process ensureCal {
             ${params.hyperdrive} solutions-apply \${apply_args} \
                 --data "${obsid}.metafits" "${obsid}.uvfits" \
                 --solutions "hyp_soln_${obsid}_\${name}.fits" \
-                --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
+                --outputs "hyp_${obsid}_\${name}.uvfits" \
                 > hyp_apply_${obsid}_\${name}.log
-            zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
         ) &
         names="\${names} \${name}"
         # increment the target device mod num_gpus
@@ -205,7 +202,7 @@ process ensureCal {
                 grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" \$log
             fi
         done
-        for file in "hyp_soln_${obsid}_\${name}.fits" "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms.zip"; do
+        for file in "hyp_soln_${obsid}_\${name}.fits" "hyp_${obsid}_\${name}.uvfits"; do
             if [ ! -f \$file ]; then
                 echo "Missing file \$file"
                 exit 1
@@ -213,49 +210,94 @@ process ensureCal {
         done
     done
     """
-}
 
-// QA tasks that can be run on each calibration parameter set
-process calQA {
-    storeDir "$params.outdir/${obsid}/cal_qa"
-    errorStrategy 'ignore'
+// QA tasks that can be run on each visibility file.
+process visQA {
+    storeDir "$params.outdir/${obsid}/vis_qa"
 
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
+    tuple val(obsid), val(name), path("*") // <- *.uvfits
 
     output:
-    // TODO: change this to whatever paths QA outputs
-    tuple val(obsid), path("*.json")
+    tuple val(obsid), path("${name}_vis_metrics.json")
 
     stageInMode "copy"
     module "singularity"
 
     script:
     """
-    export name="\$(basename *.fits)"
-    name="\${name%.*}"
+    set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        cal_qa *.fits *.metafits X --out "\${name}_X.json"
+        vis_qa *.uvfits --out "${name}_vis_metrics.json"
+
+    # without these, nextflow checks for the .json before fs has had time
+    # to sync outside the singularity container, causing it to think the job
+    # has failed.
+    ls -al
+    head -n 1 "${name}_vis_metrics.json"
+    sleep 1s
+    """
+}
+
+// QA tasks that can be run on each calibration parameter set
+process calQA {
+    maxRetries 1
+    storeDir "$params.outdir/${obsid}/cal_qa"
+
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), val(name), path("*") // <- hyp_soln_*.fits
+
+    output:
+    tuple val(obsid), path("${name}_{X,Y}.json") // TODO: , path("${name}_{phases,amps}.png")
+
+    stageInMode "copy"
+    module "singularity"
+
+    script:
+    """
+    set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        cal_qa *.fits *.metafits Y --out "\${name}_Y.json"
-    """ 
+        cal_qa *.fits *.metafits X --out "${name}_X.json"
+    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
+        cal_qa *.fits *.metafits Y --out "${name}_Y.json"
+    # TODO: recompile hyperdrive with plotting
+    # hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
+
+    # without these, nextflow checks for the .json before fs has had time
+    # to sync outside the singularity container, causing it to think the job
+    # has failed.
+    ls -al
+    head -n 1 ${name}_{X,Y}.json
+    sleep 1s
+    """
 }
 
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
+    maxRetries 1
     storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
     input:
-    tuple val(obsid), val(name), path("*") // *.ms.zip
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_*.uvfits
 
     output:
-    tuple val(obsid), val(name), path("wsclean_${name}*-{XX,YY,V}-dirty.fits")
+    tuple val(obsid), val(name), path("wsclean_${name}*-MFS-{XX,YY,V}-dirty.fits")
 
     label "cpu"
     label "img"
 
+    // this is necessary for singularity
+    stageInMode "copy"
+
     script:
     """
-    unzip *.ms.zip
+    set -eux
+    export uvfits="\$(ls -1 *.uvfits | head -1)"
+    # convert uvfits to ms
+    ${params.casa} -c "importuvfits('\${uvfits}', 'vis.ms')"
+    # fix mwa ms
+    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.cotter_sif} \
+        fixmwams vis.ms ${obsid}.metafits
+    # imaging
     ${params.wsclean} \
         -weight briggs -1.0 \
         -name wsclean_${name} \
@@ -264,7 +306,7 @@ process wscleanDirty {
         -pol xx,yy,v \
         -abs-mem ${params.img_mem} \
         -channels-out ${params.img_channels_out} \
-        *.ms
+        vis.ms
     """
 }
 
@@ -308,10 +350,9 @@ process wscleanSources {
 process imgQA {
     // will need dirty V and clean XX, YY for a single vis file
     storeDir "$params.outdir/${obsid}/img_qa"
-    errorStrategy 'ignore'
 
     input:
-    tuple val(obsid), val(name), path("*") // <- "*-image.fits"
+    tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
 
     output:
     tuple val(obsid), path("${name}.json")
@@ -321,15 +362,18 @@ process imgQA {
 
     script:
     """
+    set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         img_qa *.fits --out ${name}.json
+
+    # without these, nextflow checks for the .json before fs has had time
+    # to sync outside the singularity container, causing it to think the job
+    # has failed.
     ls -al
+    head -n 1 ${name}.json
+    sleep 1s
     """
 }
-
-// todo: process visQa
-
-// ensure calibrated visiblities are present, or apply solutions with hyperdrive
 
 workflow {
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
@@ -340,14 +384,14 @@ workflow {
     // ensure preprocessed files have been generated from raw files
     ensurePrep(ensureRaw.out)
 
-    // QA preprocessed flags
-    // - get the obsid and metafits from ensureRaw 
+    // TODO: flag QA
+    // - get the obsid and metafits from ensureRaw
     // - cross with the uvfits and mwaf from ensurePrep
-    ensureRaw.out \
-        .map(it -> it[0..1]) \
-        .join(ensurePrep.out) \
-        .map(it -> it[0..2] + [it[4]]) \
-        | flagQA
+    // ensureRaw.out \
+    //     .map(it -> it[0..1]) \
+    //     .join(ensurePrep.out) \
+    //     .map(it -> it[0..2] + [it[4]]) \
+    //     | flagQA
 
     // create a channel of calibration parameter sets from a csv with columns:
     // - short name that appears in the output filename
@@ -368,38 +412,65 @@ workflow {
         .combine(cal_param_sets) \
         | ensureCal
 
+    // vis QA
+    // - get obsid, uvfits from ensurePrep
+    // - mix with obsid, uvfits from ensureCal
+    // - give each a name (everything before the .uvfits)
+    ensurePrep.out \
+        .map(it -> it[0..1]) \
+        .mix( \
+            ensureCal.out \
+            .map(it -> [it[0], it[2]]) \
+            .transpose() \
+        ) \
+        .map(it -> [\
+            it[0],
+            (it[1].getName() =~ /^(.*)\.uvfits$/)[0][1], \
+            it[1] \
+        ])\
+        | visQA
+
     // calibration QA
     // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
+    // - give each cal a name (everything before the .fits)
     ensureRaw.out \
         .map(it -> it[0..1]) \
         .join(ensureCal.out) \
         .map( it -> it[0..2]) \
         .transpose() \
-        | view 
-        // TODO: | calQA
+        .map(it -> [\
+            it[0],
+            it[1],
+            (it[2].getName() =~ /^(.*)\.fits$/)[0][1], \
+            it[2] \
+        ])\
+        | calQA
 
-    // qa images of all preprocessed or calibrated measurement sets
-    // - get ms from prep
-    // - mix with ms from cal
-    // - give each image a name (everything before the .ms.zip)
-    ensurePrep.out \
-        .map(it -> [it[0], it[2]]) \
-        .mix(ensureCal.out.map( it -> [it[0], it[3]] )) \
+    // img QA
+    // - get obsid, metafits cross with uvfits from ensureCal
+    // - give each image a name (everything before the .uvfits)
+    // - run wsclean
+    ensureRaw.out \
+        .map(it -> it[0..1]) \
+        .join( \
+            ensureCal.out \
+            .map( it -> [it[0], it[2]] ) \
+        )
         .transpose() \
         .map(it -> [\
             it[0], \
-            (it[1].getName() =~ /^(.*)\.ms\.zip$/)[0][1], \
-            it[1]\
+            (it[2].getName() =~ /^(.*)\.uvfits$/)[0][1], \
+            it[1],
+            it[2]\
         ]) \
         | wscleanDirty
-        // TODO: | (wscleanDirty & wscleanSources)
+    //     // TODO: | (wscleanDirty & wscleanSources)
 
     // for every group of dirty images, group by channel number, and imgQA for all pols
     wscleanDirty.out \
         .flatMap(it -> \
             it[2] \
-                // .collect(path -> [path.getName().split('-')[..-3].join('-'), path]) \
-                .collect(path -> [(path.getName() =~ /^(.*)-\w+-\w+.fits$/)[0][1], path]) \
+                .collect(path -> [(path.getName() =~ /^(.*)-\w+-dirty.fits$/)[0][1], path]) \
                 .groupBy(tup -> tup[0]) \
                 .entrySet() \
                 .collect(entry -> [it[0], entry.key, entry.value.collect(item -> item[1])]) \
