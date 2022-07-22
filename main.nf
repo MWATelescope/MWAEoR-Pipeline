@@ -113,34 +113,63 @@ process ensurePrep {
         -m "${obsid}.metafits" \
         --avg-time-res ${params.prep_time_res_s} \
         --avg-freq-res ${params.prep_freq_res_khz} \
-        ${obsid}*.fits | tee birli_prep.log
+        ${obsid}*.fits 2>&1 | tee birli_prep.log
+    echo workflow.workDir=${workflow.workDir} >> birli_prep.log
     """
 }
 
 // QA tasks for flags.
 process flagQA {
     storeDir "$params.outdir/${obsid}/flag_qa"
+
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("birli_${obsid}.uvfits"), path("*") // <-preserves names of mwaf files
+    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
 
     output:
     // TODO: change this to whatever paths QA outputs
-    tuple val(obsid), path("*.json")
+    tuple val(obsid), path("total_occupancy.csv")
 
     // if this script returns failure, don't progress this obs to calibration, just ignore
     errorStrategy 'ignore'
 
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript 'ls -al; sleep 1s'
+    beforeScript 'sleep 1s; ls -al'
+
+    module 'python/3.9.7'
+
     script:
     """
-    echo "TODO: QA AOFlagger Occupancy, dead dipole fraction"
-    ls -al ${obsid}.metafits *.uvfits *.mwaf
-    touch flag_qa_${obsid}.json
-    exit 0
+    #!/usr/bin/env python
+    # workflow.workDir=${workflow.workDir}
+
+    from astropy.io import fits
+    from glob import glob
+    from time import sleep
+    from sys import stderr
+
+    paths = glob("*.mwaf")
+    num_coarse_chans = len(paths)
+    for path in paths:
+        with fits.open(path) as hdus:
+            # hdus.info()
+            flag_data = hdus[1].data['FLAGS']
+            path_occupancy = flag_data.sum() / flag_data.size
+            print(f"{path}\t{100 * path_occupancy:6.2f}%")
+            total_occupancy += path_occupancy
+    total_occupancy /= num_coarse_chans
+    with open('total_occupancy.csv', 'w') as f:
+        f.write(f"{total_occupancy}")
+    print(f"--- total ---\t{100 * total_occupancy:6.2f}%")
     """
 }
 
 // ensure calibration solutions and vis are present, or calibrate prep with hyperdrive
 process ensureCal {
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
+
     storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
 
     // label jobs that need a bigger gpu allocation
@@ -163,6 +192,7 @@ process ensureCal {
     export CUDA_VISIBLE_DEVICES=0
 
     set -ex
+    ls -al
     export names=""
     while IFS=, read -r name cal_args apply_args; do
         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
@@ -210,39 +240,70 @@ process ensureCal {
         done
     done
     """
+}
+
+// really simple gate for vis, to prevent "past end of file" errors
+process visGate {
+    input:
+    tuple val(obsid), path("*") // <- .uvfits
+    output:
+    tuple val(obsid), val(obsid)
+
+    // if this script returns failure, don't progress this vis
+    errorStrategy 'ignore'
+
+    module 'python/3.9.7'
+
+    script:
+    """
+    #!/usr/bin/env python
+    # workflow.workDir=${workflow.workDir}
+
+    from astropy.io import fits
+    from glob import glob
+    from time import sleep
+    from sys import stderr
+
+    paths = glob("*.uvfits")
+    for path in paths:
+        with fits.open(path) as hdus:
+            print(hdus[1].data[0].shape)
+    """
+}
 
 // QA tasks that can be run on each visibility file.
 process visQA {
-    storeDir "$params.outdir/${obsid}/vis_qa"
-
     input:
     tuple val(obsid), val(name), path("*") // <- *.uvfits
 
     output:
     tuple val(obsid), path("${name}_vis_metrics.json")
 
+    storeDir "$params.outdir/${obsid}/vis_qa"
+
+    // TODO: figure out why this fails sometimes
+    errorStrategy 'ignore'
+    // maxRetries 1
+
+    // needed for singularity
     stageInMode "copy"
     module "singularity"
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript 'ls -al; sleep 1s'
+    beforeScript 'sleep 1s; ls -al'
 
     script:
     """
     set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         vis_qa *.uvfits --out "${name}_vis_metrics.json"
-
-    # without these, nextflow checks for the .json before fs has had time
-    # to sync outside the singularity container, causing it to think the job
-    # has failed.
-    ls -al
-    head -n 1 "${name}_vis_metrics.json"
-    sleep 1s
     """
 }
 
 // QA tasks that can be run on each calibration parameter set
 process calQA {
-    maxRetries 1
-    storeDir "$params.outdir/${obsid}/cal_qa"
 
     input:
     tuple val(obsid), path("${obsid}.metafits"), val(name), path("*") // <- hyp_soln_*.fits
@@ -250,40 +311,50 @@ process calQA {
     output:
     tuple val(obsid), path("${name}_{X,Y}.json") // TODO: , path("${name}_{phases,amps}.png")
 
+    storeDir "$params.outdir/${obsid}/cal_qa"
+
+    // TODO: figure out why this fails sometimes
+    errorStrategy 'ignore'
+    // maxRetries 1
+
     stageInMode "copy"
     module "singularity"
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript 'ls -al; sleep 1s'
+    beforeScript 'sleep 1s; ls -al'
 
     script:
     """
     set -ex
+    ls -al
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         cal_qa *.fits *.metafits X --out "${name}_X.json"
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         cal_qa *.fits *.metafits Y --out "${name}_Y.json"
     # TODO: recompile hyperdrive with plotting
     # hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
-
-    # without these, nextflow checks for the .json before fs has had time
-    # to sync outside the singularity container, causing it to think the job
-    # has failed.
-    ls -al
-    head -n 1 ${name}_{X,Y}.json
-    sleep 1s
     """
 }
 
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
-    maxRetries 1
-    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_*.uvfits
 
     output:
     tuple val(obsid), val(name), path("wsclean_${name}*-MFS-{XX,YY,V}-dirty.fits")
 
+    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
+
     label "cpu"
     label "img"
+    maxRetries 1
 
     // this is necessary for singularity
     stageInMode "copy"
@@ -311,45 +382,45 @@ process wscleanDirty {
 }
 
 // create source list from deconvolved image of stokes I
-process wscleanSources {
-    // - shallow deconvolution, 1000 iter just enough for removing sidelobes
-    // - channels: need mfs
-    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
-    input:
-    tuple val(obsid), val(name), path("*") // *.ms.zip
+// process wscleanSources {
+//     maxRetries 1
+//     // - shallow deconvolution, 1000 iter just enough for removing sidelobes
+//     // - channels: need mfs
+//     storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+//     input:
+//     tuple val(obsid), val(name), path("*") // *.ms.zip
 
-    output:
-    tuple val(obsid), val(name), path("wscleanSources_${name}*-I-image.fits"), path("wscleanSources_${name}*-sources.txt")
+//     output:
+//     tuple val(obsid), val(name), path("wscleanSources_${name}*-I-image.fits"), path("wscleanSources_${name}*-sources.txt")
 
-    // label jobs that need a bigger cpu allocation
-    label "cpu"
-    label "img"
+//     // label jobs that need a bigger cpu allocation
+//     label "cpu"
+//     label "img"
 
-    script:
-    """
-    unzip *.ms.zip
-    export name="\$(basename *.ms)"
-    name="\${name%.*}"
-    # todo: idg?
-    ${params.wsclean} \
-        -mgain 0.95 -weight briggs -1.0 -multiscale \
-        -name wscleanSources_\${name} \
-        -size ${params.img_size} ${params.img_size} \
-        -scale ${params.img_scale} \
-        -niter ${params.img_niter} \
-        -pol i \
-        -auto-threshold ${params.img_auto_threshold} \
-        -auto-mask ${params.img_auto_mask} \
-        -abs-mem ${params.img_mem} \
-        -channels-out ${params.img_channels_out} \
-        -save-source-list \
-        *.ms
-    """
-}
+//     script:
+//     """
+//     unzip *.ms.zip
+//     export name="\$(basename *.ms)"
+//     name="\${name%.*}"
+//     # todo: idg?
+//     ${params.wsclean} \
+//         -mgain 0.95 -weight briggs -1.0 -multiscale \
+//         -name wscleanSources_\${name} \
+//         -size ${params.img_size} ${params.img_size} \
+//         -scale ${params.img_scale} \
+//         -niter ${params.img_niter} \
+//         -pol i \
+//         -auto-threshold ${params.img_auto_threshold} \
+//         -auto-mask ${params.img_auto_mask} \
+//         -abs-mem ${params.img_mem} \
+//         -channels-out ${params.img_channels_out} \
+//         -save-source-list \
+//         *.ms
+//     """
+// }
 
 process imgQA {
     // will need dirty V and clean XX, YY for a single vis file
-    storeDir "$params.outdir/${obsid}/img_qa"
 
     input:
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
@@ -357,21 +428,24 @@ process imgQA {
     output:
     tuple val(obsid), path("${name}.json")
 
+    storeDir "$params.outdir/${obsid}/img_qa"
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
+
     stageInMode "copy"
     module "singularity"
+    maxRetries 1
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript 'ls -al; sleep 1s'
+    beforeScript 'sleep 1s; ls -al'
 
     script:
     """
     set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         img_qa *.fits --out ${name}.json
-
-    # without these, nextflow checks for the .json before fs has had time
-    # to sync outside the singularity container, causing it to think the job
-    # has failed.
-    ls -al
-    head -n 1 ${name}.json
-    sleep 1s
     """
 }
 
@@ -381,17 +455,44 @@ workflow {
     // ensure raw files are downloaded
     ensureRaw(obsids)
 
+    // check raw file size / count
+    ensureRaw.out \
+        .map(it -> String.format( \
+            "%s\t%s\t%s\t%s", \
+            it[0], \
+            it[1].size(), \
+            it[2].size(), \
+            it[2].collect(path -> path.size()).sum() \
+        )) \
+        .collectFile(name: "${projectDir}/results/prep_stats.tsv", newLine: true) \
+        | view
+
     // ensure preprocessed files have been generated from raw files
     ensurePrep(ensureRaw.out)
 
-    // TODO: flag QA
-    // - get the obsid and metafits from ensureRaw
-    // - cross with the uvfits and mwaf from ensurePrep
-    // ensureRaw.out \
-    //     .map(it -> it[0..1]) \
-    //     .join(ensurePrep.out) \
-    //     .map(it -> it[0..2] + [it[4]]) \
-    //     | flagQA
+    // quick gate to prevent past end of file
+    ensurePrep.out \
+        .map(it -> [it[0], it[2]]) \
+        | visGate
+
+    // flag QA
+    // - get the obsid, metafits from ensureRaw
+    // - cross with the mwaf from ensurePrep
+    ensureRaw.out \
+        .map(it -> it[0..1]) \
+        .join(ensurePrep.out) \
+        .map(it -> it[0..1] + [it[3]]) \
+        | flagQA
+
+    // export flagQA results
+    flagQA.out \
+        .map(it -> String.format( \
+            "%s\t%s", \
+            it[0], \
+            Float.parseFloat(file(it[1]).getText()), \
+        )) \
+        .collectFile(name: "${projectDir}/results/occupancy.tsv", newLine: true) \
+        | view
 
     // create a channel of calibration parameter sets from a csv with columns:
     // - short name that appears in the output filename
@@ -407,32 +508,45 @@ workflow {
     // - combine with calibration parameter sets
     ensureRaw.out \
         .map(it -> it[0..1]) \
-        .join(ensurePrep.out)
+        .join(ensurePrep.out) \
         .map(it -> it[0..2]) \
+        .join( \
+            visGate.out \
+            .map(it -> it[0]) \
+        )
+        .join( \
+            flagQA.out \
+            .map(it -> [it[0], Float.parseFloat(file(it[1]).getText())])
+            .filter(it -> it[1] < params.flag_occupancy_threshold) \
+            .map(it -> [it[0]])
+        ) \
         .combine(cal_param_sets) \
         | ensureCal
 
     // vis QA
     // - get obsid, uvfits from ensurePrep
     // - mix with obsid, uvfits from ensureCal
-    // - give each a name (everything before the .uvfits)
-    ensurePrep.out \
-        .map(it -> it[0..1]) \
-        .mix( \
-            ensureCal.out \
-            .map(it -> [it[0], it[2]]) \
-            .transpose() \
-        ) \
+    // - give each vis a name from basename of uvfits
+
+    // prep seems to be too big without averaging
+    // ensurePrep.out \
+    //     .map(it -> it[0..1]) \
+    //     .mix( \
+    //     ) \
+
+    ensureCal.out \
+        .map(it -> [it[0], it[2]]) \
+        .transpose() \
         .map(it -> [\
             it[0],
-            (it[1].getName() =~ /^(.*)\.uvfits$/)[0][1], \
+            it[1].getBaseName(), \
             it[1] \
         ])\
         | visQA
 
     // calibration QA
     // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
-    // - give each cal a name (everything before the .fits)
+    // - give each calibration a name from basename of uvfits
     ensureRaw.out \
         .map(it -> it[0..1]) \
         .join(ensureCal.out) \
@@ -441,14 +555,14 @@ workflow {
         .map(it -> [\
             it[0],
             it[1],
-            (it[2].getName() =~ /^(.*)\.fits$/)[0][1], \
+            it[2].getBaseName(), \
             it[2] \
         ])\
         | calQA
 
     // img QA
     // - get obsid, metafits cross with uvfits from ensureCal
-    // - give each image a name (everything before the .uvfits)
+    // - give each image a name from basename of uvfits
     // - run wsclean
     ensureRaw.out \
         .map(it -> it[0..1]) \
@@ -459,7 +573,7 @@ workflow {
         .transpose() \
         .map(it -> [\
             it[0], \
-            (it[2].getName() =~ /^(.*)\.uvfits$/)[0][1], \
+            it[2].getBaseName(), \
             it[1],
             it[2]\
         ]) \
