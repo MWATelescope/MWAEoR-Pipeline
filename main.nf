@@ -3,18 +3,20 @@ nextflow.enable.dsl=2
 
 // Ensure the raw visibility files are present, or download via ASVO
 process ensureRaw {
+    input:
+    val obsid
+
+    output:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
+    // path("${obsid}_metafits_ppds.fits") optional true,
+    // path("download.log") optional true
+
     // persist results in outdir, process will be skipped if files already present.
     storeDir "$params.outdir/$obsid/raw"
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
     errorStrategy { sleep(Math.pow(2, task.attempt) * 60*60*1000 as long); return 'retry' }
-
-    input:
-    val obsid
-
-    output:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
 
     script:
     """
@@ -47,26 +49,20 @@ process ensureRaw {
         # extract id url and size from ready download vis jobs
         ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
             | tee /dev/stderr \
-            | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//""]|@tsv' \
+            | ${params.jq} -r '.[]|[.jobId,.files[0].fileSize//""]|@tsv' \
             | tee ready.tsv
-        while read jobid url size; do
-            ensure_disk_space \#((2 * \$size)) || exit \$?
-            if [ -n "\$url" ]; then
-                echo "[obs:$obsid]: Downloading job \$jobid from \$url (\$size bytes)"
-                curl \$url | tar -x
-                # TODO download and use giant squid to check hash match
-                exit 0
-            fi
+        while read jobid size; do
+            ensure_disk_space \$size || exit \$?
+            giant-squid download --hash -v \$jobid 2>&1 | tee download.log
+            return 0
         done <ready.tsv
         return 1
     }
 
-    # download any ready jobs, exit if success, else suppress errors
-    get_first_ready_job && exit 0 || true
-
-    # try and submit a job, if it's already there this will fail, and we can suppress the
+    # download any ready jobs, exit if success, else try and submit a job,
+    # if it's already there this will fail, and we can suppress the
     # warning, otherwise we can download and exit
-    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w \
+    get_first_ready_job && exit 0 || ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w \
         && get_first_ready_job && exit 0 || true
 
     # extract id and state from pending download vis jobs
@@ -79,7 +75,8 @@ process ensureRaw {
         echo "[obs:$obsid]: waiting until \$jobid with state \$state is Ready"
         ${params.giant_squid} wait -j -- \$jobid
         # a new job is ready, so try and get it
-        get_first_ready_job && exit 0 || true
+        get_first_ready_job
+        exit \$?
     done <pending.tsv
     exit 1
     """
@@ -117,10 +114,6 @@ process ensurePrep {
         ${obsid}*.fits 2>&1 | tee birli_prep.log
     echo workflow.workDir=${workflow.workDir} >> birli_prep.log
     """
-    // ms:
-    // ${params.birli} \
-    //     -M "birli_${obsid}.ms" \
-    // zip -r "birli_${obsid}.ms.zip" "birli_${obsid}.ms"
 }
 
 // QA tasks for flags.
