@@ -50,10 +50,11 @@ process ensureRaw {
             | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//""]|@tsv' \
             | tee ready.tsv
         while read jobid url size; do
-            ensure_disk_space \$size || exit \$?
+            ensure_disk_space \#((2 * \$size)) || exit \$?
             if [ -n "\$url" ]; then
                 echo "[obs:$obsid]: Downloading job \$jobid from \$url (\$size bytes)"
                 curl \$url | tar -x
+                # TODO download and use giant squid to check hash match
                 exit 0
             fi
         done <ready.tsv
@@ -116,11 +117,14 @@ process ensurePrep {
         ${obsid}*.fits 2>&1 | tee birli_prep.log
     echo workflow.workDir=${workflow.workDir} >> birli_prep.log
     """
+    // ms:
+    // ${params.birli} \
+    //     -M "birli_${obsid}.ms" \
+    // zip -r "birli_${obsid}.ms.zip" "birli_${obsid}.ms"
 }
 
 // QA tasks for flags.
 process flagQA {
-    storeDir "$params.outdir/${obsid}/flag_qa"
 
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
@@ -129,13 +133,13 @@ process flagQA {
     // TODO: change this to whatever paths QA outputs
     tuple val(obsid), path("total_occupancy.csv")
 
+    storeDir "$params.outdir/${obsid}/flag_qa"
+
     // if this script returns failure, don't progress this obs to calibration, just ignore
     errorStrategy 'ignore'
-
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    afterScript 'ls -al; sleep 1s'
-    beforeScript 'sleep 1s; ls -al'
+    afterScript 'ls -al; sleep 5s'
 
     module 'python/3.9.7'
 
@@ -150,6 +154,7 @@ process flagQA {
     from sys import stderr
 
     paths = glob("*.mwaf")
+    total_occupancy = 0
     num_coarse_chans = len(paths)
     for path in paths:
         with fits.open(path) as hdus:
@@ -242,34 +247,34 @@ process ensureCal {
     """
 }
 
-// really simple gate for vis, to prevent "past end of file" errors
-process visGate {
-    input:
-    tuple val(obsid), path("*") // <- .uvfits
-    output:
-    tuple val(obsid), val(obsid)
+// // really simple gate for vis, to prevent "past end of file" errors
+// process visGate {
+//     input:
+//     tuple val(obsid), path("*") // <- .uvfits
+//     output:
+//     tuple val(obsid), val(obsid)
 
-    // if this script returns failure, don't progress this vis
-    errorStrategy 'ignore'
+//     // if this script returns failure, don't progress this vis
+//     errorStrategy 'ignore'
 
-    module 'python/3.9.7'
+//     module 'python/3.9.7'
 
-    script:
-    """
-    #!/usr/bin/env python
-    # workflow.workDir=${workflow.workDir}
+//     script:
+//     """
+//     #!/usr/bin/env python
+//     # workflow.workDir=${workflow.workDir}
 
-    from astropy.io import fits
-    from glob import glob
-    from time import sleep
-    from sys import stderr
+//     from astropy.io import fits
+//     from glob import glob
+//     from time import sleep
+//     from sys import stderr
 
-    paths = glob("*.uvfits")
-    for path in paths:
-        with fits.open(path) as hdus:
-            print(hdus[1].data[0].shape)
-    """
-}
+//     paths = glob("*.uvfits")
+//     for path in paths:
+//         with fits.open(path) as hdus:
+//             print(hdus[1].data[0].shape)
+//     """
+// }
 
 // QA tasks that can be run on each visibility file.
 process visQA {
@@ -291,8 +296,8 @@ process visQA {
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    afterScript 'ls -al; sleep 1s'
     beforeScript 'sleep 1s; ls -al'
+    afterScript 'ls -al; sleep 1s'
 
     script:
     """
@@ -324,8 +329,8 @@ process calQA {
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    afterScript 'ls -al; sleep 1s'
     beforeScript 'sleep 1s; ls -al'
+    afterScript 'ls -al; sleep 1s'
 
     script:
     """
@@ -419,6 +424,40 @@ process wscleanDirty {
 //     """
 // }
 
+// power spectrum metrics via chips
+process psMetrics {
+    input:
+    tuple val(obsid), val(name), path("*") // <- "*.uvfits"
+
+    output:
+    tuple val(obsid), path("output_metrics_${name}.dat"), path("${name}.log")
+
+    storeDir "$params.outdir/${obsid}/ps_metrics"
+    errorStrategy 'ignore'
+    stageInMode "copy"
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    beforeScript 'sleep 5s; ls -al'
+    afterScript 'ls -al; sleep 5s'
+
+    module "cfitsio/3.470:gcc-rt/9.2.0"
+
+    script:
+    """
+    set -eux
+    export DATADIR="\$PWD"
+    export OUTPUTDIR="\$PWD/"
+    export BAND=0
+    export NCHAN=384
+    export UVFITS="\$(ls -1 *.uvfits | head -1)"
+    export UVFITS="\$(basename \${UVFITS})"
+    ${params.ps_metrics} "${name}" "\${BAND}" "\${NCHAN}" "\${UVFITS%.*}" 2>&1 | tee "${name}.log"
+    ls -al "\${OUTPUTDIR}"
+    cat "output_metrics_${name}.dat"
+    """
+}
+
 process imgQA {
     // will need dirty V and clean XX, YY for a single vis file
 
@@ -438,8 +477,8 @@ process imgQA {
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    afterScript 'ls -al; sleep 1s'
     beforeScript 'sleep 1s; ls -al'
+    afterScript 'ls -al; sleep 1s'
 
     script:
     """
@@ -471,9 +510,9 @@ workflow {
     ensurePrep(ensureRaw.out)
 
     // quick gate to prevent past end of file
-    ensurePrep.out \
-        .map(it -> [it[0], it[2]]) \
-        | visGate
+    // ensurePrep.out \
+    //     .map(it -> [it[0], it[2]]) \
+    //     | visGate
 
     // flag QA
     // - get the obsid, metafits from ensureRaw
@@ -510,10 +549,10 @@ workflow {
         .map(it -> it[0..1]) \
         .join(ensurePrep.out) \
         .map(it -> it[0..2]) \
-        .join( \
-            visGate.out \
-            .map(it -> it[0]) \
-        )
+        // .join( \
+        //     visGate.out \
+        //     .map(it -> it[0]) \
+        // )
         .join( \
             flagQA.out \
             .map(it -> [it[0], Float.parseFloat(file(it[1]).getText())])
@@ -542,7 +581,7 @@ workflow {
             it[1].getBaseName(), \
             it[1] \
         ])\
-        | visQA
+        | (visQA & psMetrics)
 
     // calibration QA
     // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
@@ -590,6 +629,11 @@ workflow {
                 .collect(entry -> [it[0], entry.key, entry.value.collect(item -> item[1])]) \
         ) \
         | imgQA
+
+    psMetrics.out \
+        .map(it -> it[1].getText()) \
+        .collectFile(name: "${projectDir}/results/ps_metrics.dat") \
+        | view
 
     // what about analysis of di cal residuals?
 
