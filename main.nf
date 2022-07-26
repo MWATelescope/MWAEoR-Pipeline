@@ -49,14 +49,28 @@ process ensureRaw {
         # extract id url and size from ready download vis jobs
         ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
             | tee /dev/stderr \
-            | ${params.jq} -r '.[]|[.jobId,.files[0].fileSize//""]|@tsv' \
+            | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
             | tee ready.tsv
-        while read jobid size; do
-            ensure_disk_space \$size || exit \$?
-            giant-squid download --hash -v \$jobid 2>&1 | tee download.log
-            return 0
-        done <ready.tsv
-        return 1
+        read -r jobid url size hash < ready.tsv
+        ensure_disk_space \$size || exit \$?
+        # giant-squid download --keep-zip --hash -v \$jobid 2>&1 | tee download.log
+        # if [ \${PIPESTATUS[0]} -ne 0 ]; then
+        #     echo "Download failed, see download.log"
+        #     exit 1
+        # fi
+        wget \$url -O \$jobid.tar --progress=dot:giga --wait=60 --random-wait
+        if [ \$? -ne 0 ]; then
+            echo "Download failed"
+            exit 1
+        fi
+        sha1=\$(sha1sum \$jobid.tar | cut -d' ' -f1)
+        if [ "\$sha1" != "\$hash" ]; then
+            echo "Download failed, hash mismatch"
+            exit 1
+        fi
+        [ -d "$params.outdir/$obsid/raw" ] || mkdir -p "$params.outdir/$obsid/raw"
+        tar -xf \$jobid.tar -C "$params.outdir/$obsid/raw"
+        return \$?
     }
 
     # download any ready jobs, exit if success, else try and submit a job,
@@ -496,7 +510,7 @@ workflow {
             it[2].size(), \
             it[2].collect(path -> path.size()).sum() \
         )) \
-        .collectFile(name: "${projectDir}/results/prep_stats.tsv", newLine: true) \
+        .collectFile(name: "${projectDir}/results/raw_stats.tsv", newLine: true) \
         | view
 
     // ensure preprocessed files have been generated from raw files
