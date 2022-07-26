@@ -1,0 +1,3 @@
+30l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
+50l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
+30l_src4k,4s_80kHz,--time-average 4s --freq-average 80kHz

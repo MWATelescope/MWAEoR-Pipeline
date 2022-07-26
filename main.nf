@@ -215,8 +215,14 @@ process flagQA {
     """
 }
 
-// ensure calibration solutions and vis are present, or calibrate prep with hyperdrive
-process ensureCal {
+// ensure calibration solutions are present, or calibrate prep with hyperdrive
+process ensureCalSol {
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_args.csv")
+
+    output:
+    tuple val(obsid), path("hyp_soln_${obsid}_{30l_src4k,50l_src4k}.fits"), path("hyp_di-cal_${obsid}_*.log")
+
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
 
@@ -228,13 +234,6 @@ process ensureCal {
     module "cuda/11.3.1:gcc-rt/9.2.0"
     stageInMode "copy"
 
-    input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_params.csv")
-
-    output:
-    tuple val(obsid), path("hyp_soln_${obsid}_*.fits"), path("hyp_${obsid}_*.uvfits"), \
-        path("hyp_di-cal_${obsid}_*.log"), path("hyp_apply_${obsid}_*.log")
-
     script:
     """
     export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
@@ -244,12 +243,18 @@ process ensureCal {
     set -ex
     ls -al
     export names=""
-    while IFS=, read -r name cal_args apply_args; do
+    export num_gpus="\$(nvidia-smi -L | wc -l)"
+    if [ \$num_gpus -eq 0 ]; then
+        echo "no gpus found"
+        exit 1
+    fi
+    # for each calibration parameter set in cal_args.csv, run hyperdrive di-cal
+    while IFS=, read -r name cal_args; do
         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
         if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
             wait \$(jobs -rp)
         fi
-        # hyperdrive di-cal then solutions apply, backgrounded in a subshell on the same gpu
+        # hyperdrive di-cal backgrounded in a subshell
         (
             ${params.hyperdrive} di-calibrate \${cal_args} \
                 --data "${obsid}.metafits" "${obsid}.uvfits" \
@@ -257,69 +262,58 @@ process ensureCal {
                 --source-list "${params.sourcelist}" \
                 --outputs "hyp_soln_${obsid}_\${name}.fits" \
                 > hyp_di-cal_${obsid}_\${name}.log
-            ${params.hyperdrive} solutions-apply \${apply_args} \
-                --data "${obsid}.metafits" "${obsid}.uvfits" \
-                --solutions "hyp_soln_${obsid}_\${name}.fits" \
-                --outputs "hyp_${obsid}_\${name}.uvfits" \
-                > hyp_apply_${obsid}_\${name}.log
         ) &
         names="\${names} \${name}"
         # increment the target device mod num_gpus
-        CUDA_VISIBLE_DEVICES=\$((CUDA_VISIBLE_DEVICES+1%${params.num_gpus}))
-    done < cal_params.csv
+        CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
+    done < <(cut -d',' -f1,2 cal_args.csv | sort | uniq)
 
     # wait for all the background jobs to finish
     wait \$(jobs -rp)
 
-    # check all the files we expect are present.
-    for name in \$names; do
         # print out important info from log
-        for log in hyp_di-cal_${obsid}_\${name}.log hyp_apply_${obsid}_\${name}.log; do
-            if [ ! -f \$log ]; then
-                echo "ERROR: \$log not found"
-                exit 1
-            else
-                grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" \$log
-            fi
-        done
-        for file in "hyp_soln_${obsid}_\${name}.fits" "hyp_${obsid}_\${name}.uvfits"; do
-            if [ ! -f \$file ]; then
-                echo "Missing file \$file"
-                exit 1
-            fi
-        done
-    done
+    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
     """
 }
 
-// // really simple gate for vis, to prevent "past end of file" errors
-// process visGate {
-//     input:
-//     tuple val(obsid), path("*") // <- .uvfits
-//     output:
-//     tuple val(obsid), val(obsid)
+// ensure calibrated vis are present, or apply calsols to prep with hyperdrive
+process ensureCalVis {
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
+        val(cal_name), val(apply_name), val(apply_args)
 
-//     // if this script returns failure, don't progress this vis
-//     errorStrategy 'ignore'
+    output:
+    tuple val(obsid), path("hyp_${obsid}_${cal_name}_${apply_name}.uvfits"), path("hyp_apply_${cal_name}_${apply_name}.log")
 
-//     module 'python/3.9.7'
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
 
-//     script:
-//     """
-//     #!/usr/bin/env python
-//     # workflow.workDir=${workflow.workDir}
+    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
 
-//     from astropy.io import fits
-//     from glob import glob
-//     from time import sleep
-//     from sys import stderr
+    // label jobs that need a bigger gpu allocation
+    label "cpu"
 
-//     paths = glob("*.uvfits")
-//     for path in paths:
-//         with fits.open(path) as hdus:
-//             print(hdus[1].data[0].shape)
-//     """
-// }
+    module "gcc-rt/9.2.0"
+    stageInMode "copy"
+
+    script:
+    """
+
+    # hyperdrive solutions apply
+    ${params.hyperdrive} solutions-apply ${apply_args} \
+        --data "${obsid}.metafits" "${obsid}.uvfits" \
+        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
+        --outputs "hyp_${obsid}_${cal_name}_${apply_name}.uvfits" \
+        | tee hyp_apply_${cal_name}_${apply_name}.log
+
+    # print out important info from log
+    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    """
+    // ms:
+    // ${params.hyperdrive} solutions-apply \${apply_args} \
+    //   --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
+    //   zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
+}
 
 // QA tasks that can be run on each visibility file.
 process visQA {
@@ -333,7 +327,8 @@ process visQA {
 
     // TODO: figure out why this fails sometimes
     errorStrategy 'ignore'
-    // maxRetries 1
+
+    label 'cpu'
 
     // needed for singularity
     stageInMode "copy"
@@ -354,12 +349,11 @@ process visQA {
 
 // QA tasks that can be run on each calibration parameter set
 process calQA {
-
     input:
-    tuple val(obsid), path("${obsid}.metafits"), val(name), path("*") // <- hyp_soln_*.fits
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
 
     output:
-    tuple val(obsid), path("${name}_{X,Y}.json") // TODO: , path("${name}_{phases,amps}.png")
+    tuple val(obsid), path("${name}_{X,Y}.json")
 
     storeDir "$params.outdir/${obsid}/cal_qa"
 
@@ -369,8 +363,6 @@ process calQA {
 
     stageInMode "copy"
     module "singularity"
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
@@ -385,8 +377,25 @@ process calQA {
         cal_qa *.fits *.metafits X --out "${name}_X.json"
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
         cal_qa *.fits *.metafits Y --out "${name}_Y.json"
-    # TODO: recompile hyperdrive with plotting
-    # hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
+    """
+}
+
+process plotSolutions {
+    input:
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
+
+    output:
+    tuple val(obsid), path("${name}_{phases,amps}.png")
+
+    storeDir "$params.outdir/${obsid}/cal_qa"
+    errorStrategy 'ignore'
+
+    beforeScript 'sleep 1s; ls -al'
+    afterScript 'ls -al; sleep 1s'
+
+    script:
+    """
+    hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
     """
 }
 
@@ -587,55 +596,37 @@ workflow {
         .collectFile(name: "${projectDir}/results/occupancy.tsv", newLine: true) \
         | view
 
-    // create a channel of calibration parameter sets from a csv with columns:
-    // - short name that appears in the output filename
-    // - args for hyperdrive di-cal, where `-n` = `--num-sources`
+    // create a channel of a single csv for calibration args with columns:
+    // - short name that appears in calibration solution filename
     // - args for hyperdrive soln apply args
-    cal_param_sets = channel \
-        .fromPath(params.cal_params_path) \
-        // .splitCsv(header: false, skip: 1, strip: true)
+    dical_args = channel \
+        .fromPath(params.dical_args_path) \
         .collect()
 
-    // calibration for each obsid that passes QA, and each parameter set
+    // create a channel of calibration parameter sets from a csv with columns:
+    // - short name that appears in calibration solution filename
+    // - short name that appears in the apply filename
+    // - args for hyperdrive soln apply args
+    apply_args = channel \
+        .fromPath(params.apply_args_path) \
+        .splitCsv(header: false)
+
+    // calibration solutions for each obsid that passes QA
     // - get obsid, metafits from ensureRaw cross with uvfits from ensurePrep
-    // - combine with calibration parameter sets
+    // - combine with calibration args
     ensureRaw.out \
         .map(it -> it[0..1]) \
         .join(ensurePrep.out) \
         .map(it -> it[0..2]) \
-        // .join( \
-        //     visGate.out \
-        //     .map(it -> it[0]) \
-        // )
+        // filter out obsids which exceed flag occupancy threshold
         .join( \
             flagQA.out \
             .map(it -> [it[0], Float.parseFloat(file(it[1]).getText())])
             .filter(it -> it[1] < params.flag_occupancy_threshold) \
             .map(it -> [it[0]])
         ) \
-        .combine(cal_param_sets) \
-        | ensureCal
-
-    // vis QA
-    // - get obsid, uvfits from ensurePrep
-    // - mix with obsid, uvfits from ensureCal
-    // - give each vis a name from basename of uvfits
-
-    // prep seems to be too big without averaging
-    // ensurePrep.out \
-    //     .map(it -> it[0..1]) \
-    //     .mix( \
-    //     ) \
-
-    ensureCal.out \
-        .map(it -> [it[0], it[2]]) \
-        .transpose() \
-        .map(it -> [\
-            it[0],
-            it[1].getBaseName(), \
-            it[1] \
-        ])\
-        | (visQA & psMetrics)
+        .combine(dical_args) \
+        | ensureCalSol \
 
     // calibration QA
     // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
