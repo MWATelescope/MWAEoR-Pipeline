@@ -5,11 +5,8 @@ nextflow.enable.dsl=2
 process ensureRaw {
     input:
     val obsid
-
     output:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
-    // path("${obsid}_metafits_ppds.fits") optional true,
-    // path("download.log") optional true
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "$params.outdir/$obsid/raw"
@@ -100,7 +97,6 @@ process ensureRaw {
 process ensurePrep {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
-
     output:
     tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
@@ -171,10 +167,8 @@ process visShape {
 
 // QA tasks for flags.
 process flagQA {
-
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
-
     output:
     tuple val(obsid), path("total_occupancy.csv")
 
@@ -219,14 +213,13 @@ process flagQA {
 process ensureCalSol {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_args.csv")
-
     output:
     tuple val(obsid), path("hyp_soln_${obsid}_{30l_src4k,50l_src4k}.fits"), path("hyp_di-cal_${obsid}_*.log")
 
+    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
-
-    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
 
     // label jobs that need a bigger gpu allocation
     label "gpu"
@@ -271,7 +264,7 @@ process ensureCalSol {
     # wait for all the background jobs to finish
     wait \$(jobs -rp)
 
-        # print out important info from log
+    # print out important info from log
     grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
     """
 }
@@ -281,14 +274,13 @@ process ensureCalVis {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
         val(cal_name), val(apply_name), val(apply_args)
-
     output:
     tuple val(obsid), path("hyp_${obsid}_${cal_name}_${apply_name}.uvfits"), path("hyp_apply_${cal_name}_${apply_name}.log")
 
+    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
-
-    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
 
     // label jobs that need a bigger gpu allocation
     label "cpu"
@@ -319,7 +311,6 @@ process ensureCalVis {
 process visQA {
     input:
     tuple val(obsid), val(name), path("*") // <- *.uvfits
-
     output:
     tuple val(obsid), path("${name}_vis_metrics.json")
 
@@ -351,7 +342,6 @@ process visQA {
 process calQA {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
-
     output:
     tuple val(obsid), path("${name}_{X,Y}.json")
 
@@ -383,7 +373,6 @@ process calQA {
 process plotSolutions {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
-
     output:
     tuple val(obsid), path("${name}_{phases,amps}.png")
 
@@ -403,11 +392,11 @@ process plotSolutions {
 process wscleanDirty {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_*.uvfits
-
     output:
     tuple val(obsid), val(name), path("wsclean_${name}*-MFS-{XX,YY,V}-dirty.fits")
 
     storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
 
@@ -482,11 +471,11 @@ process wscleanDirty {
 process psMetrics {
     input:
     tuple val(obsid), val(name), path("*") // <- "*.uvfits"
-
     output:
     tuple val(obsid), path("output_metrics_${name}.dat"), path("${name}.log")
 
     storeDir "$params.outdir/${obsid}/ps_metrics"
+
     errorStrategy 'ignore'
     stageInMode "copy"
 
@@ -512,16 +501,15 @@ process psMetrics {
     """
 }
 
+// takes dirty V and clean XX, YY for a single vis
 process imgQA {
-    // will need dirty V and clean XX, YY for a single vis file
-
     input:
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
-
     output:
     tuple val(obsid), path("${name}.json")
 
     storeDir "$params.outdir/${obsid}/img_qa"
+
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
 
@@ -543,6 +531,7 @@ process imgQA {
 }
 
 workflow {
+    // get obsids from csv
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
 
     // ensure raw files are downloaded
@@ -633,16 +622,58 @@ workflow {
     // - give each calibration a name from basename of uvfits
     ensureRaw.out \
         .map(it -> it[0..1]) \
-        .join(ensureCal.out) \
+        .join(ensureCalSol.out) \
         .map( it -> it[0..2]) \
         .transpose() \
         .map(it -> [\
             it[0],
-            it[1],
             it[2].getBaseName(), \
+            it[1],
             it[2] \
         ])\
-        | calQA
+        | (calQA & plotSolutions)
+
+    // calQA.out \
+    //     .transpose() \
+    //     .map(it -> [it[0], it[1].basename(), JSON.parse(it[1].getText())])
+    //     .map(it -> String.format( \
+    //         "%s\t%s\t%s\t%s\t%s\t%s\t%s", \
+    //         it[0], \
+    //         it[1], \
+    //         it[2].get("FLAGGED_BLS"), \
+    //         it[2].get("FLAGGED_CHS"), \
+    //         it[2].get("FLAGGED_ANTS"), \
+    //         it[2].get("NON_CONVERGED_CHS"), \
+    //         it[2].get("CONVERGENCE_VAR")[0], \
+    //     )) \
+    //     .collectFile(name: "${projectDir}/results/calQA.tsv", newLine: true) \
+    //     | view
+
+    // apply calibration solutions
+    // - get obsid, metafits from ensureRaw
+    // - join with uvfits from ensurePrep
+    // - join with hyp_solns from ensureCalSol
+    // - combine with calibration args
+    ensureRaw.out \
+        .map(it -> it[0..1]) \
+        .join(ensurePrep.out) \
+        .map(it -> it[0..2]) \
+        .join(ensureCalSol.out) \
+        .map(it -> it[0..3]) \
+        .combine(apply_args) \
+        | ensureCalVis
+
+    // vis QA
+    // - get obsid, uvfits from ensurePrep
+    // - mix with obsid, uvfits from ensureCal
+    // - give each vis a name from basename of uvfits
+    ensureCalVis.out \
+        .map(it -> [\
+            it[0],
+            it[1].getBaseName(), \
+            it[1] \
+        ])\
+        | (visQA & psMetrics)
 
     // img QA
     // - get obsid, metafits cross with uvfits from ensureCal
@@ -650,11 +681,7 @@ workflow {
     // - run wsclean
     ensureRaw.out \
         .map(it -> it[0..1]) \
-        .join( \
-            ensureCal.out \
-            .map( it -> [it[0], it[2]] ) \
-        )
-        .transpose() \
+        .join(ensureCalVis.out)
         .map(it -> [\
             it[0], \
             it[2].getBaseName(), \
