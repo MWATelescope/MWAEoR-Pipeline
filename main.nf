@@ -98,6 +98,12 @@ process ensureRaw {
 
 // Ensure preprocessed observation is present, or preprocess raw with Birli
 process ensurePrep {
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
+
+    output:
+    tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
+
     storeDir "$params.outdir/${obsid}/prep"
 
     // label jobs that need a bigger cpu allocation
@@ -106,12 +112,6 @@ process ensurePrep {
     // this is necessary for singularity
     stageInMode "copy"
     module "singularity"
-
-    input:
-    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
-
-    output:
-    tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
     script:
     """
@@ -130,6 +130,45 @@ process ensurePrep {
     """
 }
 
+// really simple check for vis, to prevent "past end of file" errors
+process visShape {
+    input:
+    tuple val(obsid), path("*") // <- .uvfits
+    output:
+    tuple val(obsid), path("birli_${obsid}_shape.tsv")
+
+    storeDir "$params.outdir/${obsid}/prep"
+
+    // if this script returns failure, don't progress this vis
+    errorStrategy 'ignore'
+
+    module 'python/3.9.7'
+
+    afterScript 'ls -al; sleep 5s'
+
+    script:
+    """
+    #!/usr/bin/env python
+    # workflow.workDir=${workflow.workDir}
+
+    from astropy.io import fits
+    from glob import glob
+    from time import sleep
+    from sys import stderr
+
+    paths = glob("*.uvfits")
+    with open('birli_${obsid}_shape.tsv', 'w') as shapefile:
+        for path in paths:
+            with fits.open(path) as hdus:
+                first_shape=hdus[0].data[0].data.shape
+                all_times=hdus[0].data['DATE']
+                num_unique_times=len(set(all_times))
+                num_baselines=len(all_times)//num_unique_times
+                dims=[num_unique_times,num_baselines,first_shape[2]]
+                print("\\t".join(map(str,dims)), file=shapefile)
+    """
+}
+
 // QA tasks for flags.
 process flagQA {
 
@@ -137,7 +176,6 @@ process flagQA {
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
 
     output:
-    // TODO: change this to whatever paths QA outputs
     tuple val(obsid), path("total_occupancy.csv")
 
     storeDir "$params.outdir/${obsid}/flag_qa"
@@ -516,10 +554,19 @@ workflow {
     // ensure preprocessed files have been generated from raw files
     ensurePrep(ensureRaw.out)
 
-    // quick gate to prevent past end of file
-    // ensurePrep.out \
-    //     .map(it -> [it[0], it[2]]) \
-    //     | visGate
+    // get shape of preprocessed visibilities
+    ensurePrep.out \
+        .map(it -> it[0..1]) \
+        | visShape
+
+    visShape.out \
+        .map(it ->  String.format( \
+            "%s\t%s", \
+            it[0], \
+            it[1].getText(), \
+        )) \
+        .collectFile(name: "${projectDir}/results/prep_stats.tsv", newLine: false) \
+        | view
 
     // flag QA
     // - get the obsid, metafits from ensureRaw
