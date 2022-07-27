@@ -181,10 +181,20 @@ parameters can also be specified in the newflow command line too.
 
 ```
 module load nextflow
-
+nextflow run main.nf -profile dug -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY
 ```
 
 ### Handy commands
+
+## get all lines matching mattern from all scripts executed recently
+
+```bash
+export process="metafitsStats"
+export first_run="$(nextflow log -q | head -n 1)"
+export first_run="scruffy_bhaskara"
+echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md
+nextflow log -after $first_run -F 'process=="metafitsStats"&&exit==0' -t template.md
+```
 
 ## Updating singularity images
 
@@ -199,7 +209,13 @@ if [ ! -d $container ]; then mkdir $container; fi
 singularity pull --force --dir $container "$url"
 ```
 
-then update `profiles.dug.params.birli` in `nextflow.config`
+optional: update `profiles.dug.params.birli` in `nextflow.config`
+
+# Cancel all failed jobs
+
+```bash
+squeue --states SE --format %A -h | sort | xargs scancel
+```
 
 ## get disk usage
 
@@ -208,74 +224,31 @@ export stage="raw" # or prep, cal
 find /data/curtin_mwaeor/data -type d -name "${stage}" | xargs du --summarize -h | tee "du_${stage}.tsv"
 ```
 
-# dump img_qa
-
-```bash
-find /data/curtin_mwaeor/data -type f -path '*/img_qa/*MFS.json' \
-  | gawk 'match()
-```
-
-# dump flags
+## dump metafits
 
 ```bash
 module load python/3.9.7
-export obsid=1059505936
-for i in {01..12}; do \
-  python /data/curtin_mwaeor/src/Birli/tests/data/dump_mwaf.py \
-    /data/curtin_mwaeor/data/${obsid}/prep/${obsid}_${i}.mwaf --summary
+for obsid in ... ; do \
+  python /data/curtin_mwaeor/src/Birli/tests/data/dump_metafits.py \
+    /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits \
+    | tee /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits.txt
 done
 ```
 
-# Cancel all failed jobs
+## dump gpufits
+
+for legacy: `corr_type="MWA_ORD"`
+for mwax: `corr_type="MWAX"`
 
 ```bash
-squeue --states SE --format %A -h | sort | xargs scancel
-```
-
-# failures
-
-1059505936 - all flagged
-1060539904 - past end of file
-1061321664 - past end of file
-1060540024 - past end of file
-1059506184 - past end of file
-1059506792 - all flagged
-1059506056 - all flagged
-1059506424 - past end of file
-1059506304 - past end of file
-1061321792 - past end of file
-1061321424 - past end of file
-1061319840 - past end of file
-1061321056 - past end of file
-1065196488 - past end of file
-1061322032 - past end of file
-1065196976 - past end of file
-1065196248 - past end of file
-1065196856 - past end of file
-1065196120 - past end of file
-1061322400 - past end of file
-1061321304 - past end of file
-
-1061320936 - past end of file
-
-1322827024 - FileNotFoundError: [Errno 2] No such file or directory: 'hyp_1322827024_30l_src4k_4s_80kHz.uvfits'
-1060540152 - FileNotFoundError: [Errno 2] No such file or directory: 'hyp_1060540152_30l_src4k_8s_80kHz.uvfits'
-1060540272 - FileNotFoundError: [Errno 2] No such file or directory: 'hyp_soln_1060540272_50l_src4k_8s_80kHz.fits'
-1060540272 - FileNotFoundError: [Errno 2] No such file or directory: 'hyp_soln_1060540272_30l_src4k_4s_80kHz.fits'
-
-cleanup:
-
-```
-for obsid in 1061320448 1061320200 1065196248 1059506672 1060540152 1061319352 1061320568 1065196000 1065196488 1061319472 1061320080 1061321424 1061319224 1059506544; do
-  [ -d /data/curtin_mwaeor/data/$obsid ] && rm -rf /data/curtin_mwaeor/data/$obsid
-done
-
-for obsid in 1061321424 1065196000 1061319840 1059506792 1061319104 1061319960 1061320568 1059505936 1060540272 1059506672 1059506056 1061320448 1060540024 1059506544 1061319224 1061320328 1060539904 1061319472 1065196488 1061319712 1060540152 1061320200 1059506304 1059506424 1059506184 1065196248 1061319352 1061320080; do\
-  [ -d /data/curtin_mwaeor/data/$obsid ] && rm -rf /data/curtin_mwaeor/data/$obsid
+module load python/3.9.7
+export obsid=...;
+export corr_type=...;
+cd /data/curtin_mwaeor/data/${obsid}/raw/;
+for gpufits in $(ls *.fits); do \
+  python /data/curtin_mwaeor/src/Birli/tests/data/dump_gpufits.py \
+    ${gpufits} \
+    --corr-type $corr_type --timestep-limit 7 \
+    | tee ${gpufits}.txt
 done
 ```
-
-# don't delete:
-
-1090008640
-1094490328

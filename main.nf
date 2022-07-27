@@ -65,8 +65,8 @@ process ensureRaw {
             echo "Download failed, hash mismatch"
             exit 1
         fi
-        [ -d "$params.outdir/$obsid/raw" ] || mkdir -p "$params.outdir/$obsid/raw"
-        tar -xf \$jobid.tar -C "$params.outdir/$obsid/raw"
+        [ -d "${task.storeDir}" ] || mkdir -p "${task.storeDir}"
+        tar -xf \$jobid.tar -C "${task.storeDir}"
         return \$?
     }
 
@@ -90,6 +90,58 @@ process ensureRaw {
         exit \$?
     done <pending.tsv
     exit 1
+    """
+}
+
+process metafitsStats {
+    input:
+    tuple val(obsid), path("${obsid}.metafits")
+    output:
+    tuple val(obsid), path("${obsid}.metafits.json")
+
+    scratch false
+    storeDir "$params.outdir/${obsid}/raw"
+
+    // if this script returns failure, don't progress this vis
+    // errorStrategy 'ignore'
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
+
+    module 'python/3.9.7'
+
+    script:
+    """
+    #!/usr/bin/env python
+
+    from astropy.io import fits
+    from json import dump as json_dump
+    from collections import OrderedDict
+
+    with \
+        open('${obsid}.metafits.json', 'w') as out, \
+        fits.open("${obsid}.metafits") as hdus \
+    :
+        data = OrderedDict()
+        for key in hdus[0].header:
+            try:
+                data[key] = int(hdus[0].header[key])
+            except ValueError:
+                data[key] = hdus[0].header[key]
+        for key in [
+            'RECVRS', 'DELAYS', 'CHANNELS', 'CHANSEL'
+        ]:
+            data[key] = [*filter(None, map(lambda t: t.strip(), data[key].split(',')))]
+
+
+        data['FLAGGED_INPUTS'] = [
+            r['TileName'] + r['Pol']
+            for r in hdus[1].data
+            if r['Flag'] == 1
+        ]
+
+        json_dump(data, out, indent=4)
     """
 }
 
@@ -122,46 +174,50 @@ process ensurePrep {
         --avg-time-res ${params.prep_time_res_s} \
         --avg-freq-res ${params.prep_freq_res_khz} \
         ${obsid}*.fits 2>&1 | tee birli_prep.log
-    echo workflow.workDir=${workflow.workDir} >> birli_prep.log
+    echo task.hash=$task.hash >> birli_prep.log
     """
 }
 
-// really simple check for vis, to prevent "past end of file" errors
-process visShape {
+// Simple check for vis, to catch "past end of file" errors
+process prepStats {
     input:
-    tuple val(obsid), path("*") // <- .uvfits
+    tuple val(obsid), path("birli_${obsid}.uvfits")
     output:
-    tuple val(obsid), path("birli_${obsid}_shape.tsv")
+    tuple val(obsid), path("${obsid}_prep_stats.json")
 
+    scratch false
     storeDir "$params.outdir/${obsid}/prep"
 
     // if this script returns failure, don't progress this vis
     errorStrategy 'ignore'
 
-    module 'python/3.9.7'
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
-    afterScript 'ls -al; sleep 5s'
+    module 'python/3.9.7'
 
     script:
     """
     #!/usr/bin/env python
-    # workflow.workDir=${workflow.workDir}
+    # task.hash=$task.hash
 
     from astropy.io import fits
-    from glob import glob
-    from time import sleep
-    from sys import stderr
+    from json import dump as json_dump
+    from collections import OrderedDict
 
-    paths = glob("*.uvfits")
-    with open('birli_${obsid}_shape.tsv', 'w') as shapefile:
-        for path in paths:
-            with fits.open(path) as hdus:
-                first_shape=hdus[0].data[0].data.shape
-                all_times=hdus[0].data['DATE']
-                num_unique_times=len(set(all_times))
-                num_baselines=len(all_times)//num_unique_times
-                dims=[num_unique_times,num_baselines,first_shape[2]]
-                print("\\t".join(map(str,dims)), file=shapefile)
+    with \
+        open('${obsid}_prep_stats.json', 'w') as out, \
+        fits.open("birli_${obsid}.uvfits") as hdus \
+    :
+        data = OrderedDict()
+        first_shape=hdus[0].data[0].data.shape
+        data['num_chans']=first_shape[2]
+        all_times=hdus[0].data['DATE']
+        data['num_times']=len(set(all_times))
+        data['num_baselines']=len(all_times)//data['num_times']
+
+        json_dump(data, out, indent=4)
     """
 }
 
@@ -170,42 +226,78 @@ process flagQA {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
     output:
-    tuple val(obsid), path("total_occupancy.csv")
+    tuple val(obsid), path("${obsid}_occupancy.json")
 
-    storeDir "$params.outdir/${obsid}/flag_qa"
+    storeDir "$params.outdir/${obsid}/prep"
 
     // if this script returns failure, don't progress this obs to calibration, just ignore
     errorStrategy 'ignore'
+
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    afterScript 'ls -al; sleep 5s'
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
     module 'python/3.9.7'
 
     script:
     """
     #!/usr/bin/env python
-    # workflow.workDir=${workflow.workDir}
 
     from astropy.io import fits
+    from json import dump as json_dump
     from glob import glob
-    from time import sleep
-    from sys import stderr
+    from os.path import basename
+    import re
 
-    paths = glob("*.mwaf")
+    RE_MWAX_NAME = (
+        r"\\S+_ch(?P<rec_chan>\\d{3}).mwaf"
+    )
+    RE_MWA_LGCY_NAME = (
+        r"\\S+_(?P<gpubox_num>\\d{2}).mwaf"
+    )
+
+    def parse_filename(name, metafits_coarse_chans):
+        result = {}
+        if match:=re.match(RE_MWAX_NAME, name):
+            result.update({
+                'type': 'mwax',
+                'rec_chan': int(match.group('rec_chan')),
+            })
+            result['gpubox_num'] = int(metafits_coarse_chans.index(result['rec_chan']))
+        elif match:=re.match(RE_MWA_LGCY_NAME, name):
+            result.update({
+                'type': 'legacy',
+                'gpubox_num': int(match.group('gpubox_num')),
+            })
+            result['rec_chan'] = int(metafits_coarse_chans[result['gpubox_num']-1])
+        return result
+
+    def split_strip_filter(str):
+        return list(filter(None, map(lambda tok: tok.strip(), str.split(','))))
+
+    paths = sorted(glob("*.mwaf"))
     total_occupancy = 0
     num_coarse_chans = len(paths)
-    for path in paths:
-        with fits.open(path) as hdus:
-            # hdus.info()
-            flag_data = hdus[1].data['FLAGS']
-            path_occupancy = flag_data.sum() / flag_data.size
-            print(f"{path}\t{100 * path_occupancy:6.2f}%")
-            total_occupancy += path_occupancy
-    total_occupancy /= num_coarse_chans
-    with open('total_occupancy.csv', 'w') as f:
-        f.write(f"{total_occupancy}")
-    print(f"--- total ---\t{100 * total_occupancy:6.2f}%")
+    with \
+        open('${obsid}_occupancy.json', 'w') as out, \
+        fits.open("${obsid}.metafits") as meta \
+    :
+        data = {'obsid': ${obsid}, 'channels': {}}
+        metafits_coarse_chans = [*map(int, split_strip_filter(meta[0].header['CHANNELS']))]
+        for path in paths:
+            filename_info = parse_filename(path, metafits_coarse_chans)
+            if not data.get('type'):
+                data['type'] = filename_info.get('type', '???')
+            chan_id = filename_info.get('rec_chan', basename(path))
+            data['channels'][chan_id] = {}
+            with fits.open(path) as hdus:
+                flag_data = hdus[1].data['FLAGS']
+                occupancy = flag_data.sum() / flag_data.size
+                data['channels'][chan_id]['occupancy'] = occupancy
+                total_occupancy += occupancy
+        total_occupancy /= num_coarse_chans
+        data['total_occupancy'] = total_occupancy
+        json_dump(data, out, indent=4)
     """
 }
 
@@ -530,6 +622,9 @@ process imgQA {
     """
 }
 
+import groovy.json.JsonSlurper
+def jslurp = new JsonSlurper()
+
 workflow {
     // get obsids from csv
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
@@ -537,16 +632,50 @@ workflow {
     // ensure raw files are downloaded
     ensureRaw(obsids)
 
-    // check raw file size / count
+    // collect disk usage stats from ensureRaw stage
     ensureRaw.out \
-        .map(it -> String.format( \
-            "%s\t%s\t%s\t%s", \
-            it[0], \
-            it[1].size(), \
-            it[2].size(), \
-            it[2].collect(path -> path.size()).sum() \
-        )) \
-        .collectFile(name: "${projectDir}/results/raw_stats.tsv", newLine: true) \
+        // form row of tsv from obsid, metafits size, gpufits count, gpufits size
+        .map(it -> [
+            it[0], // obsid
+            it[1].size(), // size of metafits [B]
+            it[2].size(), // number of gpufits files
+            it[2].collect(path -> path.size()).sum() // total gpufits size [B]
+        ].join("\t")) \
+        .collectFile(
+            name: "raw_stats.tsv", newLine: true, sort: true,
+            seed: ["OBS","META SIZE","N GPUBOX","GPUBOX SIZE"].join("\t"),
+            storeDir: "${projectDir}/results/"
+        ) \
+        | view
+
+    // analyse metafits stats
+    ensureRaw.out \
+        .map(it -> it[0..1]) \
+        | metafitsStats
+
+    // collect metafits stats
+    metafitsStats.out \
+        // parse each metafits json
+        .map(it -> [it[0], jslurp.parse(it[1])])
+        // for row of tsv from json fields we care about
+        .map(it -> [
+            it[0],
+            it[1].get("DATE-OBS"),
+            it[1].get("GRIDNUM"),
+            it[1].get("CENTCHAN"),
+            it[1].get("FINECHAN"),
+            it[1].get("INTTIME"),
+            it[1].get("EXPOSURE"),
+            it[1].get("FLAGGED_INPUTS").size(), // number of flagged inputs
+            it[1].get("FLAGGED_INPUTS").join('|') // flagged input names
+        ].join("\t")) \
+        .collectFile(
+            name: "metafits_stats.tsv", newLine: true, sort: true,
+            seed: [
+                "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","DUR","N FLAG INPS","FLAG INPS"
+            ].join("\t"),
+            storeDir: "${projectDir}/results/",
+        ) \
         | view
 
     // ensure preprocessed files have been generated from raw files
@@ -555,34 +684,143 @@ workflow {
     // get shape of preprocessed visibilities
     ensurePrep.out \
         .map(it -> it[0..1]) \
-        | visShape
+        | prepStats
 
-    visShape.out \
-        .map(it ->  String.format( \
-            "%s\t%s", \
-            it[0], \
-            it[1].getText(), \
-        )) \
-        .collectFile(name: "${projectDir}/results/prep_stats.tsv", newLine: false) \
+    // collect prep stats
+    prepStats.out \
+        // join with uvfits, mwaf and birli log
+        .join(ensurePrep.out) \
+        // form row of tsv from json fields we care about
+        // .map(it ->
+        //     def stats = jslurp.parse(it[1]);
+        //     def log_lines = it[4].getText().split('\n');
+        //     def missing_hdu_lines = log_lines.filter { it.contains("NoDataForTimeStepCoarseChannel") };
+        //     [
+        //         // obsid
+        //         it[0],
+        //         // parse prep stats json
+        //         it[1].get('num_chans'),
+        //         it[1].get('num_times'),
+        //         it[1].get('num_baselines'),
+        //         // disk usage
+                // it[2].size(), // size of uvfits [B]
+                // it[3].size(), // number of mwaf [B]
+                // it[3].collect(path -> path.size()).sum(), // total mwaf size [B]
+        //         // parse birli log
+        //         it[4].getText().split('\n'),
+        //     ].join("\t")
+        // ) \
+        .map { it ->
+            def stats = jslurp.parse(it[1]);
+            def missing_hdus = (it[4].getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/)[0..-1];
+            def missing_timesteps_by_gpubox = missing_hdus.groupBy({ m -> m[1] });
+            // def log_lines = it[4].getText().split('\n');
+            // def missing_hdu_lines = log_lines.findAll { it.contains("NoDataForTimeStepCoarseChannel") };
+            return [
+                it[0],
+                // prep stats json
+                stats.get('num_chans'),
+                stats.get('num_times'),
+                stats.get('num_baselines'),
+                // disk usage
+                it[2].size(), // size of uvfits [B]
+                it[3].size(), // number of mwaf [B]
+                it[3].collect(path -> path.size()).sum(), // total mwaf size [B]
+                // parse birli log
+                missing_hdus.size(),
+                // missing_timesteps_by_gpubox,
+                missing_hdus,
+                // missing_hdus \
+                //     .groupBy({ match -> match[2] }) \
+                //     .entrySet() \
+                //     .collect(group -> [group.key, group.value.join("|").take(30)].join(":")) \
+                //     .join(";"),
+            ].join("\t")
+        } \
+        .collectFile(
+            name: "prep_stats.tsv", newLine: true, sort: true,
+            seed: [
+                "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES","MISSING HDUs"
+            ].join("\t"),
+            storeDir: "${projectDir}/results/"
+        ) \
         | view
 
     // flag QA
-    // - get the obsid, metafits from ensureRaw
-    // - cross with the mwaf from ensurePrep
     ensureRaw.out \
+        // get the obsid, metafits from ensureRaw
         .map(it -> it[0..1]) \
+        // join with the mwaf from ensurePrep
         .join(ensurePrep.out) \
         .map(it -> it[0..1] + [it[3]]) \
         | flagQA
 
     // export flagQA results
-    flagQA.out \
-        .map(it -> String.format( \
-            "%s\t%s", \
-            it[0], \
-            Float.parseFloat(file(it[1]).getText()), \
-        )) \
-        .collectFile(name: "${projectDir}/results/occupancy.tsv", newLine: true) \
+    flagQA.out
+        // parse each occupancy json
+        .map(it -> [it[0], jslurp.parse(it[1])])
+        .map(it -> [
+            it[0],
+            it[1].get('total_occupancy'),
+            it[1].get('channels',[:]).get('131',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('132',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('133',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('134',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('135',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('136',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('137',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('138',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('139',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('140',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('141',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('142',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('143',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('144',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('145',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('146',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('147',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('148',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('149',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('150',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('151',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('152',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('153',[:]).get('occupancy',''),
+            it[1].get('channels',[:]).get('154',[:]).get('occupancy','')
+        ])
+        // form each row of tsv
+        .map(it -> it.join("\t"))
+        .collectFile(
+            name: "occupancy.tsv", newLine: true, sort: true,
+            seed: [\
+                "OBS",
+                "TOTAL OCCUPANCY",
+                "131",
+                "132",
+                "133",
+                "134",
+                "135",
+                "136",
+                "137",
+                "138",
+                "139",
+                "140",
+                "141",
+                "142",
+                "143",
+                "144",
+                "145",
+                "146",
+                "147",
+                "148",
+                "149",
+                "150",
+                "151",
+                "152",
+                "153",
+                "154"
+            ].join("\t"),
+            storeDir: "${projectDir}/results/"
+        ) \
         | view
 
     // create a channel of a single csv for calibration args with columns:
@@ -601,98 +839,122 @@ workflow {
         .splitCsv(header: false)
 
     // calibration solutions for each obsid that passes QA
-    // - get obsid, metafits from ensureRaw cross with uvfits from ensurePrep
-    // - combine with calibration args
     ensureRaw.out \
+        // get obsid, metafits from ensureRaw
         .map(it -> it[0..1]) \
-        .join(ensurePrep.out) \
-        .map(it -> it[0..2]) \
+        // join with uvfits from ensurePrep
+        .join(ensurePrep.out).map(it -> it[0..2]) \
         // filter out obsids which exceed flag occupancy threshold
         .join( \
             flagQA.out \
-            .map(it -> [it[0], Float.parseFloat(file(it[1]).getText())])
+            .map(it -> [it[0], jslurp.parse(it[1]).get('total_occupancy')]) \
             .filter(it -> it[1] < params.flag_occupancy_threshold) \
             .map(it -> [it[0]])
         ) \
+        // combine with hyperdrive di-cal args file
         .combine(dical_args) \
         | ensureCalSol \
 
     // calibration QA
-    // - get obsid, metafits from ensureRaw cross with hyp_soln from ensureCal
-    // - give each calibration a name from basename of uvfits
     ensureRaw.out \
+        // get obsid, metafits from ensureRaw
         .map(it -> it[0..1]) \
-        .join(ensureCalSol.out) \
-        .map( it -> it[0..2]) \
+        // join with hyp_soln from ensureCal
+        .join(ensureCalSol.out).map( it -> it[0..2]) \
+        // transpose to run once for each calibration solution
         .transpose() \
         .map(it -> [\
             it[0],
-            it[2].getBaseName(), \
+            // give each calibration a name from basename of uvfits
+            it[2].getBaseName(),
             it[1],
-            it[2] \
-        ])\
-        | (calQA & plotSolutions)
+            it[2]
+        ]) \
+        | plotSolutions
+        // | (calQA & plotSolutions)
 
+    // summarize calQA
     // calQA.out \
     //     .transpose() \
-    //     .map(it -> [it[0], it[1].basename(), JSON.parse(it[1].getText())])
-    //     .map(it -> String.format( \
-    //         "%s\t%s\t%s\t%s\t%s\t%s\t%s", \
+    //     .map(it -> [it[0], it[1].basename(), jslurp.parse(it[1])])
+    //     .map(it -> [ \
     //         it[0], \
     //         it[1], \
     //         it[2].get("FLAGGED_BLS"), \
     //         it[2].get("FLAGGED_CHS"), \
     //         it[2].get("FLAGGED_ANTS"), \
     //         it[2].get("NON_CONVERGED_CHS"), \
-    //         it[2].get("CONVERGENCE_VAR")[0], \
-    //     )) \
-    //     .collectFile(name: "${projectDir}/results/calQA.tsv", newLine: true) \
+    //         it[2].get("CONVERGENCE_VAR")[0] \
+    //     ].join("\t")) \
+    //     .collectFile( \
+    //         storeDir: "${projectDir}/results/", name: "calQA.tsv", newLine: true\
+    //     ) \
     //     | view
 
     // apply calibration solutions
-    // - get obsid, metafits from ensureRaw
-    // - join with uvfits from ensurePrep
-    // - join with hyp_solns from ensureCalSol
-    // - combine with calibration args
     ensureRaw.out \
+        // get obsid, metafits from ensureRaw
         .map(it -> it[0..1]) \
-        .join(ensurePrep.out) \
-        .map(it -> it[0..2]) \
-        .join(ensureCalSol.out) \
-        .map(it -> it[0..3]) \
+        // join with uvfits from ensurePrep
+        .join(ensurePrep.out).map(it -> it[0..2]) \
+        // join with hyp_solns from ensureCalSol
+        .join(ensureCalSol.out).map(it -> it[0..3]) \
+        // combine with hyperdrive apply solution args file
         .combine(apply_args) \
         | ensureCalVis
 
-    // vis QA
-    // - get obsid, uvfits from ensurePrep
-    // - mix with obsid, uvfits from ensureCal
-    // - give each vis a name from basename of uvfits
+    // vis QA and ps_metrics
     ensureCalVis.out \
-        .map(it -> [\
+        // get obsid, cal uvfits from ensureCalVis
+        .map(it -> [
             it[0],
-            it[1].getBaseName(), \
-            it[1] \
+            // give each vis a name from basename of uvfits
+            it[1].getBaseName(),
+            it[1]
         ])\
         | (visQA & psMetrics)
 
-    // img QA
-    // - get obsid, metafits cross with uvfits from ensureCal
-    // - give each image a name from basename of uvfits
-    // - run wsclean
+    // collect visQA results
+    visQA.out \
+        // nasty hack to deal with NaNs
+        .map(it -> [it[0], it[1].getBaseName(), jslurp.parseText(it[1].getText().replace("NaN", '"NaN"'))])
+        // parse each visQA json
+        // .map(it -> [it[0], it[1].getBaseName(), jslurp.parse(it[1])]) \
+        .map(it -> [
+            it[0],
+            // give each image a name from basename of uvfits
+            it[1].split('_')[3..-3].join('_'),
+            // poor times can sometimes be [], this gives us a default
+            (it[2].get("AUTOS").get("XX").get("POOR_TIMES")+[''])[0],
+            (it[2].get("AUTOS").get("YY").get("POOR_TIMES")+[''])[0]
+        ]) \
+        // form each row of tsv
+        .map(it -> it.join("\t")) \
+        .collectFile(
+            name: "vis_metrics.tsv", newLine: true, sort: true,
+            seed: "OBS\tVIS NAME\tXX POOR TIMES\tYY POOR TIMES",
+            storeDir: "${projectDir}/results/"
+        ) \
+        | view
+
+    // wsclean: make dirty images
     ensureRaw.out \
+        // get obsid, metafits from ensureRaw
         .map(it -> it[0..1]) \
+        // with uvfits from ensureCalVis
         .join(ensureCalVis.out)
-        .map(it -> [\
-            it[0], \
-            it[2].getBaseName(), \
+        .map(it -> [
+            it[0],
+            // give each image a name from basename of uvfits
+            it[2].getBaseName(),
             it[1],
-            it[2]\
+            it[2]
         ]) \
         | wscleanDirty
-    //     // TODO: | (wscleanDirty & wscleanSources)
 
-    // for every group of dirty images, group by channel number, and imgQA for all pols
+    // imgQA for all groups of images
     wscleanDirty.out \
+        // group images by the basename before "-${POL}-dirty.fits"
         .flatMap(it -> \
             it[2] \
                 .collect(path -> [(path.getName() =~ /^(.*)-\w+-dirty.fits$/)[0][1], path]) \
@@ -702,9 +964,56 @@ workflow {
         ) \
         | imgQA
 
+    // collect imgQA results
+    imgQA.out \
+        // parse each imgQA json
+        .map(it -> [it[0], it[1].getBaseName(), jslurp.parse(it[1])]) \
+        .map(it -> [
+            it[0],
+            // give each image a name from basename of metrics json
+            it[1].split('_')[3..-1].join('_'),
+            it[2].get("XX").get("RMS_ALL"),
+            it[2].get("XX").get("RMS_BOX"),
+            it[2].get("XX").get("PKS0023_026"),
+            it[2].get("YY").get("RMS_ALL"),
+            it[2].get("YY").get("RMS_BOX"),
+            it[2].get("YY").get("PKS0023_026"),
+            it[2].get("V" ).get("RMS_ALL"),
+            it[2].get("V" ).get("RMS_BOX"),
+            it[2].get("V" ).get("PKS0023_026")
+        ]) \
+        // form each row of tsv
+        .map(it -> it.join("\t")) \
+        .collectFile(
+            name: "img_metrics.tsv", newLine: true, sort: true,
+            seed: "OBS\tIMG NAME\tXX ALL\tXX BOX\tXX PKS\tYY ALL\tYY BOX\tYY PKS\tV ALL\tV BOX\tV PKS",
+            storeDir: "${projectDir}/results/"
+        ) \
+        | view
+
+
+    // collect psMetrics as a .dat
     psMetrics.out \
+        // read the content of each ps_metrics file including the trailing newline
         .map(it -> it[1].getText()) \
-        .collectFile(name: "${projectDir}/results/ps_metrics.dat") \
+        .collectFile(
+            name: "ps_metrics.dat",
+            storeDir: "${projectDir}/results/"
+        ) \
+        | view
+
+    // collect psMetrics as a .tsv
+    psMetrics.out \
+        .map(it -> [it[0]] + it[1].getText().split('\n')[0].split(' ')[0..-1]) \
+        // get calName from baseName
+        .map(it -> [ it[0], it[1].split('_')[2..-1].join('_') ] + it[2..-1]) \
+        // form each row of tsv
+        .map(it -> it.join("\t"))
+        .collectFile(
+            name: "ps_metrics.tsv", newLine: true, sort: true,
+            seed: "OBS\tCAL NAME\tP_WEDGE\tP_WEDGE/D2\tD2\tP_WIN/D1\tD1\tP_ALL/D3\tD3",
+            storeDir: "${projectDir}/results/"
+        ) \
         | view
 
     // what about analysis of di cal residuals?
