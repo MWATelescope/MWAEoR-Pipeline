@@ -103,7 +103,7 @@ process metafitsStats {
     storeDir "$params.outdir/${obsid}/raw"
 
     // if this script returns failure, don't progress this vis
-    // errorStrategy 'ignore'
+    errorStrategy 'ignore'
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
@@ -125,15 +125,11 @@ process metafitsStats {
     :
         data = OrderedDict()
         for key in hdus[0].header:
-            try:
-                data[key] = int(hdus[0].header[key])
-            except ValueError:
-                data[key] = hdus[0].header[key]
-        for key in [
-            'RECVRS', 'DELAYS', 'CHANNELS', 'CHANSEL'
-        ]:
-            data[key] = [*filter(None, map(lambda t: t.strip(), data[key].split(',')))]
-
+            if type(hdus[0].header[key]) not in [bool, int, str, float]:
+                continue
+            data[key] = hdus[0].header[key]
+            if key in [ 'RECVRS', 'DELAYS', 'CHANNELS', 'CHANSEL' ]:
+                data[key] = [*filter(None, map(lambda t: t.strip(), data[key].split(',')))]
 
         data['FLAGGED_INPUTS'] = [
             r['TileName'] + r['Pol']
