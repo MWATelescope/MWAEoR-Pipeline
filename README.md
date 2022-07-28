@@ -15,7 +15,6 @@ graph TD;
     %% nfConfig> nextflow.config ]
   end
 
-
   %% subgraph storage
     subgraph raw
       metafits[fa:fa-file metafits ]
@@ -218,7 +217,7 @@ qa tasks:
   - from prep uvfits: count timesteps, channels, baselines
   - from birli log: collect
   - store: `${obsid}/prep`
-- obsid, name, metafits, calSol → **`calQA`** → obsid, calMetricsXJson, calMetricsYJson
+- obsid, name, metafits, calSol → **`calQA`** (#3) → obsid, calMetricsXJson, calMetricsYJson
   - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
   - needs a unique name for each calibration
 - obsid, name, metafits, calSol → **`plotSolutions`** → obsid, phasesPng, ampsPng
@@ -226,11 +225,12 @@ qa tasks:
 - obsid, name, calUVFits → **`visQA`** → obsid, visMetrics
   - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_visqa.py`
   - needs a unique name for each vis
-- obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** → imgMetricsJson
+- obsid, name, calUVFits → **`psMetrics`** (#1/#2) → obsid, psMetricsDat
+  - window/wedge/total power/subtraced power iono proxy via [chips](https://github.com/cathryntrott/chips) `src/ps_power_metrics.c`
+- obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** (#4) → imgMetricsJson
   - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
+  - flux density ratio of stokes, ratio of corner thermal noise RMS, variance, ratio stokes V/XX V/YY
   - needs a unique name for each image
-- obsid, name, calUVFits → **`psMetrics`** → obsid, psMetricsDat
-  - power spectrum metrics via [chips](https://github.com/cathryntrott/chips) `src/ps_power_metrics.c`
 
 ## Output Directory Structure:
 
@@ -362,7 +362,7 @@ export process="metafitsStats"
 export first_run="$(nextflow log -q | head -n 1)"
 export first_run="scruffy_bhaskara"
 echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md
-nextflow log -after $first_run -F 'process=="metafitsStats"&&exit==0' -t template.md
+nextflow log -after $first_run -F 'process=="'${process}'"&&exit==0' -t template.md
 ```
 
 ### Updating singularity images
