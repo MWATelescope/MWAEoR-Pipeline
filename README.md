@@ -4,153 +4,253 @@
 
 ```mermaid
 graph TD;
-    obsids[fa:fa-file-csv obsids.csv]
-    dical_args[fa:fa-file-csv dical_args.csv]
-    apply_args[fa:fa-file-csv apply_args.csv]
-    metafits[fa:fa-file metafits ];
-    gpufits[fa:fa-file gpubox ];
-    prepUVFits[fa:fa-file prep uvfits ];
-    flags[fa:fa-file flags ];
-    %% prepLog[fa:fa-file prep log ];
-    calSol[fa:fa-file cal sol ];
-    calUVFits[fa:fa-file cal uvfits ];
+  %% classDef partial fill:#770
+  %% classDef result fill:#070
+  %% classDef main fill:#070
 
-    occupancy[fa:fa-file-csv occupancy.tsv];
-    psMetricsDat[fa:fa-file-csv ps_metrics.dat];
-    visMetrics[fa:fa-file vis_metrics.json];
-    imgMetrics[fa:fa-file img_metrics.json];
-    calMetricsX[fa:fa-file cal_metrics_x.json];
-    calMetricsY[fa:fa-file cal_metrics_y.json];
-    imgDirtyXX[fa:fa-file-image image-XX-dirty.fits];
-    imgDirtyYY[fa:fa-file-image image-YY-dirty.fits];
-    imgDirtyV[fa:fa-file-image image-V-dirty.fits];
-    plotPhases[fa:fa-file-image plot_phases.png];
-    plotAmps[fa:fa-file-image plot_amps.png];
+  subgraph config
+    obsids>fa:fa-file-csv obsids.csv ]
+    dicalArgs>fa:fa-file-csv dical_args.csv ]
+    applyArgs>fa:fa-file-csv apply_args.csv ]
+    %% nfConfig> nextflow.config ]
+  end
 
-    ensureRaw[[fa:fa-cog ensureRaw ]];
-    ensurePrep[[fa:fa-cog ensurePrep ]];
-    ensureCalSol[[fa:fa-cog ensureCalSol ]];
-    ensureCalVis[[fa:fa-cog ensureCalVis ]];
-    wscleanDirty[[fa:fa-cog wscleanDirty ]];
 
-    flagQA[[fa:fa-gem flagQA ]];
-    visQA[[fa:fa-gem visQA ]];
-    imgQA[[fa:fa-gem imgQA ]];
-    calQA[[fa:fa-gem calQA ]];
-    psMetrics[[fa:fa-gem ps_metrics ]];
-    plotSolutions[[fa:fa-gem plotSolutions ]];
+  %% subgraph storage
+    subgraph raw
+      metafits[fa:fa-file metafits ]
+      gpufits[fa:fa-file gpubox ]
+      %% metafitsJson[fa:fa-file-code metafits.json ]
+      %% class metafitsJson partial
 
-    %% subgraph main
       %% ensureRaw
-      obsids --> ensureRaw;
-      ensureRaw --> metafits;
-      ensureRaw --> gpufits;
+      ensureRaw[[fa:fa-cog ensureRaw ]]
+      obsids --> ensureRaw
+      ensureRaw --> metafits
+      ensureRaw --> gpufits
 
-      %% ensurePrep
-      metafits --> ensurePrep;
-      gpufits --> ensurePrep;
-      ensurePrep --> prepUVFits;
-      ensurePrep --> flags;
-      %% ensurePrep --> prepLog;
+      %% metafitsStats[[fa:fa-cog metafitsStats ]]
+      %% metafits --> metafitsStats
+      %% metafitsStats --> metafitsJson
+    end
 
-      %% ensureCalSol
-      prepUVFits --> ensureCalSol;
-      metafits --> ensureCalSol;
-      dical_args --> ensureCalSol;
-      ensureCalSol --> calSol;
+    subgraph prep
+      prepUVFits[fa:fa-file prep uvfits ]
+      flags[fa:fa-file flags ]
+      %% prepLog[fa:fa-file prep log ]
+      occupancyJson[fa:fa-file-code occupancy.json ]
+      class occupancyJson partial
+      %% prepStatsJson[fa:fa-file-code prep_stats.json ]
+      %% class prepStatsJson partial
 
-      %% ensureCalVis
-      calSol --> ensureCalVis;
-      prepUVFits --> ensureCalVis;
-      metafits --> ensureCalVis;
-      apply_args --> ensureCalVis;
-      ensureCalVis --> calUVFits;
-    %% end
+      ensurePrep[[fa:fa-cog ensurePrep ]]
+      metafits --> ensurePrep
+      gpufits --> ensurePrep
+      ensurePrep --> prepUVFits
+      ensurePrep --> flags
+      %% ensurePrep --> prepLog
 
-    %% subgraph qa
-      %% flagQA
-      metafits --> flagQA;
+      flagQA[[fa:fa-gem flagQA ]]
+      %% metafits --> flagQA;
       flags --> flagQA;
-      flagQA --> occupancy;
+      flagQA --> occupancyJson;
 
-      %% visQA
-      calUVFits --> visQA;
-      visQA --> visMetrics;
+      flagGate{fa:fa-flag flagGate }
+      %% nfConfig --"occupancy_threshold"--> flagGate;
+      occupancyJson --> flagGate;
+      prepUVFits --> flagGate;
+    end
 
-      %% calQA
-      calSol --> calQA;
-      metafits --> calQA;
-      calQA --> calMetricsX;
-      calQA --> calMetricsY;
 
-      %% plotSolutions
-      metafits --> plotSolutions;
-      calSol --> plotSolutions;
-      plotSolutions --> plotAmps;
-      plotSolutions --> plotPhases;
+    subgraph cal
+      calSol[fa:fa-file cal sol ]
+      calUVFits[fa:fa-file cal uvfits ]
 
-      %% psMetrics
-      calUVFits --> psMetrics;
-      psMetrics --> psMetricsDat;
+      ensureCalSol[[fa:fa-cog ensureCalSol ]]
+      flagGate --"obs pass"--> ensureCalSol
+      %% prepUVFits --> ensureCalSol
+      %% metafits --> ensureCalSol
+      dicalArgs --> ensureCalSol
+      ensureCalSol --> calSol
 
+      ensureCalVis[[fa:fa-cog ensureCalVis ]]
+      calSol --> ensureCalVis
+      prepUVFits --> ensureCalVis
+      %% metafits --> ensureCalVis
+      applyArgs --> ensureCalVis
+      ensureCalVis --> calUVFits
+    end
+
+    subgraph img
+      imgDirty["fa:fa-file-image image-{XX,YY,V}-dirty.fits "]
+      %% imgDirtyYY[fa:fa-file-image image-YY-dirty.fits ]
+      %% imgDirtyV[fa:fa-file-image image-V-dirty.fits ]
       %% wscleanDirty
-      calUVFits --> wscleanDirty;
-      metafits --> wscleanDirty;
-      wscleanDirty --> imgDirtyXX;
-      wscleanDirty --> imgDirtyYY;
-      wscleanDirty --> imgDirtyV;
+      calUVFits --> wscleanDirty
+      %% metafits --> wscleanDirty
+      wscleanDirty --> imgDirty
+      %% wscleanDirty --> imgDirtyYY
+      %% wscleanDirty --> imgDirtyV
+    end
 
-      imgDirtyXX --> imgQA;
-      imgDirtyYY --> imgQA;
-      imgDirtyV --> imgQA;
-      imgQA --> imgMetrics;
+    subgraph cal_qa
+      calQA[[fa:fa-gem calQA ]]
+      calMetricsJson["fa:fa-file cal_metrics_{X,Y}.json "]
+      class calMetricsJson partial
+      %% calMetricsXJson[fa:fa-file cal_metrics_x.json ]
+      %% calMetricsYJson[fa:fa-file cal_metrics_y.json ]
+      calSol ----> calQA
+      %% metafits --> calQA
+      calQA --> calMetricsJson
+      %% calQA --> calMetricsYJson
 
-    %% end
+      plotSol["fa:fa-file-image plot_{phases,amps}.png "]
+      %% plotPhases[fa:fa-file-image plot_phases.png ]
+      %% plotAmps[fa:fa-file-image plot_amps.png ]
+      %% metafits --> plotSolutions
+      calSol ----> plotSolutions
+      plotSolutions --> plotSol
+      %% plotSolutions --> plotAmps
+      %% plotSolutions --> plotPhases
+    end
+
+    subgraph vis_qa
+      visQA[[fa:fa-gem visQA ]]
+      visMetricsJson[fa:fa-file vis_metrics.json ]
+      class visMetricsJson partial
+      calUVFits --> visQA
+      visQA --> visMetricsJson
+    end
+
+    subgraph ps_metrics
+      psMetrics[[fa:fa-gem ps_metrics ]]
+      calUVFits --> psMetrics
+      psMetrics --> psMetricsDat
+      psMetricsDat[fa:fa-file-csv ps_metrics.dat ]
+      class psMetricsDat partial
+    end
 
 
+    subgraph img_qa
+      imgMetricsJson[fa:fa-file img_metrics.json ]
+      class imgMetricsJson partial
+      imgDirty --> imgQA
+      %% imgDirtyYY --> imgQA
+      %% imgDirtyV --> imgQA
+      imgQA --> imgMetricsJson
+    end
+  %% end
+
+  subgraph results
+    %% metafitsStatsTsv[fa:fa-file-csv metafits_stats.tsv ]
+    %% class metafitsStatsTsv result
+    %% metafitsJson --> metafitsStatsTsv
+
+    %% prepStatsTsv[fa:fa-file-csv prep_stats.tsv ]
+    %% class prepStatsTsv result
+    %% prepLog --> prepStatsTsv
+    %% prepStatsJson --> prepStatsTsv
+
+    %% occupancyTsv[fa:fa-file-csv occupancy.tsv ]
+    %% class occupancyTsv result
+    %% occupancyJson --> occupancyTsv
+
+    calMetricsTsv[fa:fa-file-csv cal_metrics.tsv ]
+    class calMetricsTsv result
+    calMetricsJson --> calMetricsTsv
+
+    visMetricsTsv[fa:fa-file-csv vis_metrics.tsv ]
+    class visMetricsTsv result
+    visMetricsJson --> visMetricsTsv
+
+    imgMetricsTsv[fa:fa-file-csv img_metrics.tsv ]
+    class imgMetricsTsv result
+    psMetricsDat --> psMetricsTsv
+
+    psMetricsTsv[fa:fa-file-csv ps_metrics.tsv ]
+    class psMetricsTsv result
+    imgMetricsJson --> imgMetricsTsv
+  end
+
+  wscleanDirty[[fa:fa-cog wscleanDirty ]]
+
+  imgQA[[fa:fa-gem imgQA ]]
+  plotSolutions[[fa:fa-gem plotSolutions ]]
 ```
 
 ## Components
 
+main tasks:
+
 - obsid → **`ensureRaw`** → obsid, metafits, \*gpufits
-  - if obsid raw not stored, schedule ASVO download job with `giant-squid`, wait,
+  - if obsid raw not stored, schedule ASVO download job to Accacia with
+    [Giant Squid](github.com/mwaTelescope/giant-squid), wait,
     download with `wget`, untar with `tar`
   - ASVO wait times can be between a few minutes and a few days, so job will
     wait with ASVO socket open for an hour, then exponential backoff for $2^a$
     hours for attempt number $a$, up to 5 attempts
   - store: `${obsid}/raw`
   - resources: mem
-- obsid, metafits, \*gpufits → **`ensurePrep`** → obsid, prepUVFits, \*mwaf, log
+- obsid, metafits, \*gpufits → **`ensurePrep`** → obsid, prepUVFits, \*mwaf, birliLog
   - if prepUVFits for obsid not stored, preprocess and flag with `birli`
   - store: `${obsid}/prep`
   - resources: mem, cpu
-- obsid, metafits, prepUVFits, dicalArgs → **`ensureCalSol`** → obsid, \*calSol, \*log
+- obsid, metafits, mwaf → **`flagQA`** → obsid, occupancy
+  - get total flag occupancy, and occupancy for each coarse channel
+  - reject obs flag occupancy is above threshold
+- obsid, metafits, prepUVFits, dicalArgs → **`ensureCalSol`** → obsid, \*calSol, \*dicalLog
   - if calSols not stored, `hyperdrive di-calibrate` with dicalArgs
   - store: `${obsid}/cal${params.cal_suffix}`
   - resources: mem, gpu
-- obsid, metafits, prepUVFits, calSol, visName, applyArg → **`ensureCalVis`** → obsid, calUVFits, log
+- obsid, metafits, prepUVFits, calSol, visName, applyArg → **`ensureCalVis`** → obsid, calUVFits, applyLog
   - if calUVFits for (obsid × visName) not stored, `hyperdrive solutions-apply` with applyArg
   - store: `${obsid}/cal${params.cal_suffix}`
   - resources: mem, cpu
-- obsid, metafits, mwaf → **`flagQA`** → obsid, occupancy
-- obsid, name, calUVFits → **`visQA`** → obsid, visMetrics
-- obsid, name, metafits, calSol → **`calQA`** → obsid, calMetricsXJson, calMetricsYJson
-- obsid, name, metafits, calSol → **`plotSolutions`** → obsid, phasesPng, ampsPng
 - obsid, name, metafits, calUVFits → **`wscleanDirty`** → obsid, imgXXDirty, imgYYDirty, imgVDirty
-- obsid, name, calUVFits → **`psMetrics`** → obsid, psMetricsDat
-- obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** → imgMetricsJson
-- obsid, uvfits → **`visShape`** → obsid, shapeTsv
-  - dump the number of timesteps, channels and baselines from the uvfits
+  - dirty images of stokes XX,YY,V via [wsclean](https://gitlab.com/aroffringa/wsclean)
+
+qa tasks:
+
+- obsid, metafits → **`metafits`** → obsid, metafitsJson
+  - get total flag occupancy, and occupancy for each coarse channel
+  - reject obs flag occupancy is above threshold
+- obsid, prepUVfits, birliLog → **`prepStats`** → obsid, prepStatsJson
+  - from prep uvfits: count timesteps, channels, baselines
+  - from birli log: collect
   - store: `${obsid}/prep`
+- obsid, name, metafits, calSol → **`calQA`** → obsid, calMetricsXJson, calMetricsYJson
+  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
+  - needs a unique name for each calibration
+- obsid, name, metafits, calSol → **`plotSolutions`** → obsid, phasesPng, ampsPng
+  - plot calibration solution gains,phases with `hyperdrive solutions-plot`
+- obsid, name, calUVFits → **`visQA`** → obsid, visMetrics
+  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_visqa.py`
+  - needs a unique name for each vis
+- obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** → imgMetricsJson
+  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
+  - needs a unique name for each image
+- obsid, name, calUVFits → **`psMetrics`** → obsid, psMetricsDat
+  - power spectrum metrics via [chips](https://github.com/cathryntrott/chips) `src/ps_power_metrics.c`
 
 ## Output Directory Structure:
 
 - `${params.outdir}/` (e.g. `/data/curtin_mwaeor/data/`)
   - `${obsid}/`
-    - `raw/` - metafits, gpufits
-    - `prep/` - preprocessed uvfits, mwaf, birli log
-    - `cal${params.cal_suffix}/` - calibrated uvfits, solutions
-    -
+    - `raw/` - raw gpubox fits, metafits, metafits json
+    - `prep/` - preprocessed birli vis uvfits (weights encode flags), flag mwaf, birli log,
+      preprocessing stats json
+    - `cal${params.cal_suffix}/` - calibrated vis uvfits, di-cal solution fits, hyperdrive di-cal,
+      apply log
+    - `img/` - wscleaned dirty XX,YY,V image fits
+    - `flag_qa/` - flag occupancy json
+    - `cal_qa/` - calibration metrics json, hyperdrive solution amp,phase plot png
+    - `vis_qa/` - visibility metrics json
+    - `img_qa/` - image metrics json
+    - `ps_metrics/` - power spectrum metrics dat, log
+- `${projectDir}/` (e.g. `/data/curtin_mwaeor/src/MWAEoR-Pipeline/`)
+  - `results/` - output files for spreadsheet
+    - `metafits_stats.tsv` - info from metafits
+    - `prep_stats.tsv` -
 
 ## Configuration
 
@@ -161,32 +261,101 @@ obsid1
 obsid2
 ```
 
-populate `dical_args.csv`:
+populate `dical_args.csv` as `dical_name,dical_args`, e.g. :
 
 ```
-dical_name,dical_args
+30l_src4k,--uvw-min 30l -n 4000
+50l_src4k,--uvw-min 50l -n 4000
 ```
 
-populate `apply_args.csv`:
+populate `apply_args.csv` as `dical_name,apply_name,apply_args`:
 
 ```
-dical_name,apply_name,apply_args
+30l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
+50l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
+30l_src4k,4s_80kHz,--time-average 4s --freq-average 80kHz
 ```
 
 all other config is in `nextflow.config`. See: <https://www.nextflow.io/docs/latest/config.html>
 
-parameters can also be specified in the newflow command line too.
+parameters can also be specified in the newflow command line for each run too. e.g. set `params.obsids_path` with `--obsids_path=...`
 
 ## usage
 
+load modules - conflicts with singularity for dumb Java reasons.
+
 ```
+module unload singularity
 module load nextflow
+```
+
+run everything (use `obsids.csv` by default)
+
+```
 nextflow run main.nf -profile dug -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY
 ```
 
-### Handy commands
+run only a subset of obsids:
 
-## get all lines matching mattern from all scripts executed recently
+```
+nextflow run main.nf -profile dug -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY \
+  --obsids_path=obsids-1090X.csv
+```
+
+## Handy DuG commands
+
+### get an interactive session with gpus
+
+```bash
+salloc --partition=curtin_mwaeor --constraint=v100 --time=1:00:00
+srun --pty bash
+```
+
+### run hyperdrive di-cal
+
+needs GPU, see above
+
+```bash
+module load cuda/11.3.1
+module load gcc-rt/9.2.0
+export HYPERDRIVE_CUDA_COMPUTE=... # 80 for a100s, 70 for v100s
+export MWA_BEAM_FILE="/data/curtin_mwaeor/data/mwa_full_embedded_element_pattern.h5"
+export CUDA_VISIBLE_DEVICES=... # optional, restrict CUDA devices.
+export obsid=...
+export cal_name=... # optional, e.g. "30l_src4k", "50l_src4k"
+export apply_args=... # optional, e.g. "--uvw-min 30l -n 4000", "-v"
+export sourcelist="/data/curtin_mwaeor/data/srclist_pumav3_EoR0LoBESv2_fixedEoR1pietro+ForA_phase1+2.yaml"
+cd /data/curtin_mwaeor/data/${obsid}/
+/usr/bin/time /data/curtin_mwaeor/sw/bin/hyperdrive di-calibrate ${cal_args} \
+  --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
+  --beam "${MWA_BEAM_FILE}" \
+  --source-list "${sourcelist}" \
+  --outputs "hyp_soln_${obsid}_${cal_name}.fits" \
+  | tee hyp_di-cal_${obsid}_${cal_name}_test.log
+```
+
+### run hyperdrive apply solutions
+
+```bash
+module load gcc-rt/9.2.0
+export obsid=...
+export cal_name=... # either "30l_src4k" or "50l_src4k"
+export apply_args=... # optional, e.g. "--time-average 16s --freq-average 160kHz", "-v"
+cd /data/curtin_mwaeor/data/${obsid}/
+/usr/bin/time /data/curtin_mwaeor/sw/bin/hyperdrive solutions-apply ${apply_args} \
+        --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
+        --solutions "cal/hyp_soln_${obsid}_${cal_name}.fits" \
+        --outputs "hyp_${obsid}_${cal_name}_test.uvfits" | tee "hyp_${obsid}_${cal_name}_test.log"
+```
+
+### get times of jobs for a run
+
+```bash
+export run="elegant_euclid"
+nextflow log $run -F 'process=="calQA"' -f workdir,exit,status,process,duration
+```
+
+### get all lines matching pattern from all scripts executed recently
 
 ```bash
 export process="metafitsStats"
@@ -196,14 +365,16 @@ echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[
 nextflow log -after $first_run -F 'process=="metafitsStats"&&exit==0' -t template.md
 ```
 
-## Updating singularity images
+### Updating singularity images
 
-e.g. Birli
+e.g. Birli or mwa_qa
 
 ```bash
 module load singularity
-export container="birli"
-export url="docker://mwatelescope/${container}:latest"
+# export container="birli"
+export container="mwa_qa"
+# export url="docker://mwatelescope/${container}:latest"
+export url="docker://d3vnull0/${container}:latest"
 cd /data/curtin_mwaeor/sw/singularity/
 if [ ! -d $container ]; then mkdir $container; fi
 singularity pull --force --dir $container "$url"
@@ -211,31 +382,20 @@ singularity pull --force --dir $container "$url"
 
 optional: update `profiles.dug.params.birli` in `nextflow.config`
 
-# Cancel all failed jobs
+### Cancel all failed jobs
 
 ```bash
 squeue --states SE --format %A -h | sort | xargs scancel
 ```
 
-## get disk usage
+### get disk usage
 
 ```bash
 export stage="raw" # or prep, cal
 find /data/curtin_mwaeor/data -type d -name "${stage}" | xargs du --summarize -h | tee "du_${stage}.tsv"
 ```
 
-## dump metafits
-
-```bash
-module load python/3.9.7
-for obsid in ... ; do \
-  python /data/curtin_mwaeor/src/Birli/tests/data/dump_metafits.py \
-    /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits \
-    | tee /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits.txt
-done
-```
-
-## dump gpufits
+### dump gpufits
 
 for legacy: `corr_type="MWA_ORD"`
 for mwax: `corr_type="MWAX"`
