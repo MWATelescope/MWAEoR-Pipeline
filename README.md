@@ -23,12 +23,12 @@ graph TD;
       %% class metafitsJson partial
 
       %% ensureRaw
-      ensureRaw[[fa:fa-cog ensureRaw ]]
+      ensureRaw[["fa:fa-cog ensureRaw "]]
       obsids --> ensureRaw
       ensureRaw --> metafits
       ensureRaw --> gpufits
 
-      %% metafitsStats[[fa:fa-cog metafitsStats ]]
+      %% metafitsStats[["fa:fa-cog metafitsStats "]]
       %% metafits --> metafitsStats
       %% metafitsStats --> metafitsJson
     end
@@ -42,14 +42,14 @@ graph TD;
       %% prepStatsJson[fa:fa-file-code prep_stats.json ]
       %% class prepStatsJson partial
 
-      ensurePrep[[fa:fa-cog ensurePrep ]]
-      metafits --> ensurePrep
-      gpufits --> ensurePrep
-      ensurePrep --> prepUVFits
-      ensurePrep --> flags
-      %% ensurePrep --> prepLog
+      birliPrep[["fa:fa-cog birliPrep "]]
+      metafits --> birliPrep
+      gpufits --> birliPrep
+      birliPrep --> prepUVFits
+      birliPrep --> flags
+      %% birliPrep --> prepLog
 
-      flagQA[[fa:fa-gem flagQA ]]
+      flagQA[["fa:fa-gem flagQA "]]
       %% metafits --> flagQA;
       flags --> flagQA;
       flagQA --> occupancyJson;
@@ -62,30 +62,38 @@ graph TD;
 
 
     subgraph cal
-      calSol[fa:fa-file cal sol ]
+      calSol[fa:fa-file cal solutions ]
       calUVFits[fa:fa-file cal uvfits ]
+      calMS[fa:fa-file cal ms ]
 
-      ensureCalSol[[fa:fa-cog ensureCalSol ]]
-      flagGate --"obs pass"--> ensureCalSol
-      %% prepUVFits --> ensureCalSol
-      %% metafits --> ensureCalSol
-      dicalArgs --> ensureCalSol
-      ensureCalSol --> calSol
+      hypCalSol[["fa:fa-cog hypCalSol "]]
+      flagGate --"obs pass"--> hypCalSol
+      %% prepUVFits --> hypCalSol
+      %% metafits --> hypCalSol
+      dicalArgs --> hypCalSol
+      hypCalSol --> calSol
 
-      ensureCalVis[[fa:fa-cog ensureCalVis ]]
-      calSol --> ensureCalVis
-      prepUVFits --> ensureCalVis
-      %% metafits --> ensureCalVis
-      applyArgs --> ensureCalVis
-      ensureCalVis --> calUVFits
+      hypApplyUV[["fa:fa-cog hypApplyUV "]]
+      calSol --> hypApplyUV
+      prepUVFits --> hypApplyUV
+      %% metafits --> hypApplyUV
+      applyArgs --> hypApplyUV
+      hypApplyUV --> calUVFits
+
+      hypApplyMS[["fa:fa-cog hypApplyMS "]]
+      calSol --> hypApplyMS
+      prepUVFits --> hypApplyMS
+      %% metafits --> hypApplyMS
+      applyArgs --> hypApplyMS
+      hypApplyMS --> calMS
     end
 
     subgraph img
       imgDirty["fa:fa-file-image image-{XX,YY,V}-dirty.fits "]
       %% imgDirtyYY[fa:fa-file-image image-YY-dirty.fits ]
       %% imgDirtyV[fa:fa-file-image image-V-dirty.fits ]
-      %% wscleanDirty
-      calUVFits --> wscleanDirty
+      wscleanDirty[["fa:fa-cog wscleanDirty "]]
+      calMS --> wscleanDirty
       %% metafits --> wscleanDirty
       wscleanDirty --> imgDirty
       %% wscleanDirty --> imgDirtyYY
@@ -93,7 +101,7 @@ graph TD;
     end
 
     subgraph cal_qa
-      calQA[[fa:fa-gem calQA ]]
+      calQA[["fa:fa-gem calQA "]]
       calMetricsJson["fa:fa-file cal_metrics_{X,Y}.json "]
       class calMetricsJson partial
       %% calMetricsXJson[fa:fa-file cal_metrics_x.json ]
@@ -103,6 +111,7 @@ graph TD;
       calQA --> calMetricsJson
       %% calQA --> calMetricsYJson
 
+      plotSolutions[["fa:fa-gem plotSolutions "]]
       plotSol["fa:fa-file-image plot_{phases,amps}.png "]
       %% plotPhases[fa:fa-file-image plot_phases.png ]
       %% plotAmps[fa:fa-file-image plot_amps.png ]
@@ -114,7 +123,7 @@ graph TD;
     end
 
     subgraph vis_qa
-      visQA[[fa:fa-gem visQA ]]
+      visQA[["fa:fa-gem visQA "]]
       visMetricsJson[fa:fa-file vis_metrics.json ]
       class visMetricsJson partial
       calUVFits --> visQA
@@ -122,7 +131,7 @@ graph TD;
     end
 
     subgraph ps_metrics
-      psMetrics[[fa:fa-gem ps_metrics ]]
+      psMetrics[["fa:fa-gem ps_metrics "]]
       calUVFits --> psMetrics
       psMetrics --> psMetricsDat
       psMetricsDat[fa:fa-file-csv ps_metrics.dat ]
@@ -133,6 +142,7 @@ graph TD;
     subgraph img_qa
       imgMetricsJson[fa:fa-file img_metrics.json ]
       class imgMetricsJson partial
+      imgQA[["fa:fa-gem imgQA "]]
       imgDirty --> imgQA
       %% imgDirtyYY --> imgQA
       %% imgDirtyV --> imgQA
@@ -170,11 +180,6 @@ graph TD;
     class psMetricsTsv result
     imgMetricsJson --> imgMetricsTsv
   end
-
-  wscleanDirty[[fa:fa-cog wscleanDirty ]]
-
-  imgQA[[fa:fa-gem imgQA ]]
-  plotSolutions[[fa:fa-gem plotSolutions ]]
 ```
 
 ## Components
@@ -190,22 +195,22 @@ main tasks:
     hours for attempt number $a$, up to 5 attempts
   - store: `${obsid}/raw`
   - resources: mem
-- obsid, metafits, \*gpufits → **`ensurePrep`** → obsid, prepUVFits, \*mwaf, birliLog
+- metafits, \*gpufits → **`birliPrep`** → prepUVFits, \*mwaf, birliLog
   - if prepUVFits for obsid not stored, preprocess and flag with `birli`
   - store: `${obsid}/prep`
   - resources: mem, cpu
-- obsid, metafits, mwaf → **`flagQA`** → obsid, occupancy
+- metafits, mwaf → **`flagQA`** → occupancy
   - get total flag occupancy, and occupancy for each coarse channel
   - reject obs flag occupancy is above threshold
-- obsid, metafits, prepUVFits, dicalArgs → **`ensureCalSol`** → obsid, \*calSol, \*dicalLog
+- metafits, prepUVFits, dicalArgs → **`hypCalSol`** → \*calSol, \*dicalLog
   - if calSols not stored, `hyperdrive di-calibrate` with dicalArgs
   - store: `${obsid}/cal${params.cal_suffix}`
   - resources: mem, gpu
-- obsid, metafits, prepUVFits, calSol, visName, applyArg → **`ensureCalVis`** → obsid, calUVFits, applyLog
+- metafits, prepUVFits, calSol, visName, applyArg → **`hypApplyUV`** → calUVFits, applyLog
   - if calUVFits for (obsid × visName) not stored, `hyperdrive solutions-apply` with applyArg
   - store: `${obsid}/cal${params.cal_suffix}`
   - resources: mem, cpu
-- obsid, name, metafits, calUVFits → **`wscleanDirty`** → obsid, imgXXDirty, imgYYDirty, imgVDirty
+- name, metafits, calUVFits → **`wscleanDirty`** → img{XX,YY,V}Dirty
   - dirty images of stokes XX,YY,V via [wsclean](https://gitlab.com/aroffringa/wsclean)
 
 qa tasks:

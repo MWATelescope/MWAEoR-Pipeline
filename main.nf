@@ -142,7 +142,7 @@ process metafitsStats {
 }
 
 // Ensure preprocessed observation is present, or preprocess raw with Birli
-process ensurePrep {
+process birliPrep {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
     output:
@@ -298,7 +298,7 @@ process flagQA {
 }
 
 // ensure calibration solutions are present, or calibrate prep with hyperdrive
-process ensureCalSol {
+process hypCalSol {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_args.csv")
     output:
@@ -357,8 +357,8 @@ process ensureCalSol {
     """
 }
 
-// ensure calibrated vis are present, or apply calsols to prep with hyperdrive
-process ensureCalVis {
+// ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
+process hypApplyUV {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
         val(cal_name), val(apply_name), val(apply_args)
@@ -378,13 +378,50 @@ process ensureCalVis {
 
     script:
     """
-
-    # hyperdrive solutions apply
+    # hyperdrive solutions apply uvfits
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
         --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
         --outputs "hyp_${obsid}_${cal_name}_${apply_name}.uvfits" \
         | tee hyp_apply_${cal_name}_${apply_name}.log
+
+    # print out important info from log
+    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    """
+    // ms:
+    // ${params.hyperdrive} solutions-apply \${apply_args} \
+    //   --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
+    //   zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
+}
+
+// ensure calibrated ms are present, or apply calsols to prep uvfits with hyperdrive
+process hypApplyMS {
+    input:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
+        val(cal_name), val(apply_name), val(apply_args)
+    output:
+    tuple val(obsid), path("hyp_${obsid}_${cal_name}_${apply_name}.ms"), path("hyp_apply_${cal_name}_${apply_name}_ms.log")
+
+    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+    // storeDir "/data/curtin_mwaeor/FRB_hopper/"
+
+    // TODO: figure out why this keeps failing
+    errorStrategy 'ignore'
+
+    // label jobs that need a bigger gpu allocation
+    label "cpu"
+
+    module "gcc-rt/9.2.0"
+    stageInMode "copy"
+
+    script:
+    """
+    # hyperdrive solutions apply ms
+    ${params.hyperdrive} solutions-apply ${apply_args} \
+        --data "${obsid}.metafits" "${obsid}.uvfits" \
+        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
+        --outputs "hyp_${obsid}_${cal_name}_${apply_name}.ms" \
+        | tee hyp_apply_${cal_name}_${apply_name}_ms.log
 
     # print out important info from log
     grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
@@ -428,9 +465,9 @@ process visQA {
 // QA tasks that can be run on each calibration parameter set
 process calQA {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_soln_*.fits
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("soln.fits"), val(pol)
     output:
-    tuple val(obsid), path("${name}_{X,Y}.json")
+    tuple val(obsid), path("${name}_${pol}.json")
 
     storeDir "$params.outdir/${obsid}/cal_qa"
 
@@ -448,11 +485,8 @@ process calQA {
     script:
     """
     set -ex
-    ls -al
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_calqa.py *.fits *.metafits X --out "${name}_X.json"
-    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_calqa.py *.fits *.metafits Y --out "${name}_Y.json"
+        run_calqa.py soln.fits ${obsid}.metafits ${pol} --out "${name}_${pol}.json"
     """
 }
 
@@ -477,7 +511,7 @@ process plotSolutions {
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("*") // <- hyp_*.uvfits
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("vis.ms")
     output:
     tuple val(obsid), val(name), path("wsclean_${name}*-MFS-{XX,YY,V}-dirty.fits")
 
@@ -496,12 +530,12 @@ process wscleanDirty {
     script:
     """
     set -eux
-    export uvfits="\$(ls -1 *.uvfits | head -1)"
+    # export uvfits="\$(ls -1 *.uvfits | head -1)"
     # convert uvfits to ms
-    ${params.casa} -c "importuvfits('\${uvfits}', 'vis.ms')"
+    # \${params.casa} -c "importuvfits('\${uvfits}', 'vis.ms')"
     # fix mwa ms
-    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.cotter_sif} \
-        fixmwams vis.ms ${obsid}.metafits
+    # singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home \${params.cotter_sif} \
+    #     fixmwams vis.ms \${obsid}.metafits
     # imaging
     ${params.wsclean} \
         -weight briggs -1.0 \
@@ -514,44 +548,6 @@ process wscleanDirty {
         vis.ms
     """
 }
-
-// create source list from deconvolved image of stokes I
-// process wscleanSources {
-//     maxRetries 1
-//     // - shallow deconvolution, 1000 iter just enough for removing sidelobes
-//     // - channels: need mfs
-//     storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
-//     input:
-//     tuple val(obsid), val(name), path("*") // *.ms.zip
-
-//     output:
-//     tuple val(obsid), val(name), path("wscleanSources_${name}*-I-image.fits"), path("wscleanSources_${name}*-sources.txt")
-
-//     // label jobs that need a bigger cpu allocation
-//     label "cpu"
-//     label "img"
-
-//     script:
-//     """
-//     unzip *.ms.zip
-//     export name="\$(basename *.ms)"
-//     name="\${name%.*}"
-//     # todo: idg?
-//     ${params.wsclean} \
-//         -mgain 0.95 -weight briggs -1.0 -multiscale \
-//         -name wscleanSources_\${name} \
-//         -size ${params.img_size} ${params.img_size} \
-//         -scale ${params.img_scale} \
-//         -niter ${params.img_niter} \
-//         -pol i \
-//         -auto-threshold ${params.img_auto_threshold} \
-//         -auto-mask ${params.img_auto_mask} \
-//         -abs-mem ${params.img_mem} \
-//         -channels-out ${params.img_channels_out} \
-//         -save-source-list \
-//         *.ms
-//     """
-// }
 
 // power spectrum metrics via chips
 process psMetrics {
@@ -619,7 +615,7 @@ process imgQA {
 import groovy.json.JsonSlurper
 def jslurp = new JsonSlurper()
 
-// display a long list of ints
+// display a long list of ints, replace bursts of consecutive numbers with ranges
 def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
 def displayInts = { l ->
     def sb, start, end
@@ -648,6 +644,7 @@ workflow {
         ].join("\t") }
         .collectFile(
             name: "raw_stats.tsv", newLine: true, sort: true,
+            // "seed" is the header of the tsv file
             seed: ["OBS","META SIZE","N GPUBOX","GPUBOX SIZE"].join("\t"),
             storeDir: "${projectDir}/results/"
         )
@@ -680,24 +677,25 @@ workflow {
         .collectFile(
             name: "metafits_stats.tsv", newLine: true, sort: true,
             seed: [
-                "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS","N FLAG INPS","FLAG INPS"
+                "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS", "N INPS",
+                "N FLAG INPS","FLAG INPS"
             ].join("\t"),
             storeDir: "${projectDir}/results/",
         )
         | view
 
     // ensure preprocessed files have been generated from raw files
-    ensurePrep(ensureRaw.out)
+    birliPrep(ensureRaw.out)
 
     // get shape of preprocessed visibilities
-    ensurePrep.out
+    birliPrep.out
         .map { it -> it[0..1] }
         | prepStats
 
     // collect prep stats
     prepStats.out
         // join with uvfits, mwaf and birli log
-        .join(ensurePrep.out)
+        .join(birliPrep.out)
         // form row of tsv from json fields we care about
         .map { it ->
             def stats = jslurp.parse(it[1])
@@ -739,8 +737,8 @@ workflow {
     ensureRaw.out
         // get the obsid, metafits from ensureRaw
         .map { it -> it[0..1] }
-        // join with the mwaf from ensurePrep
-        .join(ensurePrep.out).map { it -> it[0..1] + [it[3]] }
+        // join with the mwaf from birliPrep
+        .join(birliPrep.out).map { it -> it[0..1] + [it[3]] }
         | flagQA
 
     // export flagQA results
@@ -779,39 +777,41 @@ workflow {
         .fromPath(params.apply_args_path)
         .splitCsv(header: false)
 
-    // calibration solutions for each obsid that passes QA
+    // calibration solutions for each obsid that passes flagQA:
+    // - do not calibrate obs where occupancy > params.flag_occupancy_threshold
     ensureRaw.out
         // get obsid, metafits from ensureRaw
         .map { it -> it[0..1] }
-        // join with uvfits from ensurePrep
-        .join(ensurePrep.out).map { it -> it[0..2] }
+        // join with uvfits from birliPrep
+        .join(birliPrep.out).map { it -> it[0..2] }
         // filter out obsids which exceed flag occupancy threshold
-        .join(
-            flagQA.out
+        .join(flagQA.out
             .map { it -> [it[0], jslurp.parse(it[1]).get('total_occupancy')] }
             .filter(it -> it[1] < params.flag_occupancy_threshold)
             .map { it -> [it[0]] }
         )
         // combine with hyperdrive di-cal args file
         .combine(dical_args)
-        | ensureCalSol
+        | hypCalSol
 
-    // calibration QA
+    // calibration QA and plot solutions
     ensureRaw.out
         // get obsid, metafits from ensureRaw
         .map { it -> it[0..1] }
         // join with hyp_soln from ensureCal
-        .join(ensureCalSol.out).map( it -> it[0..2])
+        .join(hypCalSol.out).map{ it -> it[0..2] }
         // transpose to run once for each calibration solution
         .transpose()
-        .map(it -> [
-            it[0],
+        .map { it ->
             // give each calibration a name from basename of uvfits
-            it[2].getBaseName(),
-            it[1],
-            it[2]
-        ])
-        | (calQA & plotSolutions)
+            def cal_name = it[2].getBaseName()
+            [it[0], cal_name, it[1], it[2]]
+        }
+        .tap { plotSolutions }
+        // now for each pol in X:Y, run calQA
+        .combine(channel.from([[["X", "Y"]]]).collect())
+        .transpose()
+        | calQA
 
     // collect calQA results as .tsv
     calQA.out
@@ -849,17 +849,17 @@ workflow {
     ensureRaw.out
         // get obsid, metafits from ensureRaw
         .map { it -> it[0..1] }
-        // join with uvfits from ensurePrep
-        .join(ensurePrep.out).map { it -> it[0..2] }
-        // join with hyp_solns from ensureCalSol
-        .join(ensureCalSol.out).map { it -> it[0..3] }
+        // join with uvfits from birliPrep
+        .join(birliPrep.out).map { it -> it[0..2] }
+        // join with hyp_solns from hypCalSol
+        .join(hypCalSol.out).map { it -> it[0..3] }
         // combine with hyperdrive apply solution args file
         .combine(apply_args)
-        | ensureCalVis
+        | (hypApplyUV & hypApplyMS)
 
     // vis QA and ps_metrics
-    ensureCalVis.out
-        // get obsid, cal uvfits from ensureCalVis
+    hypApplyUV.out
+        // get obsid, cal uvfits from hypApplyUV
         .map(it -> [
             it[0],
             // give each vis a name from basename of uvfits
@@ -899,15 +899,13 @@ workflow {
     ensureRaw.out \
         // get obsid, metafits from ensureRaw
         .map { it -> it[0..1] }
-        // with uvfits from ensureCalVis
-        .join(ensureCalVis.out)
-        .map(it -> [
-            it[0],
+        // with ms from hypApplyMS
+        .join(hypApplyMS.out)
+        .map { it ->
             // give each image a name from basename of uvfits
-            it[2].getBaseName(),
-            it[1],
-            it[2]
-        ])
+            def img_name = it[2].getBaseName();
+            [it[0], img_name, it[1], it[2]]
+        }
         | wscleanDirty
 
     // imgQA for all groups of images
@@ -916,7 +914,7 @@ workflow {
         .flatMap { it -> it[2]
             .collect { path -> [(path.getName() =~ /^(.*)-\w+-dirty.fits$/)[0][1], path] }
             .groupBy { tup -> tup[0] }
-            .collect { entry -> [it[0], entry.key, entry.value.collect(item -> item[1])] }
+            .collect { entry -> [it[0], entry.key, entry.value.collect{ tup -> tup[1] }] }
         }
         | imgQA
 
@@ -931,24 +929,14 @@ workflow {
             // def stats = jslurp.parse(it[1])
             // TODO: fix nasty hack to deal with NaNs
             def stats = jslurp.parseText(it[1].getText().replace("NaN", '"NaN"'))
-            def xx = stats.get("XX",[:])
-            def yy = stats.get("YY",[:])
-            def v = stats.get("V",[:])
-            def v_xx = stats.get("V_XX",[:])
+            def (xx, yy, v, v_xx) = ["XX", "YY", "V", "V_XX"].collect { k -> stats.get(k,[:]) }
             [
                 it[0],
                 img_name,
-                xx.get("RMS_ALL"),
-                xx.get("RMS_BOX"),
-                xx.get("PKS0023_026"),
-                yy.get("RMS_ALL"),
-                yy.get("RMS_BOX"),
-                yy.get("PKS0023_026"),
-                v.get("RMS_ALL"),
-                v.get("RMS_BOX"),
-                v.get("PKS0023_026"),
-                v_xx.get("RMS_RATIO_ALL"),
-                v_xx.get("RMS_RATIO_BOX")
+                xx.get("RMS_ALL"), xx.get("RMS_BOX"), xx.get("PKS0023_026"),
+                yy.get("RMS_ALL"), yy.get("RMS_BOX"), yy.get("PKS0023_026"),
+                v.get("RMS_ALL"), v.get("RMS_BOX"), v.get("PKS0023_026"),
+                v_xx.get("RMS_RATIO_ALL"), v_xx.get("RMS_RATIO_BOX")
             ].join("\t")
         }
         .collectFile(
