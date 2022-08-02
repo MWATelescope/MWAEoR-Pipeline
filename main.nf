@@ -9,7 +9,12 @@ process ensureRaw {
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
 
     // persist results in outdir, process will be skipped if files already present.
-    storeDir "$params.outdir/$obsid/raw"
+    storeDir "${params.outdir}/$obsid/raw"
+    // TODO: can't fit in scratch because this writes both tar and contents to disk
+    scratch false
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
@@ -26,8 +31,9 @@ process ensureRaw {
             1: "general or permission",
             11: "Resource temporarily unavailable"
         ][task.exitStatus] ?: "unknown"
-        println "retrying task ${task.hash} failed with code ${task.exitStatus}: ${retry_reason}"
-        sleep(Math.pow(2, task.attempt) * 60*60*1000 as long)
+        wait_hours = Math.pow(2, task.attempt)
+        println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
+        sleep(wait_hours * 60*60*1000 as long)
         return 'retry'
     }
 
@@ -48,66 +54,75 @@ process ensureRaw {
 
     function ensure_disk_space {
         local needed=\$1
-        while read -r avail; do
+        if read -r avail < <(df --output=avail . | tail -n 1); then
             avail_bytes=\$((\$avail * 1000))
             if [[ \$avail_bytes -lt \$needed ]]; then
                 echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail_bytes B"
                 exit 28  # No space left on device
             fi
-        done < <(df --output=avail . | tail -n 1)
+            return 0
+        fi
+        echo "Could not determine disk space in \$PWD"
+        exit 1
     }
 
     # download any ASVO jobs for the obsid that are ready
-    function get_first_ready_job {
+    function maybe_get_first_ready_job {
         # extract id url and size from ready download vis jobs
         ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
             | tee /dev/stderr \
             | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
             | tee ready.tsv
-        read -r jobid url size hash < ready.tsv
-        [ -z "\$size" ] && return 1
-        ensure_disk_space \$size || exit \$?
-        # giant-squid download --keep-zip --hash -v \$jobid 2>&1 | tee download.log
-        # if [ \${PIPESTATUS[0]} -ne 0 ]; then
-        #     echo "Download failed, see download.log"
-        #     exit 1
-        # fi
-        wget \$url -O \$jobid.tar --progress=dot:giga --wait=60 --random-wait
-        export wget_status=\$?
-        if [ \$wget_status -ne 0 ]; then
-            echo "Download failed. status=\$wget_status"
-            exit \$wget_status
+        if read -r jobid url size hash < ready.tsv; then
+            ensure_disk_space "\$size" || exit \$?
+            # giant-squid download --keep-zip --hash -v \$jobid 2>&1 | tee download.log
+            # if [ \${PIPESTATUS[0]} -ne 0 ]; then
+            #     echo "Download failed, see download.log"
+            #     exit 1
+            # fi
+            wget \$url -O \$jobid.tar --progress=dot:giga --wait=60 --random-wait
+            export wget_status=\$?
+            if [ \$wget_status -ne 0 ]; then
+                echo "Download failed. status=\$wget_status"
+                exit \$wget_status
+            fi
+            sha1=\$(sha1sum \$jobid.tar | cut -d' ' -f1)
+            if [ "\$sha1" != "\$hash" ]; then
+                echo "Download failed, hash mismatch"
+                exit 5  # Input/output error
+            fi
+            [ -d "${task.storeDir}" ] || mkdir -p "${task.storeDir}"
+            tar -xf \$jobid.tar
+            return \$?
         fi
-        sha1=\$(sha1sum \$jobid.tar | cut -d' ' -f1)
-        if [ "\$sha1" != "\$hash" ]; then
-            echo "Download failed, hash mismatch"
-            exit 5  # Input/output error
-        fi
-        [ -d "${task.storeDir}" ] || mkdir -p "${task.storeDir}"
-        tar -xf \$jobid.tar -C "${task.storeDir}"
-        return \$?
+        echo "no ready jobs"
+        return 1
     }
 
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w || true
 
     # download any ready jobs, exit if success, else suppress warning
-    get_first_ready_job && exit 0 || true
+    maybe_get_first_ready_job && exit 0 || true
 
     # extract id and state from pending download vis jobs
     ${params.giant_squid} list -j --types download_visibilities --states queued,processing -- $obsid \
         | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
         | tee pending.tsv
 
-    # for each pending job for the obsid, wait for completion and try downloading again
-    while read jobid state; do
+    # if pending jobs, wait for the first to complete and try downloading again
+    if read -r jobid state < pending.tsv; then
         echo "[obs:$obsid]: waiting until \$jobid with state \$state is Ready"
         ${params.giant_squid} wait -j -- \$jobid
         # a new job is ready, so try and get it
-        get_first_ready_job
+        maybe_get_first_ready_job
         exit \$?
-    done <pending.tsv
-    exit 1
+    fi
+
+    # show errors if no pending jobs
+    ${params.giant_squid} list -j --types download_visibilities --states error -- $obsid \
+    | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
+    | tee errors.tsv
     """
 }
 
@@ -118,7 +133,9 @@ process metafitsStats {
     tuple val(obsid), path("${obsid}.metafits.json")
 
     scratch false
-    storeDir "$params.outdir/${obsid}/raw"
+    storeDir "${params.outdir}/${obsid}/raw"
+
+    tag "${obsid}"
 
     // if this script returns failure, don't progress this vis
     errorStrategy 'ignore'
@@ -166,8 +183,9 @@ process birliPrep {
     output:
     tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
 
-    storeDir "$params.outdir/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep"
 
+    tag "${obsid}"
     // label jobs that need a bigger cpu allocation
     label "cpu"
 
@@ -176,19 +194,15 @@ process birliPrep {
     module "singularity"
 
     script:
+    flag_template = obsid as int > 1300000000 ? "${obsid}_ch%%%.mwaf" : "${obsid}_%%.mwaf"
     """
-    export flag_template="${obsid}_%%.mwaf"
-    if [ ${obsid} -gt 1300000000 ]; then
-        flag_template="${obsid}_ch%%%.mwaf"
-    fi
     ${params.birli} \
         -u "birli_${obsid}.uvfits" \
-        -f \$flag_template \
+        -f "${flag_template}" \
         -m "${obsid}.metafits" \
         --avg-time-res ${params.prep_time_res_s} \
         --avg-freq-res ${params.prep_freq_res_khz} \
         ${obsid}*.fits 2>&1 | tee birli_prep.log
-    echo task.hash=$task.hash >> birli_prep.log
     """
 }
 
@@ -200,7 +214,9 @@ process prepStats {
     tuple val(obsid), path("${obsid}_prep_stats.json")
 
     scratch false
-    storeDir "$params.outdir/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep"
+
+    tag "${obsid}"
 
     // if this script returns failure, don't progress this vis
     errorStrategy 'ignore'
@@ -214,7 +230,6 @@ process prepStats {
     script:
     """
     #!/usr/bin/env python
-    # task.hash=$task.hash
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -242,7 +257,9 @@ process flagQA {
     output:
     tuple val(obsid), path("${obsid}_occupancy.json")
 
-    storeDir "$params.outdir/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep"
+
+    tag "${obsid}"
 
     // if this script returns failure, don't progress this obs to calibration, just ignore
     errorStrategy 'ignore'
@@ -322,13 +339,13 @@ process hypCalSol {
     output:
     tuple val(obsid), path("hyp_soln_${obsid}_{30l_src4k,50l_src4k}.fits"), path("hyp_di-cal_${obsid}_*.log")
 
-    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
 
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
-
+    tag "${obsid}"
     // label jobs that need a bigger gpu allocation
     label "gpu"
+
+    errorStrategy 'ignore'
 
     module "cuda/11.3.1:gcc-rt/9.2.0"
     stageInMode "copy"
@@ -384,13 +401,12 @@ process hypApplyUV {
     tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.uvfits"), \
         path("hyp_apply_${vis_name}.log")
 
-    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
 
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
-
-    // label jobs that need a bigger gpu allocation
+    tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
+
+    errorStrategy 'ignore'
 
     module "gcc-rt/9.2.0"
     stageInMode "copy"
@@ -408,10 +424,6 @@ process hypApplyUV {
     # print out important info from log
     grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
     """
-    // ms:
-    // ${params.hyperdrive} solutions-apply \${apply_args} \
-    //   --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
-    //   zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
 }
 
 // ensure calibrated ms are present, or apply calsols to prep uvfits with hyperdrive
@@ -423,14 +435,13 @@ process hypApplyMS {
     tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), \
         path("hyp_apply_${vis_name}_ms.log")
 
-    storeDir "$params.outdir/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
-
-    // label jobs that need a bigger gpu allocation
+    tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
+
+    errorStrategy 'ignore'
 
     module "gcc-rt/9.2.0"
     stageInMode "copy"
@@ -448,10 +459,6 @@ process hypApplyMS {
     # print out important info from log
     grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
     """
-    // ms:
-    // ${params.hyperdrive} solutions-apply \${apply_args} \
-    //   --outputs "hyp_${obsid}_\${name}.uvfits" "hyp_${obsid}_\${name}.ms" \
-    //   zip -r "hyp_${obsid}_\${name}.ms.zip" "hyp_${obsid}_\${name}.ms"
 }
 
 // QA tasks that can be run on each visibility file.
@@ -461,9 +468,10 @@ process visQA {
     output:
     tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics.json")
 
-    storeDir "$params.outdir/${obsid}/vis_qa"
+    storeDir "${params.outdir}/${obsid}/vis_qa"
 
-    // TODO: figure out why this fails sometimes
+    tag "${obsid}.${name}"
+
     errorStrategy 'ignore'
 
     label 'cpu'
@@ -491,9 +499,10 @@ process calQA {
     output:
     tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}_X.json")
 
-    storeDir "$params.outdir/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa"
 
-    // TODO: figure out why this fails sometimes
+    tag "${obsid}.${name}"
+
     errorStrategy 'ignore'
     // maxRetries 1
 
@@ -518,11 +527,15 @@ process plotSolutions {
     output:
     tuple val(obsid), path("hyp_soln_${obsid}_${name}_{phases,amps}.png")
 
-    storeDir "$params.outdir/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa"
+
+    tag "${obsid}.${name}"
+
     errorStrategy 'ignore'
 
-    beforeScript 'sleep 1s; ls -al'
-    afterScript 'ls -al; sleep 1s'
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
     script:
     """
@@ -537,17 +550,20 @@ process wscleanDirty {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits")
 
-    storeDir "$params.outdir/${obsid}/img${params.img_suffix}"
+    storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
-
+    tag "${obsid}.${name}"
     label "cpu"
     label "img"
-    maxRetries 1
+
+    errorStrategy 'ignore'
 
     // this is necessary for singularity
     stageInMode "copy"
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
     script:
     """
@@ -573,15 +589,16 @@ process psMetrics {
     tuple val(obsid), val(name), path("output_metrics_hyp_${obsid}_${name}.dat"), \
         path("hyp_${obsid}_${name}.log")
 
-    storeDir "$params.outdir/${obsid}/ps_metrics"
+    storeDir "${params.outdir}/${obsid}/ps_metrics"
+
+    tag "${obsid}.${name}"
 
     errorStrategy 'ignore'
     stageInMode "copy"
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    beforeScript 'sleep 5s; ls -al'
-    afterScript 'ls -al; sleep 5s'
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
     module "cfitsio/3.470:gcc-rt/9.2.0"
 
@@ -605,19 +622,19 @@ process imgQA {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
 
-    storeDir "$params.outdir/${obsid}/img_qa"
+    storeDir "${params.outdir}/${obsid}/img_qa"
+
+    tag "${obsid}.${name}"
 
     // TODO: figure out why this keeps failing
     errorStrategy 'ignore'
 
     stageInMode "copy"
     module "singularity"
-    maxRetries 1
 
     // without this, nextflow checks for the output before fs has had time
     // to sync, causing it to think the job has failed.
-    beforeScript 'sleep 1s; ls -al'
-    afterScript 'ls -al; sleep 1s'
+    afterScript "sleep 20s; ls ${task.storeDir}"
 
     script:
     """
