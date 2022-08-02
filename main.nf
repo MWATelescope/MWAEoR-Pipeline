@@ -13,7 +13,23 @@ process ensureRaw {
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
-    errorStrategy { sleep(Math.pow(2, task.attempt) * 60*60*1000 as long); 'retry' }
+    errorStrategy {
+        failure_reason = [
+            5: "I/O error or hash mitch",
+            28: "No space left on device",
+        ][task.exitStatus]
+        if (failure_reason) {
+            println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
+            return 'ignore'
+        }
+        retry_reason = [
+            1: "general or permission",
+            11: "Resource temporarily unavailable"
+        ][task.exitStatus] ?: "unknown"
+        println "retrying task ${task.hash} failed with code ${task.exitStatus}: ${retry_reason}"
+        sleep(Math.pow(2, task.attempt) * 60*60*1000 as long)
+        return 'retry'
+    }
 
     script:
     """
@@ -36,7 +52,7 @@ process ensureRaw {
             avail_bytes=\$((\$avail * 1000))
             if [[ \$avail_bytes -lt \$needed ]]; then
                 echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail_bytes B"
-                exit 1
+                exit 28  # No space left on device
             fi
         done < <(df --output=avail . | tail -n 1)
     }
@@ -49,6 +65,7 @@ process ensureRaw {
             | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
             | tee ready.tsv
         read -r jobid url size hash < ready.tsv
+        [ -z "\$size" ] && return 1
         ensure_disk_space \$size || exit \$?
         # giant-squid download --keep-zip --hash -v \$jobid 2>&1 | tee download.log
         # if [ \${PIPESTATUS[0]} -ne 0 ]; then
@@ -56,28 +73,29 @@ process ensureRaw {
         #     exit 1
         # fi
         wget \$url -O \$jobid.tar --progress=dot:giga --wait=60 --random-wait
-        if [ \$? -ne 0 ]; then
-            echo "Download failed"
-            exit 1
+        export wget_status=\$?
+        if [ \$wget_status -ne 0 ]; then
+            echo "Download failed. status=\$wget_status"
+            exit \$wget_status
         fi
         sha1=\$(sha1sum \$jobid.tar | cut -d' ' -f1)
         if [ "\$sha1" != "\$hash" ]; then
             echo "Download failed, hash mismatch"
-            exit 1
+            exit 5  # Input/output error
         fi
         [ -d "${task.storeDir}" ] || mkdir -p "${task.storeDir}"
         tar -xf \$jobid.tar -C "${task.storeDir}"
         return \$?
     }
 
-    # download any ready jobs, exit if success, else try and submit a job,
-    # if it's already there this will fail, and we can suppress the
-    # warning, otherwise we can download and exit
-    get_first_ready_job && exit 0 || ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w \
-        && get_first_ready_job && exit 0 || true
+    # submit a job to ASVO, suppress failure if a job already exists.
+    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w || true
+
+    # download any ready jobs, exit if success, else suppress warning
+    get_first_ready_job && exit 0 || true
 
     # extract id and state from pending download vis jobs
-    ${params.giant_squid} list -j --types download_visibilities --states queued processing -- $obsid \
+    ${params.giant_squid} list -j --types download_visibilities --states queued,processing -- $obsid \
         | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
         | tee pending.tsv
 
