@@ -22,15 +22,15 @@ graph TD;
       %% metafitsJson[fa:fa-file-code metafits.json ]
       %% class metafitsJson partial
 
-      %% ensureRaw
-      ensureRaw[["fa:fa-cog ensureRaw "]]
-      obsids --> ensureRaw
-      ensureRaw --> metafits
-      ensureRaw --> gpufits
+      %% asvoRaw
+      asvoRaw[["fa:fa-cog asvoRaw "]]
+      obsids --> asvoRaw
+      asvoRaw --> metafits
+      asvoRaw --> gpufits
 
-      %% metafitsStats[["fa:fa-cog metafitsStats "]]
-      %% metafits --> metafitsStats
-      %% metafitsStats --> metafitsJson
+      %% metaStats[["fa:fa-cog metaStats "]]
+      %% metafits --> metaStats
+      %% metaStats --> metafitsJson
     end
 
     subgraph prep
@@ -151,9 +151,9 @@ graph TD;
   %% end
 
   subgraph results
-    %% metafitsStatsTsv[fa:fa-file-csv metafits_stats.tsv ]
-    %% class metafitsStatsTsv result
-    %% metafitsJson --> metafitsStatsTsv
+    %% metaStatsTsv[fa:fa-file-csv metafits_stats.tsv ]
+    %% class metaStatsTsv result
+    %% metafitsJson --> metaStatsTsv
 
     %% prepStatsTsv[fa:fa-file-csv prep_stats.tsv ]
     %% class prepStatsTsv result
@@ -186,7 +186,7 @@ graph TD;
 
 main tasks:
 
-- obsid → **`ensureRaw`** → obsid, metafits, \*gpufits
+- obsid → **`asvoRaw`** → obsid, metafits, \*gpufits
   - if obsid raw not stored, schedule ASVO download job to Accacia with
     [Giant Squid](github.com/mwaTelescope/giant-squid), wait,
     download with `wget`, untar with `tar`
@@ -215,9 +215,9 @@ main tasks:
 
 qa tasks:
 
-- obsid, metafits → **`metafits`** → obsid, metafitsJson
-  - get total flag occupancy, and occupancy for each coarse channel
-  - reject obs flag occupancy is above threshold
+- obsid, metafits → **`metaStats`** → obsid, metafitsJson
+  - get flagged inputs from metafits
+  - size of raw vis for missing hdu fraction
 - obsid, prepUVfits, birliLog → **`prepStats`** → obsid, prepStatsJson
   - from prep uvfits: count timesteps, channels, baselines
   - from birli log: collect
@@ -348,9 +348,9 @@ export cal_name=... # either "30l_src4k" or "50l_src4k"
 export apply_args=... # optional, e.g. "--time-average 16s --freq-average 160kHz", "-v"
 cd /data/curtin_mwaeor/data/${obsid}/
 /usr/bin/time /data/curtin_mwaeor/sw/bin/hyperdrive solutions-apply ${apply_args} \
-        --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
-        --solutions "cal/hyp_soln_${obsid}_${cal_name}.fits" \
-        --outputs "hyp_${obsid}_${cal_name}_test.uvfits" | tee "hyp_${obsid}_${cal_name}_test.log"
+  --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
+  --solutions "cal/hyp_soln_${obsid}_${cal_name}.fits" \
+  --outputs "hyp_${obsid}_${cal_name}_test.uvfits" | tee "hyp_${obsid}_${cal_name}_test.log"
 ```
 
 ### get times of jobs for a run
@@ -363,7 +363,7 @@ nextflow log $run -F 'process=="calQA"' -f workdir,exit,status,process,duration
 ### get all lines matching pattern from all scripts executed recently
 
 ```bash
-export process="metafitsStats"
+export process="metaStats"
 export first_run="$(nextflow log -q | head -n 1)"
 export first_run="scruffy_bhaskara"
 echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md

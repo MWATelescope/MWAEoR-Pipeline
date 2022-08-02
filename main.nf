@@ -2,7 +2,7 @@
 nextflow.enable.dsl=2
 
 // Ensure the raw visibility files are present, or download via ASVO
-process ensureRaw {
+process asvoRaw {
     input:
     val obsid
     output:
@@ -126,7 +126,7 @@ process ensureRaw {
     """
 }
 
-process metafitsStats {
+process metaStats {
     input:
     tuple val(obsid), path("${obsid}.metafits")
     output:
@@ -521,7 +521,7 @@ process calQA {
     """
 }
 
-process plotSolutions {
+process plotSols {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_soln_${obsid}_${name}.fits")
     output:
@@ -679,10 +679,10 @@ workflow raw {
         // channel of obs ids
         obsids
     main:
-        ensureRaw(obsids)
+        asvoRaw(obsids)
 
-        // collect disk usage stats from ensureRaw stage
-        ensureRaw.out
+        // collect disk usage stats from asvoRaw stage
+        asvoRaw.out
             // form row of tsv
             .map { def (obsid, metafits, gpuboxes) = it; [
                 obsid,
@@ -700,12 +700,12 @@ workflow raw {
             | view { [it, it.readLines().size()] }
 
         // analyse metafits stats
-        ensureRaw.out
+        asvoRaw.out
             .map { def (obsid, metafits) = it; [obsid, metafits] }
-            | metafitsStats
+            | metaStats
 
         // collect metafits stats
-        metafitsStats.out
+        metaStats.out
             // for row of tsv from metafits json fields we care about
             .map { def (obsid, json) = it;
                 def stats = jslurp.parse(json)
@@ -740,7 +740,7 @@ workflow raw {
 
     emit:
         // channel of all raw files: tuple(obsid, metafits, gpuboxes)
-        obsRawFiles = ensureRaw.out
+        obsRawFiles = asvoRaw.out
 }
 
 // ensure preprocessed uvfits and flags have been generated from raw files
@@ -882,7 +882,7 @@ workflow cal {
                 def name = soln.getBaseName().split('_')[3..-1].join('_')
                 [obsid, name, metafits, soln]
             }
-            | (plotSolutions & calQA)
+            | (plotSols & calQA)
 
         // collect calQA results as .tsv
         calQA.out
