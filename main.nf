@@ -658,329 +658,396 @@ def displayInts = { l ->
     (sb << displayRange(start, end))[0..-2].toString()
 }
 
+// collapse a list into its contiguous ranges
+def contigRanges(l) {
+    switch (l) {
+        case { it.size() == 0 }: return [];
+        case { it.size() == 1 }: return [(l[0]..l[0])]
+        default:
+            def sb, start, end
+            (sb, start, end) = [[], l[0], l[0]]
+            for (i in l.tail()) {
+                (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << (start..end), i, i]
+            }
+            return (sb << (start..end))[0..-1]
+    }
+}
+
+// ensure raw files are downloaded
+workflow raw {
+    take:
+        // channel of obs ids
+        obsids
+    main:
+        ensureRaw(obsids)
+
+        // collect disk usage stats from ensureRaw stage
+        ensureRaw.out
+            // form row of tsv
+            .map { def (obsid, metafits, gpuboxes) = it; [
+                obsid,
+                metafits.size(), // size of metafits [B]
+                gpuboxes.size(), // number of gpubox files
+                gpuboxes.collect(path -> path.size()).sum() // total gpubox size [B]
+            ].join("\t") }
+            .collectFile(
+                name: "raw_stats.tsv", newLine: true, sort: true,
+                // "seed" is the header of the tsv file
+                seed: ["OBS","META SIZE","N GPUBOX","GPUBOX SIZE"].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        // analyse metafits stats
+        ensureRaw.out
+            .map { def (obsid, metafits) = it; [obsid, metafits] }
+            | metafitsStats
+
+        // collect metafits stats
+        metafitsStats.out
+            // for row of tsv from metafits json fields we care about
+            .map { def (obsid, json) = it;
+                def stats = jslurp.parse(json)
+                // def row = [obsid]
+                // row += [
+                //     "DATE-OBS", "GRIDNUM", "CENTCHAN", "FINECHAN", "INTTIME",
+                //     "NSCANS", "NINPUTS"
+                // ].collect { stats.get(it) }
+                [
+                    obsid,
+                    stats."DATE-OBS",
+                    stats.GRIDNUM,
+                    stats.CENTCHAN,
+                    stats.FINECHAN,
+                    stats.INTTIME,
+                    stats.NSCANS,
+                    stats.NINPUTS,
+                    stats.FLAGGED_INPUTS?.size(), // number of flagged inputs
+                    stats.FLAGGED_INPUTS?.join('\t') // flagged input names
+                ].join("\t")
+            }
+            .collectFile(
+                name: "metafits_stats.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS", "N INPS",
+                    "N FLAG INPS","FLAG INPS"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/",
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+    emit:
+        // channel of all raw files: tuple(obsid, metafits, gpuboxes)
+        obsRawFiles = ensureRaw.out
+}
+
+// ensure preprocessed uvfits and flags have been generated from raw files
+workflow prep {
+    take:
+        // channel of raw files: tuple(obsid, metafits, gpuboxes)
+        obsRawFiles
+    main:
+        birliPrep(obsRawFiles)
+
+        // get info about preprocessing stage
+        birliPrep.out
+            .map { def (obsid, prep) = it; [obsid, prep] }
+            | prepStats
+
+        // collect prep stats
+        prepStats.out
+            // join with uvfits, mwaf and birli log
+            .join(birliPrep.out)
+            // form row of tsv from json fields we care about
+            .map { def (obsid, json, prepVis, prepMwafs, prepLog) = it;
+                def stats = jslurp.parse(json)
+                def missing_hdus = (
+                    prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/
+                ).collect { m -> [tstep:m[1], cchan:m[2]] }
+                // display a compressed version of missing hdus
+                def missing_timesteps_by_gpubox = missing_hdus
+                    .groupBy { m -> m.cchan }
+                    .collect { cchan, pairs ->
+                        [cchan, displayInts(pairs.collect {pair -> pair.tstep as int})].join(":")
+                    }
+                    .join("|");
+                [
+                    obsid,
+                    // prep stats json
+                    stats.num_chans,
+                    stats.num_times,
+                    stats.num_baselines,
+                    // disk usage
+                    prepVis.size(), // size of uvfits [B]
+                    prepMwafs.size(), // number of mwaf
+                    prepMwafs.collect(path -> path.size()).sum(), // total mwaf size [B]
+                    // parse birli log
+                    missing_hdus.size(),
+                    missing_timesteps_by_gpubox,
+                ].join("\t")
+            }
+            .collectFile(
+                name: "prep_stats.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES","MISSING HDUs"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+    emit:
+        // channel of preprocessed files: tuple(obsid, prepUVFits, mwafs)
+        obsPrepFiles = birliPrep.out
+        // channel of preprocessed files: tuple(obsid, prepUVFits)
+        obsPrepUVFits = birliPrep.out.map { def (obsid, prep, _) = it; [obsid, prep] }
+        // channel of mwaf files for each obsid: tuple(obsid, mwafs)
+        obsMwafs = birliPrep.out.map { def (obsid, _, prepMwafs) = it; [obsid, prepMwafs] }
+}
+
+// only emit obsids which pass flag occupancy threshold
+workflow flagGate {
+    take:
+        // channel of required files: tuple(obsid, metafits, mwafs)
+        flagFiles
+
+    main:
+        // analyse flag occupancy
+        flagFiles | flagQA
+
+        // collect flagQA results
+        // TODO: collect sky_chans from flagQA
+        def sky_chans = (131..154).collect { ch -> "$ch".toString() }
+        flagQA.out
+            // form row of tsv from json fields we care about
+            .map { def (obsid, json) = it;
+                def stats = jslurp.parse(json)
+                def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.occupancy }
+                ([obsid, stats.total_occupancy] + chan_occupancy).join("\t")
+            }
+            .collectFile(
+                name: "occupancy.tsv", newLine: true, sort: true,
+                seed: (["OBS", "TOTAL OCCUPANCY"] + sky_chans).join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+    emit:
+        // channel of obsids which pass the flag gate
+        pass = flagQA.out
+            .map { def (obsid, json) = it; [obsid, jslurp.parse(json).total_occupancy] }
+            .filter { def (_, occ) = it; occ && occ < params.flag_occupancy_threshold }
+            .map { def (obsid, _) = it; obsid }
+}
+
+workflow cal {
+    take:
+        // channel of metafits and preprocessed uvfits: tuple(obsid, metafits, uvfits)
+        obsMetaVis
+    main:
+        // create a channel of a single csv for calibration args with columns:
+        // - short name that appears in calibration solution filename
+        // - args for hyperdrive soln apply args
+        dical_args = channel
+            .fromPath(params.dical_args_path)
+            .collect()
+
+        // create a channel of calibration parameter sets from a csv with columns:
+        // - short name that appears in calibration solution filename
+        // - short name that appears in the apply filename
+        // - args for hyperdrive soln apply args
+        apply_args = channel
+            .fromPath(params.apply_args_path)
+            .splitCsv(header: false)
+
+        // hyperdrive di-calibrate on each obs
+        obsMetaVis.combine(dical_args) | hypCalSol
+
+        // channel of solutions for each unflagged obsid: tuple(obsid, solutions)
+        obsSolns = hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] }
+        // channel of metafits for each obsid: tuple(obsid, metafits)
+        obsMetafits = obsMetaVis.map { def (obsid, metafits, _) = it; [obsid, metafits] }
+
+        // calibration QA and plot solutions
+        // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
+        eachCal = obsMetafits
+            // join with hyp_soln from ensureCal
+            .join(obsSolns)
+            // transpose to run once for each calibration solution
+            .transpose()
+            .map { def (obsid, metafits, soln) = it
+                // give each calibration a name from basename of solution fits
+                def name = soln.getBaseName().split('_')[3..-1].join('_')
+                [obsid, name, metafits, soln]
+            }
+            | (plotSolutions & calQA)
+
+        // collect calQA results as .tsv
+        calQA.out
+            // form row of tsv from json fields we care about
+            .map { def (obsid, name, json) = it;
+                // parse json
+                // def stats = jslurp.parse(json)
+                // TODO: fix nasty hack to deal with NaNs
+                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
+                [
+                    obsid,
+                    name,
+                    stats.FLAGGED_BLS,
+                    stats.FLAGGED_CHS,
+                    stats.FLAGGED_ANTS,
+                    stats.NON_CONVERGED_CHS,
+                    stats.CONVERGENCE_VAR?[0],
+                    stats.SKEWNESS_UCVUT
+                ].join("\t")
+            }
+            .collectFile(
+                name: "cal_metrics.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "CAL NAME", "FLAG BLS", "FLAG CHS", "FLAG ANTS",
+                    "NON CONVG CHS", "CONVG VAR", "SKEW"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        // hyperdrive apply-solutions using apply solution args file
+        obsMetaVis
+            .join(obsSolns)
+            .combine(apply_args)
+            | (hypApplyUV & hypApplyMS)
+
+    emit:
+        // channel of calibrated uvfits: tuple(obsid, name, uvfits)
+        obsNameUvfits = hypApplyUV.out.map { def (obsid, name, vis) = it; [obsid, name, vis] }
+        // channel of calibrated measurement sets: tuple(obsid, name, ms)
+        obsNameMS = hypApplyMS.out.map { def (obsid, name, vis) = it; [obsid, name, vis] }
+}
+
+// process uvfits visibilities
+workflow uvfits {
+    take:
+        obsNameUvfits
+    main:
+        // vis QA and ps_metrics
+        obsNameUvfits | (visQA & psMetrics)
+
+        // collect visQA results as .tsv
+        visQA.out
+            // form row of tsv from json fields we care about
+            .map { def (obsid, name, json) = it;
+                // parse json
+                // def stats = jslurp.parse(it[1])
+                // TODO: fix nasty hack to deal with NaNs
+                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
+                view(stats)
+                [
+                    obsid,
+                    name,
+                    stats.AUTOS?.XX?.POOR_TIMES?[0],
+                    stats.AUTOS?.YY?.POOR_TIMES?[0]
+                ].join("\t")
+            }
+            .collectFile(
+                name: "vis_metrics.tsv", newLine: true, sort: true,
+                seed: ["OBS", "VIS NAME", "XX POOR TIMES", "YY POOR TIMES"].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        // collect psMetrics as a .dat
+        psMetrics.out
+            // read the content of each ps_metrics file including the trailing newline
+            .map { def (obsid, vis_name, dat) = it; dat.getText() }
+            .collectFile(
+                name: "ps_metrics.dat",
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        // collect psMetrics as a .tsv
+        psMetrics.out
+            // form each row of tsv
+            .map { def (obsid, vis_name, dat) = it;
+                def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
+                ([obsid, vis_name] + dat_values).join("\t")
+            }
+            .collectFile(
+                name: "ps_metrics.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
+                    "P_ALL", "D3"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+}
+
+// image measurement sets and QA images
+workflow img {
+    take:
+        obsNameMS
+    main:
+        // wsclean: make dirty images
+        obsNameMS | wscleanDirty
+
+        // imgQA for all groups of images
+        wscleanDirty.out | imgQA
+
+        // collect imgQA results as .tsv
+        imgQA.out
+            // form row of tsv from json fields we care about
+            .map { def (obsid, name, json) = it;
+                // parse json
+                // def stats = jslurp.parse(json)
+                // TODO: fix nasty hack to deal with NaNs
+                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
+                [
+                    obsid,
+                    name,
+                    stats.XX?.RMS_ALL, stats.XX?.RMS_BOX, stats.XX?.PKS0023_026,
+                    stats.YY?.RMS_ALL, stats.YY?.RMS_BOX, stats.YY?.PKS0023_026,
+                    stats.V?.RMS_ALL, stats.V?.RMS_BOX, stats.V?.PKS0023_026,
+                    stats.V_XX?.RMS_RATIO_ALL, stats.V_XX?.RMS_RATIO_BOX
+                ].join("\t")
+            }
+            .collectFile(
+                name: "img_metrics.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "IMG NAME", "XX ALL", "XX BOX", "XX PKS", "YY ALL", "YY BOX", "YY PKS",
+                    "V ALL","V BOX","V PKS", "V:XX ALL", "V:XX BOX"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+}
+
 workflow {
     // get obsids from csv
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
 
-    // ensure raw files are downloaded
-    ensureRaw(obsids)
+    // download and preprocess raw obsids
+    obsids | raw | prep
 
-    // collect disk usage stats from ensureRaw stage
-    ensureRaw.out
-        // form row of tsv
-        .map { def (obsid, metafits, gpufits) = it; [
-            obsid,
-            metafits.size(), // size of metafits [B]
-            gpufits.size(), // number of gpufits files
-            gpufits.collect(path -> path.size()).sum() // total gpufits size [B]
-        ].join("\t") }
-        .collectFile(
-            name: "raw_stats.tsv", newLine: true, sort: true,
-            // "seed" is the header of the tsv file
-            seed: ["OBS","META SIZE","N GPUBOX","GPUBOX SIZE"].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
+    // channel of metafits for each obsid: tuple(obsid, metafits)
+    obsMetafits = raw.out.map { def (obsid, metafits) = it; [obsid, metafits] }
 
-    // channel of tuples (obsid, metafits)
-    eachMetafits = ensureRaw.out.map { def (obsid, metafits) = it; [obsid, metafits] }
+    // channel of obsids that pass the flag gate
+    unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate
 
-    // analyse metafits stats
-    eachMetafits | metafitsStats
+    // calibrate each obs that passes flag gate:
+    unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits) | cal
 
-    // collect metafits stats
-    metafitsStats.out
-        // for row of tsv from metafits json fields we care about
-        .map { def (obsid, json) = it;
-            def stats = jslurp.parse(json)
-            [
-                obsid,
-                stats."DATE-OBS",
-                stats.GRIDNUM,
-                stats.CENTCHAN,
-                stats.FINECHAN,
-                stats.INTTIME,
-                stats.NSCANS,
-                stats.NINPUTS,
-                stats.FLAGGED_INPUTS?.size(), // number of flagged inputs
-                stats.FLAGGED_INPUTS?.join('\t') // flagged input names
-            ].join("\t")
-        }
-        .collectFile(
-            name: "metafits_stats.tsv", newLine: true, sort: true,
-            seed: [
-                "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS", "N INPS",
-                "N FLAG INPS","FLAG INPS"
-            ].join("\t"),
-            storeDir: "${projectDir}/results/",
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
+    // QA uvfits visibilities
+    cal.out.obsNameUvfits | uvfits
 
-
-    // ensure preprocessed files have been generated from raw files
-    birliPrep(ensureRaw.out)
-
-    // channel of tuples (obsid, prep uvfits)
-    eachPrep = birliPrep.out.map { def (obsid, prep) = it; [obsid, prep] }
-
-    // get shape of preprocessed visibilities
-    eachPrep | prepStats
-
-    // collect prep stats
-    prepStats.out
-        // join with uvfits, mwaf and birli log
-        .join(birliPrep.out)
-        // form row of tsv from json fields we care about
-        .map { def (obsid, json, prepVis, prepMwafs, prepLog) = it;
-            def stats = jslurp.parse(json)
-            def missing_hdus = (
-                prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/
-            ).collect { m -> [ts:m[1], cc:m[2]] }
-            // display a compressed version of missing hdus
-            def missing_timesteps_by_gpubox = missing_hdus
-                .groupBy { m -> m.cc }
-                .collect { cc, ts ->
-                    [cc, displayInts(ts.collect {p -> p.ts as int})].join(":")
-                }
-                .join("|");
-            [
-                obsid,
-                // prep stats json
-                stats.num_chans,
-                stats.num_times,
-                stats.num_baselines,
-                // disk usage
-                prepVis.size(), // size of uvfits [B]
-                prepMwafs.size(), // number of mwaf
-                prepMwafs.collect(path -> path.size()).sum(), // total mwaf size [B]
-                // parse birli log
-                missing_hdus.size(),
-                missing_timesteps_by_gpubox,
-            ].join("\t")
-        }
-        .collectFile(
-            name: "prep_stats.tsv", newLine: true, sort: true,
-            seed: [
-                "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES","MISSING HDUs"
-            ].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-    // flag QA
-    eachMetafits
-        // join with the mwafs from birliPrep
-        .join(birliPrep.out.map { def (obsid, _, prepMwafs) = it; [obsid, prepMwafs] })
-        | flagQA
-
-    // export flagQA results
-    def sky_chans = (131..154).collect { ch -> "$ch".toString() }
-    flagQA.out
-        // form row of tsv from json fields we care about
-        .map { def (obsid, json) = it;
-            def stats = jslurp.parse(json)
-            def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.occupancy }
-            ([obsid, stats.total_occupancy] + chan_occupancy).join("\t")
-        }
-        .collectFile(
-            name: "occupancy.tsv", newLine: true, sort: true,
-            seed: (["OBS", "TOTAL OCCUPANCY"] + sky_chans).join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-    // create a channel of a single csv for calibration args with columns:
-    // - short name that appears in calibration solution filename
-    // - args for hyperdrive soln apply args
-    dical_args = channel
-        .fromPath(params.dical_args_path)
-        .collect()
-
-    // create a channel of calibration parameter sets from a csv with columns:
-    // - short name that appears in calibration solution filename
-    // - short name that appears in the apply filename
-    // - args for hyperdrive soln apply args
-    apply_args = channel
-        .fromPath(params.apply_args_path)
-        .splitCsv(header: false)
-
-    // calibration solutions for each obsid that passes flagQA:
-    // - do not calibrate obs where occupancy > params.flag_occupancy_threshold
-    eachMetafits
-        // join with uvfits from birliPrep
-        .join(eachPrep)
-        // filter out obsids which exceed flag occupancy threshold
-        .join(flagQA.out
-            .map { def (obsid, json) = it; [obsid, jslurp.parse(json).total_occupancy] }
-            .filter { def (_, occ) = it; occ && occ < params.flag_occupancy_threshold }
-            .map { def (obsid, _) = it; obsid }
-        )
-        // combine with hyperdrive di-cal args file
-        .combine(dical_args)
-        | hypCalSol
-
-    // channel of tuples (obsid, calName, metafits, calSol)
-    // hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
-    eachCal = eachMetafits
-        // join with hyp_soln from ensureCal
-        .join(hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] })
-        // transpose to run once for each calibration solution
-        .transpose()
-        .map { def (obsid, metafits, soln) = it
-            // give each calibration a name from basename of solution fits
-            def name = soln.getBaseName().split('_')[3..-1].join('_')
-            [obsid, name, metafits, soln]
-        }
-
-    // calibration QA and plot solutions
-    eachCal | (plotSolutions & calQA)
-
-    // collect calQA results as .tsv
-    calQA.out
-        // form row of tsv from json fields we care about
-        .map { def (obsid, name, json) = it;
-            // parse json
-            // def stats = jslurp.parse(json)
-            // TODO: fix nasty hack to deal with NaNs
-            def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
-            [
-                obsid,
-                name,
-                stats.FLAGGED_BLS,
-                stats.FLAGGED_CHS,
-                stats.FLAGGED_ANTS,
-                stats.NON_CONVERGED_CHS,
-                stats.CONVERGENCE_VAR?[0],
-                stats.SKEWNESS_UCVUT
-            ].join("\t")
-        }
-        .collectFile(
-            name: "cal_metrics.tsv", newLine: true, sort: true,
-            seed: [
-                "OBS", "CAL NAME", "FLAG BLS", "FLAG CHS", "FLAG ANTS",
-                "NON CONVG CHS", "CONVG VAR", "SKEW"
-            ].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-    // apply calibration solutions
-    eachMetafits
-        // join with uvfits from birliPrep
-        .join(eachPrep)
-        // join with hyp_solns from hypCalSol
-        .join(hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] })
-        // combine with hyperdrive apply solution args file
-        .combine(apply_args)
-        | (hypApplyUV & hypApplyMS)
-
-    // vis QA and ps_metrics
-    hypApplyUV.out
-        // get obsid, cal uvfits from hypApplyUV
-        .map { def (obsid, name, vis) = it; [obsid, name, vis] }
-        | (visQA & psMetrics)
-
-    // collect visQA results as .tsv
-    visQA.out
-        // form row of tsv from json fields we care about
-        .map { def (obsid, name, json) = it;
-            // parse json
-            // def stats = jslurp.parse(it[1])
-            // TODO: fix nasty hack to deal with NaNs
-            def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
-            view(stats)
-            [
-                obsid,
-                name,
-                stats.AUTOS?.XX?.POOR_TIMES?[0],
-                stats.AUTOS?.YY?.POOR_TIMES?[0]
-            ].join("\t")
-        }
-        .collectFile(
-            name: "vis_metrics.tsv", newLine: true, sort: true,
-            seed: ["OBS", "VIS NAME", "XX POOR TIMES", "YY POOR TIMES"].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-    // wsclean: make dirty images
-    // - get ms from hypApplyMS
-    hypApplyMS.out
-        .map { def (obsid, name, vis) = it; [obsid, name, vis] }
-        | wscleanDirty
-
-    // imgQA for all groups of images
-    wscleanDirty.out
-        // if doing multiple chans:
-        // group dirty images by chan, where name is "wsclean_hyp_${obsid}_${name}-${chan}-${pol}-dirty.fits"
-        // .flatMap { def (obsid, name, imgs) = it;
-        //     imgs
-        //         .groupBy { img -> (img.getBaseName().split(name)[1].split("-")[0] }
-        //         .collect { chan, img -> [obsid, chan, img]}
-        // }
-        | imgQA
-
-    // collect imgQA results as .tsv
-    imgQA.out
-        // form row of tsv from json fields we care about
-        .map { def (obsid, name, json) = it;
-            // parse json
-            // def stats = jslurp.parse(json)
-            // TODO: fix nasty hack to deal with NaNs
-            def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
-            [
-                obsid,
-                name,
-                stats.XX?.RMS_ALL, stats.XX?.RMS_BOX, stats.XX?.PKS0023_026,
-                stats.YY?.RMS_ALL, stats.YY?.RMS_BOX, stats.YY?.PKS0023_026,
-                stats.V?.RMS_ALL, stats.V?.RMS_BOX, stats.V?.PKS0023_026,
-                stats.V_XX?.RMS_RATIO_ALL, stats.V_XX?.RMS_RATIO_BOX
-            ].join("\t")
-        }
-        .collectFile(
-            name: "img_metrics.tsv", newLine: true, sort: true,
-            seed: [
-                "OBS", "IMG NAME", "XX ALL", "XX BOX", "XX PKS", "YY ALL", "YY BOX", "YY PKS",
-                "V ALL","V BOX","V PKS", "V:XX ALL", "V:XX BOX"
-            ].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-
-    // collect psMetrics as a .dat
-    psMetrics.out
-        // read the content of each ps_metrics file including the trailing newline
-        .map { def (obsid, vis_name, dat) = it; dat.getText() }
-        .collectFile(
-            name: "ps_metrics.dat",
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
-
-    // collect psMetrics as a .tsv
-    psMetrics.out
-        // form each row of tsv
-        .map { def (obsid, vis_name, dat) = it;
-            def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
-            ([obsid, vis_name] + dat_values).join("\t")
-        }
-        .collectFile(
-            name: "ps_metrics.tsv", newLine: true, sort: true,
-            seed: [
-                "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
-                "P_ALL", "D3"
-            ].join("\t"),
-            storeDir: "${projectDir}/results/"
-        )
-        // display output path and number of lines
-        | view { [it, it.readLines().size()] }
+    // QA images of measurementsets
+    cal.out.obsNameMS | img
 }
