@@ -337,9 +337,9 @@ process hypCalSol {
     input:
     tuple val(obsid), val(spw), path("${obsid}.metafits"), path("${obsid}${spw}.uvfits"), path("dical_args.csv")
     output:
-    tuple val(obsid), val(spw), path("hyp_soln_${obsid}${spw}_*l_src*k.fits"), path("hyp_di-cal_${obsid}${spw}_*.log")
+    tuple val(obsid), val(spw), path("hyp_soln_${obsid}${spw}_??l_src4k.fits"), path("hyp_di-cal_${obsid}${spw}_??l_src4k.log")
 
-    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}${spw}"
     // label jobs that need a bigger gpu allocation
@@ -390,18 +390,114 @@ process hypCalSol {
     """
 }
 
+// fit polynomial to calibration solution
+process polyFit {
+    input:
+    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
+    output:
+    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.fits")
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}.${dical_name}"
+    errorStrategy 'ignore'
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
+
+    module 'python/3.9.7'
+
+    script:
+    name = "poly_${dical_name}"
+    """
+    #!/usr/bin/env python
+    # this is nextflow-ified version of /astro/mwaeor/ctrott/poly_fit.py
+    # TODO: this deserves its own version control
+
+    from astropy.io import fits
+    import numpy as np
+    from numpy.polynomial import Polynomial
+
+
+    def get_unflagged_indices(n_bands, n_chan, clip_width=0):
+        # Returns indices of unflagged frequency channels
+        edge_flags = 2 + clip_width
+        centre_flag = n_chan // 2
+
+        channels = np.arange(n_chan)
+        channels = np.delete(channels, centre_flag)
+        channels = channels[edge_flags:-edge_flags]
+
+        all_channels = []
+        for n in range(n_bands):
+            for c in channels:
+                all_channels.append(c+(n*n_chan))
+        return all_channels
+
+
+    def fit_hyperdrive_sols(sols, results, order=3, clip_width=0):
+        # Fits polynomial to real and imaginary part of hyperdrive solutions
+        # Remove flagged channels
+        # Hyperdrive solutions have dimensions ((time),ant,freq,pols)
+
+        n_bands = 24
+        n_ants, n_freqs, n_pols = np.shape(sols)
+        assert n_freqs % n_bands == 0
+        n_chan = n_freqs // n_bands
+
+        models_out = np.zeros_like(sols, dtype=complex)
+
+        clipped_x = get_unflagged_indices(n_bands, n_chan, clip_width=clip_width)
+        # filter any channels where result is NaN
+        clipped_x = [ x for x in clipped_x if not np.isnan(results[x]) ]
+
+        # Remove flagged tiles which are nan at first unflagged frequency and pol
+        good_tiles = np.argwhere(~np.isnan(sols[:, clipped_x[0], 0]))
+
+        freq_array = np.arange(n_freqs)
+
+        for ant in good_tiles:
+            for pol in range(n_pols):
+                z_r = Polynomial.fit(clipped_x, np.real(
+                    sols[ant, clipped_x, pol]), deg=order)
+                z_i = Polynomial.fit(clipped_x, np.imag(
+                    sols[ant, clipped_x, pol]), deg=order)
+                models_out[ant, :, pol] = z_r(freq_array) + z_i(freq_array) * 1j
+
+        return models_out
+
+    infile = "hyp_soln_${obsid}_${dical_name}.fits"
+    outfile = "hyp_soln_${obsid}_${name}.fits"
+
+    with fits.open(infile) as hdus:
+        # Reads hyperdrive solutions from fits file into numpy array
+        data = hdus["SOLUTIONS"].data
+        for i_timeblock in range(data.shape[0]):
+            sols = data[i_timeblock, :, :, ::2] + data[i_timeblock, :, :, 1::2] * 1j
+            results = hdus["RESULTS"].data[i_timeblock,:]
+
+            fit_sols = fit_hyperdrive_sols(sols, results)
+
+            # Write fitted solutions
+            hdus["SOLUTIONS"].data[i_timeblock, :, :, ::2] = np.real(fit_sols)
+            hdus["SOLUTIONS"].data[i_timeblock, :, :, 1::2] = np.imag(fit_sols)
+
+        hdus.writeto(outfile, overwrite="True")
+    """
+}
+
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyUV {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
-        val(cal_name), val(apply_name), val(apply_args)
+        val(dical_name), val(apply_name), val(apply_args)
     output:
     tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.uvfits"), \
         path("hyp_apply_${vis_name}.log")
 
-    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${cal_name}_${apply_name}"
+    tag "${obsid}.${dical_name}_${apply_name}"
     label "cpu"
 
     errorStrategy 'ignore'
@@ -410,12 +506,12 @@ process hypApplyUV {
     stageInMode "copy"
 
     script:
-    vis_name = "${cal_name}_${apply_name}"
+    vis_name = "${dical_name}_${apply_name}"
     """
     # hyperdrive solutions apply uvfits
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
+        --solutions "hyp_soln_${obsid}_${dical_name}.fits" \
         --outputs "hyp_${obsid}_${vis_name}.uvfits" \
         | tee hyp_apply_${vis_name}.log
 
@@ -433,7 +529,7 @@ process hypApplyMS {
     tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), \
         path("hyp_apply_${vis_name}_ms.log")
 
-    storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
     tag "${obsid}.${dical_name}_${apply_name}"
@@ -876,16 +972,23 @@ workflow cal {
         // channel of metafits for each obsid: tuple(obsid, metafits)
         obsMetafits = obsMetaVis.map { def (obsid, metafits, _) = it; [obsid, metafits] }
 
-        // calibration QA and plot solutions
+        // channel of individual dical solutions: tuple(obsid, name, soln)
         // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
-        eachCal = obsMetafits
-            // join with hyp_soln from ensureCal
-            .join(obsSolns)
-            // transpose to run once for each calibration solution
+        eachCal = obsSolns
             .transpose()
-            .map { def (obsid, metafits, soln) = it
+            .map { def (obsid, soln) = it
                 // give each calibration a name from basename of solution fits
                 def name = soln.getBaseName().split('_')[3..-1].join('_')
+                [obsid, name, soln]
+            }
+
+        eachPoly = eachCal | polyFit
+
+        // calibration QA and plot solutions
+        obsMetafits
+            // join with hyp_soln from ensureCal
+            .cross(eachCal.mix(eachPoly))
+            .map { def (obsid, metafits) = it[0]; def (_, name, soln) = it[1]
                 [obsid, name, metafits, soln]
             }
             | (plotSols & calQA)
