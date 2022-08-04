@@ -179,13 +179,13 @@ process metaStats {
 // Ensure preprocessed observation is present, or preprocess raw with Birli
 process birliPrep {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
+    tuple val(obsid), val(spw), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
     output:
-    tuple val(obsid), path("birli_${obsid}.uvfits"), path("${obsid}*.mwaf"), path("birli_prep.log")
+    tuple val(obsid), val(spw), path("birli_${obsid}${spw}.uvfits"), path("${obsid}${spw}*.mwaf"), path("birli_prep.log")
 
     storeDir "${params.outdir}/${obsid}/prep"
 
-    tag "${obsid}"
+    tag "${obsid}${spw}"
     // label jobs that need a bigger cpu allocation
     label "cpu"
 
@@ -194,10 +194,10 @@ process birliPrep {
     module "singularity"
 
     script:
-    flag_template = obsid as int > 1300000000 ? "${obsid}_ch%%%.mwaf" : "${obsid}_%%.mwaf"
+    flag_template = obsid as int > 1300000000 ? "${obsid}${spw}_ch%%%.mwaf" : "${obsid}${spw}_%%.mwaf"
     """
     ${params.birli} \
-        -u "birli_${obsid}.uvfits" \
+        -u "birli_${obsid}${spw}.uvfits" \
         -f "${flag_template}" \
         -m "${obsid}.metafits" \
         --avg-time-res ${params.prep_time_res_s} \
@@ -335,13 +335,13 @@ process flagQA {
 // ensure calibration solutions are present, or calibrate prep with hyperdrive
 process hypCalSol {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("cal_args.csv")
+    tuple val(obsid), val(spw), path("${obsid}.metafits"), path("${obsid}${spw}.uvfits"), path("dical_args.csv")
     output:
-    tuple val(obsid), path("hyp_soln_${obsid}_{30l_src4k,50l_src4k}.fits"), path("hyp_di-cal_${obsid}_*.log")
+    tuple val(obsid), val(spw), path("hyp_soln_${obsid}${spw}_*l_src*k.fits"), path("hyp_di-cal_${obsid}${spw}_*.log")
 
     storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
 
-    tag "${obsid}"
+    tag "${obsid}${spw}"
     // label jobs that need a bigger gpu allocation
     label "gpu"
 
@@ -358,31 +358,29 @@ process hypCalSol {
 
     set -ex
     ls -al
-    export names=""
     export num_gpus="\$(nvidia-smi -L | wc -l)"
     if [ \$num_gpus -eq 0 ]; then
         echo "no gpus found"
         exit 1
     fi
-    # for each calibration parameter set in cal_args.csv, run hyperdrive di-cal
-    while IFS=, read -r name cal_args; do
+    # for each calibration parameter set in dical_args.csv, run hyperdrive di-cal
+    while IFS=, read -r dical_name dical_args; do
         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
         if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
             wait \$(jobs -rp)
         fi
         # hyperdrive di-cal backgrounded in a subshell
         (
-            ${params.hyperdrive} di-calibrate \${cal_args} \
-                --data "${obsid}.metafits" "${obsid}.uvfits" \
+            ${params.hyperdrive} di-calibrate \${dical_args} \
+                --data "${obsid}.metafits" "${obsid}${spw}.uvfits" \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
-                --outputs "hyp_soln_${obsid}_\${name}.fits" \
-                > hyp_di-cal_${obsid}_\${name}.log
+                --outputs "hyp_soln_${obsid}${spw}_\${dical_name}.fits" \
+                > hyp_di-cal_${obsid}${spw}_\${dical_name}.log
         ) &
-        names="\${names} \${name}"
         # increment the target device mod num_gpus
         CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
-    done < <(cut -d',' -f1,2 cal_args.csv | sort | uniq)
+    done < <(cut -d',' -f1,2 dical_args.csv | sort | uniq)
 
     # wait for all the background jobs to finish
     wait \$(jobs -rp)
@@ -430,7 +428,7 @@ process hypApplyUV {
 process hypApplyMS {
     input:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
-        val(cal_name), val(apply_name), val(apply_args)
+        val(dical_name), val(apply_name), val(apply_args)
     output:
     tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), \
         path("hyp_apply_${vis_name}_ms.log")
@@ -438,7 +436,7 @@ process hypApplyMS {
     storeDir "${params.outdir}/${obsid}/cal$params.cal_suffix"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
-    tag "${obsid}.${cal_name}_${apply_name}"
+    tag "${obsid}.${dical_name}_${apply_name}"
     label "cpu"
 
     errorStrategy 'ignore'
@@ -447,12 +445,12 @@ process hypApplyMS {
     stageInMode "copy"
 
     script:
-    vis_name = "${cal_name}_${apply_name}"
+    vis_name = "${dical_name}_${apply_name}"
     """
     # hyperdrive solutions apply ms
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
+        --solutions "hyp_soln_${obsid}_${dical_name}.fits" \
         --outputs "hyp_${obsid}_${vis_name}.ms" \
         | tee hyp_apply_${vis_name}_ms.log
 
@@ -525,7 +523,7 @@ process plotSols {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_soln_${obsid}_${name}.fits")
     output:
-    tuple val(obsid), path("hyp_soln_${obsid}_${name}_{phases,amps}.png")
+    tuple val(obsid), path("hyp_soln_${obsid}*_${name}_{phases,amps}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa"
 
@@ -701,7 +699,7 @@ workflow raw {
 
         // analyse metafits stats
         asvoRaw.out
-            .map { def (obsid, metafits) = it; [obsid, metafits] }
+            .map { def (obsid, metafits, _) = it; [obsid, metafits] }
             | metaStats
 
         // collect metafits stats
@@ -749,17 +747,23 @@ workflow prep {
         // channel of raw files: tuple(obsid, metafits, gpuboxes)
         obsRawFiles
     main:
-        birliPrep(obsRawFiles)
+        // preprocess raw files with Birli
+        obsRawFiles
+            // set spw to ""
+            .map { def (obsid, metafits, gpuboxes) = it; [obsid, "", metafits, gpuboxes] }
+            | birliPrep
 
         // get info about preprocessing stage
         birliPrep.out
-            .map { def (obsid, prep) = it; [obsid, prep] }
+            .map { def (obsid, _, prepUVFits, __, ___) = it; [obsid, prepUVFits] }
             | prepStats
 
         // collect prep stats
         prepStats.out
             // join with uvfits, mwaf and birli log
-            .join(birliPrep.out)
+            .join( birliPrep.out.map { def (obsid, _, prepUVFits, prepMwafs, prepLog) = it;
+                [obsid, prepUVFits, prepMwafs, prepLog]
+            })
             // form row of tsv from json fields we care about
             .map { def (obsid, json, prepVis, prepMwafs, prepLog) = it;
                 def stats = jslurp.parse(json)
@@ -798,12 +802,10 @@ workflow prep {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
     emit:
-        // channel of preprocessed files: tuple(obsid, prepUVFits, mwafs)
-        obsPrepFiles = birliPrep.out
         // channel of preprocessed files: tuple(obsid, prepUVFits)
-        obsPrepUVFits = birliPrep.out.map { def (obsid, prep, _) = it; [obsid, prep] }
+        obsPrepUVFits = birliPrep.out.map { def (obsid, _, prepUVFits, __) = it; [obsid, prepUVFits] }
         // channel of mwaf files for each obsid: tuple(obsid, mwafs)
-        obsMwafs = birliPrep.out.map { def (obsid, _, prepMwafs) = it; [obsid, prepMwafs] }
+        obsMwafs = birliPrep.out.map { def (obsid, _, __, prepMwafs) = it; [obsid, prepMwafs] }
 }
 
 // only emit obsids which pass flag occupancy threshold
@@ -863,10 +865,14 @@ workflow cal {
             .splitCsv(header: false)
 
         // hyperdrive di-calibrate on each obs
-        obsMetaVis.combine(dical_args) | hypCalSol
+        obsMetaVis
+            // set spw to ""
+            .map { def (obsid, metafits, uvfits) = it; [obsid, "", metafits, uvfits] }
+            .combine(dical_args)
+            | hypCalSol
 
         // channel of solutions for each unflagged obsid: tuple(obsid, solutions)
-        obsSolns = hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] }
+        obsSolns = hypCalSol.out.map { def (obsid, _, solutions) = it; [obsid, solutions] }
         // channel of metafits for each obsid: tuple(obsid, metafits)
         obsMetafits = obsMetaVis.map { def (obsid, metafits, _) = it; [obsid, metafits] }
 
@@ -1037,7 +1043,7 @@ workflow {
     obsids | raw | prep
 
     // channel of metafits for each obsid: tuple(obsid, metafits)
-    obsMetafits = raw.out.map { def (obsid, metafits) = it; [obsid, metafits] }
+    obsMetafits = raw.out.map { def (obsid, metafits, _) = it; [obsid, metafits] }
 
     // channel of obsids that pass the flag gate
     unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate

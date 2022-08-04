@@ -252,10 +252,15 @@ qa tasks:
     - `vis_qa/` - visibility metrics json
     - `img_qa/` - image metrics json
     - `ps_metrics/` - power spectrum metrics dat, log
-- `${projectDir}/` (e.g. `/data/curtin_mwaeor/src/MWAEoR-Pipeline/`)
-  - `results/` - output files for spreadsheet
-    - `metafits_stats.tsv` - info from metafits
-    - `prep_stats.tsv` -
+  - `results/` - aggregate metrics for spreadsheet import
+    - `raw_stats.tsv` - info from raw stage: raw/metafits size on disk, raw file count
+    - `metafits_stats.tsv` - info from metafits: raw dimensions, flagged inputs
+    - `prep_stats.tsv` - info from prep stage: prep uvfits dimensions, missing HDUs, uvfits / mwaf size on disk
+    - `occupancy.tsv` - mwaf occupancy: total, by coarse channel
+    - `cal_metrics.tsv` - calQA metrics for each di calibration
+    - `vis_metrics.tsv` - visQA metrics for each vis
+    - `img_metrics.tsv` - imgQA metrics for each image
+    - `ps_metrics.tsv` - power spectrum metrics for each vis
 
 ## Configuration
 
