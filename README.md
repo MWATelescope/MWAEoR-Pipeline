@@ -28,9 +28,9 @@ graph TD;
       asvoRaw --> metafits
       asvoRaw --> gpufits
 
-      %% metaStats[["fa:fa-cog metaStats "]]
-      %% metafits --> metaStats
-      %% metaStats --> metafitsJson
+      %% metaJson[["fa:fa-cog metaJson "]]
+      %% metafits --> metaJson
+      %% metaJson --> metafitsJson
     end
 
     subgraph prep
@@ -151,9 +151,9 @@ graph TD;
   %% end
 
   subgraph results
-    %% metaStatsTsv[fa:fa-file-csv metafits_stats.tsv ]
-    %% class metaStatsTsv result
-    %% metafitsJson --> metaStatsTsv
+    %% metaJsonTsv[fa:fa-file-csv metafits_stats.tsv ]
+    %% class metaJsonTsv result
+    %% metafitsJson --> metaJsonTsv
 
     %% prepStatsTsv[fa:fa-file-csv prep_stats.tsv ]
     %% class prepStatsTsv result
@@ -215,7 +215,7 @@ main tasks:
 
 qa tasks:
 
-- obsid, metafits → **`metaStats`** → obsid, metafitsJson
+- obsid, metafits → **`metaJson`** → obsid, metafitsJson
   - get flagged inputs from metafits
   - size of raw vis for missing hdu fraction
 - obsid, prepUVfits, birliLog → **`prepStats`** → obsid, prepStatsJson
@@ -368,7 +368,7 @@ nextflow log $run -F 'process=="calQA"' -f workdir,exit,status,process,duration
 ### get all lines matching pattern from all scripts executed recently
 
 ```bash
-export process="metaStats"
+export process="metaJson"
 export first_run="$(nextflow log -q | head -n 1)"
 export first_run="scruffy_bhaskara"
 echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md

@@ -126,7 +126,7 @@ process asvoRaw {
     """
 }
 
-process metaStats {
+process metaJson {
     input:
     tuple val(obsid), path("${obsid}.metafits")
     output:
@@ -159,18 +159,20 @@ process metaStats {
         fits.open("${obsid}.metafits") as hdus \
     :
         data = OrderedDict()
-        for key in hdus[0].header:
-            if type(hdus[0].header[key]) not in [bool, int, str, float]:
+        for key in hdus['PRIMARY'].header:
+            if type(hdus['PRIMARY'].header[key]) not in [bool, int, str, float]:
                 continue
-            data[key] = hdus[0].header[key]
+            data[key] = hdus['PRIMARY'].header[key]
             if key in [ 'RECVRS', 'DELAYS', 'CHANNELS', 'CHANSEL' ]:
                 data[key] = [*filter(None, map(lambda t: t.strip(), data[key].split(',')))]
 
         data['FLAGGED_INPUTS'] = [
             r['TileName'] + r['Pol']
-            for r in hdus[1].data
+            for r in hdus['TILEDATA'].data
             if r['Flag'] == 1
         ]
+
+        data['DELAYS'] = hdus['TILEDATA'].data['Delays'].tolist()
 
         json_dump(data, out, indent=4)
     """
@@ -615,6 +617,48 @@ process calQA {
     """
 }
 
+process solJson {
+    input:
+    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
+    output:
+    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits.json")
+
+    storeDir "${params.outdir}/${obsid}/cal_qa"
+    tag "${obsid}.${dical_name}"
+    errorStrategy 'ignore'
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
+
+    module 'python/3.9.7'
+
+    script:
+    """
+    #!/usr/bin/env python
+    # this is nextflow-ified version of /astro/mwaeor/ctrott/poly_fit.py
+    # TODO: this deserves its own version control
+
+    from astropy.io import fits
+    from json import dump as json_dump
+    from collections import OrderedDict
+    import numpy as np
+
+    with \
+        open('hyp_soln_${obsid}_${dical_name}.fits.json', 'w') as out, \
+        fits.open("hyp_soln_${obsid}_${dical_name}.fits") as hdus \
+    :
+        data = OrderedDict()
+        # Reads hyperdrive results from fits file into json
+        results = hdus["RESULTS"].data[:,:]
+        data["RESULTS"] = hdus["RESULTS"].data[:,:].tolist()
+        data["DIPOLE_GAINS"] = hdus['TILES'].data["DipoleGains"].tolist()
+        data["TOTAL_CONV"] = np.nanprod(results)
+        print(repr(data))
+        json_dump(data, out, indent=4)
+    """
+}
+
 process plotSols {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_soln_${obsid}_${name}.fits")
@@ -739,7 +783,12 @@ process imgQA {
 }
 
 import groovy.json.JsonSlurper
-def jslurp = new JsonSlurper()
+import groovy.json.StringEscapeUtils
+jslurp = new JsonSlurper()
+def parseJson(path) {
+    // TODO: fix nasty hack to deal with NaNs
+    jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"NaN"'))
+}
 
 // display a long list of ints, replace bursts of consecutive numbers with ranges
 def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
@@ -796,10 +845,10 @@ workflow raw {
         // analyse metafits stats
         asvoRaw.out
             .map { def (obsid, metafits, _) = it; [obsid, metafits] }
-            | metaStats
+            | metaJson
 
         // collect metafits stats
-        metaStats.out
+        metaJson.out
             // for row of tsv from metafits json fields we care about
             .map { def (obsid, json) = it;
                 def stats = jslurp.parse(json)
@@ -808,6 +857,8 @@ workflow raw {
                 //     "DATE-OBS", "GRIDNUM", "CENTCHAN", "FINECHAN", "INTTIME",
                 //     "NSCANS", "NINPUTS"
                 // ].collect { stats.get(it) }
+                def flagged_inputs = stats.FLAGGED_INPUTS?:[]
+                def delays = (stats.DELAYS?:[]).flatten()
                 [
                     obsid,
                     stats."DATE-OBS",
@@ -817,15 +868,16 @@ workflow raw {
                     stats.INTTIME,
                     stats.NSCANS,
                     stats.NINPUTS,
-                    stats.FLAGGED_INPUTS?.size(), // number of flagged inputs
-                    stats.FLAGGED_INPUTS?.join('\t') // flagged input names
+                    (delays.count { it == 32 } / delays.size()), // fraction of dead dipole
+                    flagged_inputs.size(), // number of flagged inputs
+                    flagged_inputs.join('\t') // flagged input names
                 ].join("\t")
             }
             .collectFile(
                 name: "metafits_stats.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS", "N INPS",
-                    "N FLAG INPS","FLAG INPS"
+                    "DEAD DIPOLE FRAC", "N FLAG INPS","FLAG INPS"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/",
             )
@@ -982,12 +1034,37 @@ workflow cal {
                 [obsid, name, soln]
             }
 
-        eachPoly = eachCal | polyFit
+        // do polyfit, generate json from solns
+        eachCal | (polyFit & solJson)
+
+        // collect solJson results as .tsv
+        solJson.out
+            // form row of tsv from json fields we care about
+            .map { def (obsid, name, json) = it;
+                def stats = parseJson(json)
+                def results = stats.RESULTS?[0]?:[]
+                def (nans, convergences) = results.split { it == "NaN" }
+                [
+                    obsid,
+                    name,
+                    nans.size() / results.size(),
+                    results.join('\t')
+                ].join("\t")
+            }
+            .collectFile(
+                name: "cal_results.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
 
         // calibration QA and plot solutions
         obsMetafits
             // join with hyp_soln from ensureCal
-            .cross(eachCal.mix(eachPoly))
+            .cross(eachCal.mix(polyFit.out))
             .map { def (obsid, metafits) = it[0]; def (_, name, soln) = it[1]
                 [obsid, name, metafits, soln]
             }
@@ -997,10 +1074,7 @@ workflow cal {
         calQA.out
             // form row of tsv from json fields we care about
             .map { def (obsid, name, json) = it;
-                // parse json
-                // def stats = jslurp.parse(json)
-                // TODO: fix nasty hack to deal with NaNs
-                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
+                def stats = parseJson(json)
                 [
                     obsid,
                     name,
@@ -1008,15 +1082,37 @@ workflow cal {
                     stats.FLAGGED_CHS,
                     stats.FLAGGED_ANTS,
                     stats.NON_CONVERGED_CHS,
+                    stats.NON_CONVERGED_CHS / 100,
                     stats.CONVERGENCE_VAR?[0],
-                    stats.SKEWNESS_UCVUT
+                    stats.CONVERGENCE_VAR?[0] * 100000000000000,
+                    stats.XX?.RMS_AMPVAR_FREQ?:'',
+                    stats.XX?.RMS_AMPVAR_ANT?:'',
+                    stats.XX?.RECEIVER_CHISQVAR?:'',
+                    stats.XX?.DFFT_POWER?:'',
+                    stats.YY?.RMS_AMPVAR_FREQ?:'',
+                    stats.YY?.RMS_AMPVAR_ANT?:'',
+                    stats.YY?.RECEIVER_CHISQVAR?:'',
+                    stats.YY?.DFFT_POWER?:'',
+                    (stats.SKEWNESS_UCVUT?:[]).flatten().join('\t')
                 ].join("\t")
             }
             .collectFile(
                 name: "cal_metrics.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "CAL NAME", "FLAG BLS", "FLAG CHS", "FLAG ANTS",
-                    "NON CONVG CHS", "CONVG VAR", "SKEW"
+                    "NON CONVG CHS",
+                    "NON CONVG CHS FRAC",
+                    "CONVG VAR",
+                    "CONVG VAR e14",
+                    "XX RMS AMPVAR FREQ",
+                    "XX RMS AMPVAR ANT",
+                    "XX RECEIVER CHISQVAR",
+                    "XX DFFT POWER",
+                    "YY RMS AMPVAR FREQ",
+                    "YY RMS AMPVAR ANT",
+                    "YY RECEIVER CHISQVAR",
+                    "YY DFFT POWER",
+                    "SKEW UVCUT"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
@@ -1024,9 +1120,26 @@ workflow cal {
             | view { [it, it.readLines().size()] }
 
         // hyperdrive apply-solutions using apply solution args file
+        // TODO: this is basically unreadable
         obsMetaVis
-            .join(obsSolns)
-            .combine(apply_args)
+            .cross(
+                apply_args
+                    .cross(
+                        eachCal
+                            .mix(polyFit.out)
+                            .map { def (obsid, name, soln) = it; [name.toString(), obsid, soln] }
+                    )
+                    .map {
+                        def (dical_name, apply_name, apply_args) = it[0]
+                        def (_, obsid, soln) = it[1]
+                        [obsid, soln, dical_name, apply_name, apply_args]
+                    }
+            )
+            .map {
+                def (obsid, metafits, prepUVFits) = it[0]
+                def (_, soln, dical_name, apply_name, apply_args) = it[1]
+                [obsid, metafits, prepUVFits, soln, dical_name, apply_name, apply_args]
+            }
             | (hypApplyUV & hypApplyMS)
 
     emit:
@@ -1048,11 +1161,7 @@ workflow uvfits {
         visQA.out
             // form row of tsv from json fields we care about
             .map { def (obsid, name, json) = it;
-                // parse json
-                // def stats = jslurp.parse(it[1])
-                // TODO: fix nasty hack to deal with NaNs
-                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
-                view(stats)
+                def stats = parseJson(json)
                 [
                     obsid,
                     name,
@@ -1116,7 +1225,7 @@ workflow img {
                 // parse json
                 // def stats = jslurp.parse(json)
                 // TODO: fix nasty hack to deal with NaNs
-                def stats = jslurp.parseText(json.getText().replace("NaN", '"NaN"'))
+                def stats = parseJson(json)
                 [
                     obsid,
                     name,
