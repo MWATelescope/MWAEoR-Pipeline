@@ -10,8 +10,7 @@ process asvoRaw {
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/$obsid/raw"
-    // TODO: can't fit in scratch because this writes both tar and contents to disk
-    scratch false
+    scratch true
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
@@ -80,20 +79,21 @@ process asvoRaw {
             #     echo "Download failed, see download.log"
             #     exit 1
             # fi
-            wget \$url -O \$jobid.tar --progress=dot:giga --wait=60 --random-wait
-            export wget_status=\$?
-            if [ \$wget_status -ne 0 ]; then
-                echo "Download failed. status=\$wget_status"
-                exit \$wget_status
+            wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
+                | tee >(tar -x) \
+                | sha1sum -c <(echo "\$hash -")
+            ps=("\${PIPESTATUS[@]}")
+            if [ \${ps[0]} -ne 0 ]; then
+                echo "Download failed. status=\${ps[0]}"
+                exit \${ps[0]}
+            elif [ \${ps[1]} -ne 0 ]; then
+                echo "Untar failed. status=\${ps[1]}"
+                exit \${ps[1]}
+            elif [ \${ps[2]} -ne 0 ]; then
+                echo "Hash check failed. status=\${ps[2]}"
+                exit \${ps[2]}
             fi
-            sha1=\$(sha1sum \$jobid.tar | cut -d' ' -f1)
-            if [ "\$sha1" != "\$hash" ]; then
-                echo "Download failed, hash mismatch"
-                exit 5  # Input/output error
-            fi
-            [ -d "${task.storeDir}" ] || mkdir -p "${task.storeDir}"
-            tar -xf \$jobid.tar
-            return \$?
+            return 0
         fi
         echo "no ready jobs"
         return 1
