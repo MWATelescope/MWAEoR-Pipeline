@@ -198,6 +198,8 @@ process birliPrep {
     script:
     flag_template = obsid as int > 1300000000 ? "${obsid}${spw}_ch%%%.mwaf" : "${obsid}${spw}_%%.mwaf"
     """
+    ls -alt
+    df -B1 .
     ${params.birli} \
         -u "birli_${obsid}${spw}.uvfits" \
         -f "${flag_template}" \
@@ -613,7 +615,7 @@ process calQA {
     """
     set -ex
     singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_calqa.py soln.fits ${obsid}.metafits X --out "hyp_soln_${obsid}_${name}_X.json"
+        run_calqa.py soln.fits ${obsid}.metafits --pol X --out "hyp_soln_${obsid}_${name}_X.json"
     """
 }
 
@@ -680,6 +682,13 @@ process plotSols {
     hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
     """
 }
+
+// process plotCalMetrics {
+//     input:
+//     tuple val(name), path("*")
+//     output:
+//     tuple val(name), path("*")
+// }
 
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
@@ -792,13 +801,21 @@ def parseJson(path) {
 
 // display a long list of ints, replace bursts of consecutive numbers with ranges
 def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
+max_ints_display = 50
 def displayInts = { l ->
     def sb, start, end
     (sb, start, end) = [''<<'', l[0], l[0]]
     for (i in l[1..-1]) {
         (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << displayRange(start, end), i, i]
     }
-    (sb << displayRange(start, end))[0..-2].toString()
+    result = (sb << displayRange(start, end))[0..-2].toString()
+    if (result.size() > max_ints_display) {
+        result.substring(0, (max_ints_display-1).intdiv(2))
+        << "..."
+        << result.substring(result.size() - (max_ints_display-1).intdiv(2))
+    } else {
+        result
+    }
 }
 
 // collapse a list into its contiguous ranges
@@ -813,6 +830,22 @@ def contigRanges(l) {
                 (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << (start..end), i, i]
             }
             return (sb << (start..end))[0..-1]
+    }
+}
+
+
+unit_conversions = [
+    "s": 1,
+    "ms": 1e-3,
+    "µs": 1e-6,
+    "ns": 1e-9,
+]
+def get_seconds(float time, String unit) {
+    if (unit_conversions[unit] == null) {
+        println "unknown duration unit ${unit} for time ${time}";
+        time
+    } else {
+        time * unit_conversions[unit]
     }
 }
 
@@ -915,16 +948,23 @@ workflow prep {
             // form row of tsv from json fields we care about
             .map { def (obsid, json, prepVis, prepMwafs, prepLog) = it;
                 def stats = jslurp.parse(json)
-                def missing_hdus = (
-                    prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/
-                ).collect { m -> [tstep:m[1], cchan:m[2]] }
+                // parse birli log for missing hdus
+                def missing_hdus = (prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/)
+                    .collect { m -> [tstep:m[1], cchan:m[2]] }
+                // parse birli for missing durations
+                def durations = (prepLog.getText() =~ /(\w+) duration: ([\d.]+)([^\d.\s]*)/)
+                    .collect()
+                    .collectEntries  { m ->
+                        def (stage, time, unit) = [m[1].toString(), m[2] as float, m[3].toString()]
+                        [(stage):get_seconds(time, unit)]
+                    }
                 // display a compressed version of missing hdus
                 def missing_timesteps_by_gpubox = missing_hdus
                     .groupBy { m -> m.cchan }
                     .collect { cchan, pairs ->
-                        [cchan, displayInts(pairs.collect {pair -> pair.tstep as int})].join(":")
+                        [cchan as int, displayInts(pairs.collect {pair -> pair.tstep as int})].join(":")
                     }
-                    .join("|");
+                    .sort();
                 [
                     obsid,
                     // prep stats json
@@ -935,15 +975,26 @@ workflow prep {
                     prepVis.size(), // size of uvfits [B]
                     prepMwafs.size(), // number of mwaf
                     prepMwafs.collect(path -> path.size()).sum(), // total mwaf size [B]
-                    // parse birli log
+                    // parse birli log durations
+                    durations?.read?:'',
+                    durations?.flag?:'',
+                    durations?.correct_passband?:'',
+                    durations?.correct_digital?:'',
+                    durations?.correct_geom?:'',
+                    durations?.correct_cable?:'',
+                    durations?.write?:'',
+                    durations?.total?:'',
                     missing_hdus.size(),
-                    missing_timesteps_by_gpubox,
+                    missing_timesteps_by_gpubox.join("|"),
                 ].join("\t")
             }
             .collectFile(
                 name: "prep_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES","MISSING HDUs"
+                    "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES",
+                    "DUR READ", "DUR FLAG", "DUR CORR PB", "DUR CORR DIG", "DUR CORR GEOM",
+                    "DUR CORR CABLE", "DUR WRITE", "DUR TOTAL",
+                    "MISSING HDUs"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
@@ -1078,41 +1129,42 @@ workflow cal {
                 [
                     obsid,
                     name,
-                    stats.FLAGGED_BLS,
-                    stats.FLAGGED_CHS,
-                    stats.FLAGGED_ANTS,
-                    stats.NON_CONVERGED_CHS,
-                    stats.NON_CONVERGED_CHS / 100,
+                    (stats.UNUSED_BLS?:0) / 100,
+                    (stats.UNUSED_CHS?:0) / 100,
+                    (stats.UNUSED_ANTS?:0) / 100,
+                    (stats.NON_CONVERGED_CHS?:0) / 100,
                     stats.CONVERGENCE_VAR?[0],
-                    stats.CONVERGENCE_VAR?[0] * 100000000000000,
-                    stats.XX?.RMS_AMPVAR_FREQ?:'',
+                    stats.CONVERGENCE_VAR?[0] * 1e14,
+                    stats.XX?.SKEWNESS_UVCUT?:'',
                     stats.XX?.RMS_AMPVAR_ANT?:'',
-                    stats.XX?.RECEIVER_CHISQVAR?:'',
+                    stats.XX?.RMS_AMPVAR_FREQ?:'',
                     stats.XX?.DFFT_POWER?:'',
-                    stats.YY?.RMS_AMPVAR_FREQ?:'',
+                    stats.XX?.RECEIVER_CHISQVAR?:'',
+                    stats.YY?.SKEWNESS_UVCUT?:'',
                     stats.YY?.RMS_AMPVAR_ANT?:'',
-                    stats.YY?.RECEIVER_CHISQVAR?:'',
+                    stats.YY?.RMS_AMPVAR_FREQ?:'',
                     stats.YY?.DFFT_POWER?:'',
-                    (stats.SKEWNESS_UCVUT?:[]).flatten().join('\t')
+                    stats.YY?.RECEIVER_CHISQVAR?:'',
                 ].join("\t")
             }
             .collectFile(
                 name: "cal_metrics.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME", "FLAG BLS", "FLAG CHS", "FLAG ANTS",
-                    "NON CONVG CHS",
+                    "OBS", "CAL NAME",
+                    "BL UNUSED FRAC", "CH UNUSED FRAC", "ANT UNUSED FRAC",
                     "NON CONVG CHS FRAC",
                     "CONVG VAR",
                     "CONVG VAR e14",
-                    "XX RMS AMPVAR FREQ",
+                    "XX SKEW UVCUT",
                     "XX RMS AMPVAR ANT",
-                    "XX RECEIVER CHISQVAR",
+                    "XX RMS AMPVAR FREQ",
                     "XX DFFT POWER",
-                    "YY RMS AMPVAR FREQ",
+                    "XX RECEIVER CHISQVAR",
+                    "YY SKEW UVCUT",
                     "YY RMS AMPVAR ANT",
-                    "YY RECEIVER CHISQVAR",
+                    "YY RMS AMPVAR FREQ",
                     "YY DFFT POWER",
-                    "SKEW UVCUT"
+                    "YY RECEIVER CHISQVAR",
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
@@ -1161,17 +1213,60 @@ workflow uvfits {
         visQA.out
             // form row of tsv from json fields we care about
             .map { def (obsid, name, json) = it;
-                def stats = parseJson(json)
+                def stats = parseJson(json);
                 [
                     obsid,
                     name,
-                    stats.AUTOS?.XX?.POOR_TIMES?[0],
-                    stats.AUTOS?.YY?.POOR_TIMES?[0]
+                    stats.AUTOS?.XX?.MEAN_RMS_AMPS?:'',
+                    stats.AUTOS?.XX?.VAR_RMS_AMPS?:'',
+                    stats.AUTOS?.XX?.MEAN_RMS_PHS?:'',
+                    stats.AUTOS?.XX?.VAR_RMS_PHS?:'',
+                    stats.AUTOS?.XX?.MX_VAR_DIFF_AMPS?:'',
+                    stats.AUTOS?.XX?.MX_VAR_DIFF_PHS?:'',
+                    stats.AUTOS?.YY?.MEAN_RMS_AMPS?:'',
+                    stats.AUTOS?.YY?.VAR_RMS_AMPS?:'',
+                    stats.AUTOS?.YY?.MEAN_RMS_PHS?:'',
+                    stats.AUTOS?.YY?.VAR_RMS_PHS?:'',
+                    stats.AUTOS?.YY?.MX_VAR_DIFF_AMPS?:'',
+                    stats.AUTOS?.YY?.MX_VAR_DIFF_PHS?:'',
+                    stats.REDUNDANT?.XX?.VAR_AMP_CHISQ?:'',
+                    stats.REDUNDANT?.XX?.VAR_PHS_CHISQ?:'',
+                    stats.REDUNDANT?.XX?.MVAR_AMP_DIFF?:'',
+                    stats.REDUNDANT?.XX?.MVAR_PHS_DIFF?:'',
+                    stats.REDUNDANT?.YY?.VAR_AMP_CHISQ?:'',
+                    stats.REDUNDANT?.YY?.VAR_PHS_CHISQ?:'',
+                    stats.REDUNDANT?.YY?.MVAR_AMP_DIFF?:'',
+                    stats.REDUNDANT?.YY?.MVAR_PHS_DIFF?:'',
+                    // stats.AUTOS?.XX?.POOR_TIMES?[0],
+                    // stats.AUTOS?.YY?.POOR_TIMES?[0]
                 ].join("\t")
             }
             .collectFile(
                 name: "vis_metrics.tsv", newLine: true, sort: true,
-                seed: ["OBS", "VIS NAME", "XX POOR TIMES", "YY POOR TIMES"].join("\t"),
+                seed: [
+                    "OBS", "VIS NAME",
+                    "A:XX MEAN RMS AMPS",
+                    "A:XX VAR RMS AMPS",
+                    "A:XX MEAN RMS PHS",
+                    "A:XX VAR RMS PHS",
+                    "A:XX MX VAR DIFF AMPS",
+                    "A:XX MX VAR DIFF PHS",
+                    "A:YY MEAN RMS AMPS",
+                    "A:YY VAR RMS AMPS",
+                    "A:YY MEAN RMS PHS",
+                    "A:YY VAR RMS PHS",
+                    "A:YY MX VAR DIFF AMPS",
+                    "A:YY MX VAR DIFF PHS",
+                    "R:XX VAR AMP CHISQ",
+                    "R:XX VAR PHS CHISQ",
+                    "R:XX MVAR AMP DIFF",
+                    "R:XX MVAR PHS DIFF",
+                    "R:YY VAR AMP CHISQ",
+                    "R:YY VAR PHS CHISQ",
+                    "R:YY MVAR AMP DIFF",
+                    "R:YY MVAR PHS DIFF",
+                    // "XX POOR TIMES", "YY POOR TIMES"
+                ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
             // display output path and number of lines
@@ -1229,17 +1324,20 @@ workflow img {
                 [
                     obsid,
                     name,
-                    stats.XX?.RMS_ALL, stats.XX?.RMS_BOX, stats.XX?.PKS0023_026,
-                    stats.YY?.RMS_ALL, stats.YY?.RMS_BOX, stats.YY?.PKS0023_026,
-                    stats.V?.RMS_ALL, stats.V?.RMS_BOX, stats.V?.PKS0023_026,
-                    stats.V_XX?.RMS_RATIO_ALL, stats.V_XX?.RMS_RATIO_BOX
+                    stats.XX?.RMS_ALL, stats.XX?.RMS_BOX, stats.XX?.PKS0023_026?.PEAK_FLUX, stats.XX?.PKS0023_026?.INT_FLUX,
+                    stats.YY?.RMS_ALL, stats.YY?.RMS_BOX, stats.YY?.PKS0023_026?.PEAK_FLUX, stats.YY?.PKS0023_026?.INT_FLUX,
+                    stats.V?.RMS_ALL, stats.V?.RMS_BOX, stats.V?.PKS0023_026?.PEAK_FLUX, stats.V?.PKS0023_026?.INT_FLUX,
+                    stats.V_XX?.RMS_RATIO, stats.V_XX?.RMS_RATIO_BOX
                 ].join("\t")
             }
             .collectFile(
                 name: "img_metrics.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "IMG NAME", "XX ALL", "XX BOX", "XX PKS", "YY ALL", "YY BOX", "YY PKS",
-                    "V ALL","V BOX","V PKS", "V:XX ALL", "V:XX BOX"
+                    "OBS", "IMG NAME",
+                    "XX ALL", "XX BOX", "XX PKS0023_026 PEAK", "XX PKS0023_026 INT",
+                    "YY ALL", "YY BOX", "YY PKS0023_026 PEAK", "YY PKS0023_026 INT",
+                    "V ALL","V BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
+                    "V:XX RMS RATIO", "V:XX RMS RATIO BOX"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
