@@ -757,7 +757,7 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path("vis.ms")
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
+    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
@@ -784,10 +784,10 @@ process wscleanDirty {
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
         -pol xx,yy,v \
+        -abs-mem ${params.img_mem} \
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
-        vis.ms | tee wsclean_${name}.log
-    # no need for `-abs-mem ${params.img_mem}` on DuG, we have the node to ourself
+        vis.ms
     """
 }
 
@@ -832,7 +832,7 @@ process imgQA {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
 
-    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
+    storeDir "${params.outdir}/${obsid}/img_qa"
 
     tag "${obsid}.${name}"
 
@@ -958,6 +958,8 @@ workflow raw {
                 [
                     obsid,
                     stats."DATE-OBS",
+                    stats.RA,
+                    stats.DEC,
                     stats.GRIDNUM,
                     stats.CENTCHAN,
                     stats.FINECHAN,
@@ -972,8 +974,10 @@ workflow raw {
             .collectFile(
                 name: "metafits_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS","DATE","POINT","CENT CH","FREQ RES","TIME RES","N SCANS", "N INPS",
-                    "DEAD DIPOLE FRAC", "N FLAG INPS","FLAG INPS"
+                    "OBS", "DATE", "RA", "DEC", "POINT",
+                    "CENT CH","FREQ RES",
+                    "TIME RES","N SCANS",
+                    "N INPS","DEAD DIPOLE FRAC","N FLAG INPS","FLAG INPS"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/",
             )
