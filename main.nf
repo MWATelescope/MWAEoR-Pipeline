@@ -559,6 +559,68 @@ process hypApplyMS {
     """
 }
 
+process hypSubUV {
+    input:
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.uvfits")
+    output:
+    tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.uvfits"), \
+        path("hyp_${sub_name}_uv.log")
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+    label "gpu"
+
+    errorStrategy 'ignore'
+
+    module "gcc-rt/9.2.0"
+
+    script:
+    sub_name = "sub_${name}"
+    """
+    ls -al
+    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
+    ${params.hyperdrive} vis-sub \
+        --data "${obsid}.metafits" "hyp_${obsid}_${name}.uvfits" \
+        --beam "${params.beam_path}" \
+        --source-list "${params.sourcelist}" \
+        --invert --num-sources 4000 \
+        --outputs "hyp_${obsid}_${sub_name}.uvfits" \
+        | tee hyp_${sub_name}_uv.log
+    # TODO: ^ num sources is hardcoded twice
+    """
+}
+process hypSubMS {
+    input:
+    tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.ms")
+    output:
+    tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.ms"), \
+        path("hyp_${sub_name}_ms.log")
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+    label "gpu"
+
+    errorStrategy 'ignore'
+
+    module "gcc-rt/9.2.0"
+
+    script:
+    sub_name = "sub_${name}"
+    """
+    ls -al
+    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
+    ${params.hyperdrive} vis-sub \
+        --data "${obsid}.metafits" "hyp_${obsid}_${name}.ms" \
+        --beam "${params.beam_path}" \
+        --source-list "${params.sourcelist}" \
+        --invert --num-sources 4000 \
+        --outputs "hyp_${obsid}_${sub_name}.ms" \
+        | tee hyp_${sub_name}_ms.log
+    """
+}
+
 // QA tasks that can be run on each visibility file.
 process visQA {
     input:
@@ -695,7 +757,7 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path("vis.ms")
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits")
+    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
@@ -722,9 +784,10 @@ process wscleanDirty {
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
         -pol xx,yy,v \
-        -abs-mem ${params.img_mem} \
         -channels-out ${params.img_channels_out} \
-        vis.ms
+        -niter ${params.img_niter} \
+        vis.ms | tee wsclean_${name}.log
+    # no need for `-abs-mem ${params.img_mem}` on DuG, we have the node to ourself
     """
 }
 
@@ -769,7 +832,7 @@ process imgQA {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
 
-    storeDir "${params.outdir}/${obsid}/img_qa"
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -1171,8 +1234,10 @@ workflow cal {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        // hyperdrive apply-solutions using apply solution args file
-        // TODO: this is basically unreadable
+        // hyperdrive apply-solutions using apply solution args file:
+        // - take tuple(obsid, name, soln) from both eachCal and polyFit
+        // - match with tuple(dical_name, apply_name, apply_args) on dical_name
+        // - match with tuple(obsid, metafits, prepUVFits) by obsid
         obsMetaVis
             .cross(
                 apply_args
@@ -1194,11 +1259,43 @@ workflow cal {
             }
             | (hypApplyUV & hypApplyMS)
 
+        // get subtracted uvfits vis
+        obsMetaVis
+            .cross(
+                hypApplyUV.out
+                    // TODO: exclude poly_50l without hardcoding twice.
+                    .filter { def (_, name) = it; !(name ==~ /poly_50l.*/) }
+            )
+            .map {
+                def (obsid, metafits, _) = it[0]
+                def (__, name, vis) = it[1];
+                [obsid, name, metafits, vis]
+            }
+            | hypSubUV
+
+        // get subtracted ms vis
+        obsMetaVis
+            .cross(
+                hypApplyMS.out
+                    // TODO: exclude poly_50l without hardcoding twice.
+                    .filter { def (_, name) = it; !(name ==~ /poly_50l.*/) }
+            )
+            .map {
+                def (obsid, metafits, _) = it[0]
+                def (__, name, vis) = it[1];
+                [obsid, name, metafits, vis]
+            }
+            | hypSubMS
+
     emit:
-        // channel of calibrated uvfits: tuple(obsid, name, uvfits)
-        obsNameUvfits = hypApplyUV.out.map { def (obsid, name, vis) = it; [obsid, name, vis] }
+        // channel of calibrated or subtracted uvfits: tuple(obsid, name, uvfits)
+        obsNameUvfits = hypApplyUV.out
+            .mix(hypSubUV.out)
+            .map { def (obsid, name, vis) = it; [obsid, name, vis] }
         // channel of calibrated measurement sets: tuple(obsid, name, ms)
-        obsNameMS = hypApplyMS.out.map { def (obsid, name, vis) = it; [obsid, name, vis] }
+        obsNameMS = hypApplyMS.out
+            .mix(hypSubMS.out)
+            .map { def (obsid, name, vis) = it; [obsid, name, vis] }
 }
 
 // process uvfits visibilities
@@ -1207,7 +1304,11 @@ workflow uvfits {
         obsNameUvfits
     main:
         // vis QA and ps_metrics
-        obsNameUvfits | (visQA & psMetrics)
+        obsNameUvfits | psMetrics
+        // TODO: tap?
+        obsNameUvfits
+            .filter { def (_, name) = it; !name.toString().startsWith("sub_") }
+            | visQA
 
         // collect visQA results as .tsv
         visQA.out
@@ -1334,9 +1435,9 @@ workflow img {
                 name: "img_metrics.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "IMG NAME",
-                    "XX ALL", "XX BOX", "XX PKS0023_026 PEAK", "XX PKS0023_026 INT",
-                    "YY ALL", "YY BOX", "YY PKS0023_026 PEAK", "YY PKS0023_026 INT",
-                    "V ALL","V BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
+                    "XX RMS ALL", "XX RMS BOX", "XX PKS0023_026 PEAK", "XX PKS0023_026 INT",
+                    "YY RMS ALL", "YY RMS BOX", "YY PKS0023_026 PEAK", "YY PKS0023_026 INT",
+                    "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
                     "V:XX RMS RATIO", "V:XX RMS RATIO BOX"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"

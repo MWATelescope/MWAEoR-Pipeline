@@ -2,184 +2,164 @@
 
 ## Flow
 
-```mermaid
-graph TD;
-  %% classDef partial fill:#770
-  %% classDef result fill:#070
-  %% classDef main fill:#070
+<!-- docker run --rm -v ${PWD}:/home/node/data minlag/mermaid-cli:latest -i /home/node/data/flow.mmd -o /home/node/data/flow.png --scale 3 --backgroundColor transparent --width 1000 --height 1800 -->
 
-  subgraph config
-    obsids>fa:fa-file-csv obsids.csv ]
-    dicalArgs>fa:fa-file-csv dical_args.csv ]
-    applyArgs>fa:fa-file-csv apply_args.csv ]
-    %% nfConfig> nextflow.config ]
-  end
+```mermaid
+%%{init: { 'theme': 'base', 'themeVariables': {
+  'darkMode': false,
+  'background': '#00ffffff',
+  'primaryColor': '#ff0000',
+  'primaryBorderColor': '#002b36',
+  'primaryTextColor': '#002b36',
+  'secondaryColor': '#eee8d5',
+  'secondaryBorderColor': '#002b36',
+  'secondaryTextColor': '#002b36',
+  'tertiaryColor': '#fdf6e3',
+  'tertiaryBorderColor': '#002b36',
+  'tertiaryTextColor': '#002b36',
+  'lineColor': '#002b36',
+  'textColor': '#002b36'
+}  } }%%
+
+%% ff0000
+graph TD;
+  classDef fileIn fill:#2aa198;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
+  %% subgraph config
+    obsids>fa:fa-file obsids.csv ]; class obsids fileIn
+    %% dicalArgs>fa:fa-file dical_args.csv ]; class dicalArgs fileIn
+    %% applyArgs>fa:fa-file apply_args.csv ]; class applyArgs fileIn
+    %% nfConfig>fa:fa-file-code nextflow.config ]; class nfConfig fileIn
+  %% end
 
   %% subgraph storage
     subgraph raw
-      metafits[fa:fa-file metafits ]
-      gpufits[fa:fa-file gpubox ]
-      %% metafitsJson[fa:fa-file-code metafits.json ]
-      %% class metafitsJson partial
-
-      %% asvoRaw
-      asvoRaw[["fa:fa-cog asvoRaw "]]
-      obsids --> asvoRaw
-      asvoRaw --> metafits
-      asvoRaw --> gpufits
-
-      %% metaJson[["fa:fa-cog metaJson "]]
-      %% metafits --> metaJson
-      %% metaJson --> metafitsJson
+      metafits[fa:fa-file metafits ]; class metafits file
+      gpufits[fa:fa-file gpubox ]; class gpufits file
+      obsids --> asvoRaw[["fa:fa-tape asvoRaw &nbsp;"]] --> metafits & gpufits
+      class asvoRaw proc
+      %% metafits -.-> metaJson[["fa:fa-cogs metaJson "]] -.-> metafitsJson
+      class metaJson proc
     end
 
     subgraph prep
-      prepUVFits[fa:fa-file prep uvfits ]
-      flags[fa:fa-file flags ]
-      %% prepLog[fa:fa-file prep log ]
-      occupancyJson[fa:fa-file-code occupancy.json ]
-      class occupancyJson partial
-      %% prepStatsJson[fa:fa-file-code prep_stats.json ]
-      %% class prepStatsJson partial
+      prepUVFits[fa:fa-file prep uvfits ]; class prepUVFits file
+      flags[fa:fa-file flags ]; class flags file
+      prepLog[fa:fa-file prep log ]; class prepLog file
+      occupancyJson[fa:fa-file-code occupancy.json ]; class occupancyJson file
 
-      birliPrep[["fa:fa-cog birliPrep "]]
-      metafits --> birliPrep
-      gpufits --> birliPrep
-      birliPrep --> prepUVFits
-      birliPrep --> flags
-      %% birliPrep --> prepLog
+      metafits & gpufits --> birliPrep[[fa:fa-bolt birliPrep]] --> prepUVFits & flags & prepLog
+      class birliPrep proc
 
-      flagQA[["fa:fa-gem flagQA "]]
-      %% metafits --> flagQA;
-      flags --> flagQA;
-      flagQA --> occupancyJson;
+      flags --> flagQA[["fa:fa-gem flagQA &nbsp;"]] --> occupancyJson;
+      class flagQA proc;
+      %% metafits -...-> flagQA;
 
-      flagGate{fa:fa-flag flagGate }
+      occupancyJson & prepUVFits --> flagGate{"fa:fa-flag flagGate &nbsp;&nbsp;"};
+      class flagGate decision;
       %% nfConfig --"occupancy_threshold"--> flagGate;
-      occupancyJson --> flagGate;
-      prepUVFits --> flagGate;
     end
 
 
     subgraph cal
-      calSol[fa:fa-file cal solutions ]
-      calUVFits[fa:fa-file cal uvfits ]
-      calMS[fa:fa-file cal ms ]
+      goodUVFits[fa:fa-file good uvfits ]; class goodUVFits file
+      calSol[fa:fa-file-excel cal solutions ]; class calSol file
+      polyCal[fa:fa-file-excel poly solutions ]; class polyCal file
+      calUVFits[fa:fa-file cal uvfits ]; class calUVFits file
+      calMS[fa:fa-file cal ms ]; class calMS file
 
-      hypCalSol[["fa:fa-cog hypCalSol "]]
-      flagGate --"obs pass"--> hypCalSol
-      %% prepUVFits --> hypCalSol
-      %% metafits --> hypCalSol
-      dicalArgs --> hypCalSol
-      hypCalSol --> calSol
+      flagGate --"obs pass"--> goodUVFits
+      goodUVFits --> hypCalSol[["fa:fa-wrench hypCalSol &nbsp;"]] --> calSol
+      class hypCalSol proc
+      %% dicalArgs --> hypCalSol
+      %% metafits -...-> hypCalSol
 
-      hypApplyUV[["fa:fa-cog hypApplyUV "]]
-      calSol --> hypApplyUV
-      prepUVFits --> hypApplyUV
-      %% metafits --> hypApplyUV
-      applyArgs --> hypApplyUV
-      hypApplyUV --> calUVFits
+      calSol --> polyFit[["fa:fa-chart-line polyFit &nbsp;"]] --> polyCal
+      class polyFit proc
 
-      hypApplyMS[["fa:fa-cog hypApplyMS "]]
-      calSol --> hypApplyMS
-      prepUVFits --> hypApplyMS
-      %% metafits --> hypApplyMS
-      applyArgs --> hypApplyMS
-      hypApplyMS --> calMS
+      calSol & polyCal & goodUVFits --> hypApplyUV[["fa:fa-times-circle hypApplyUV &nbsp;"]] --> calUVFits
+      class hypApplyUV proc
+      %% applyArgs -...-> hypApplyUV
+      %% metafits -...-> hypApplyUV
+
+      calSol & polyCal & goodUVFits --> hypApplyMS[["fa:fa-times-circle hypApplyMS &nbsp;"]] --> calMS
+      class hypApplyMS proc
+      %% applyArgs -...-> hypApplyMS
+      %% metafits -...-> hypApplyMS
+    end
+    subgraph sub
+      subUVFits[fa:fa-file sub uvfits ]; class subUVFits file
+      subMS[fa:fa-file sub ms ]; class subMS file
+      calUVFits --> hypSubUV[["fa:fa-minus-circle hypSubUV &nbsp;"]] --> subUVFits
+      class hypSubUV proc
+      calMS --> hypSubMS[["fa:fa-minus-circle hypSubMS &nbsp;"]] --> subMS
+      class hypSubMS proc
     end
 
     subgraph img
-      imgDirty["fa:fa-file-image image-{XX,YY,V}-dirty.fits "]
-      %% imgDirtyYY[fa:fa-file-image image-YY-dirty.fits ]
-      %% imgDirtyV[fa:fa-file-image image-V-dirty.fits ]
-      wscleanDirty[["fa:fa-cog wscleanDirty "]]
-      calMS --> wscleanDirty
-      %% metafits --> wscleanDirty
-      wscleanDirty --> imgDirty
-      %% wscleanDirty --> imgDirtyYY
-      %% wscleanDirty --> imgDirtyV
+      imgDirty["fa:fa-file-image image-{XX,YY,V}-dirty.fits "]; class imgDirty file
+      calMS & subMS --> wscleanDirty[["fa:fa-image wscleanDirty &nbsp;"]] --> imgDirty
+      class wscleanDirty proc
+      %% metafits -...-> wscleanDirty
     end
 
     subgraph cal_qa
-      calQA[["fa:fa-gem calQA "]]
-      calMetricsJson["fa:fa-file cal_metrics_{X,Y}.json "]
-      class calMetricsJson partial
-      %% calMetricsXJson[fa:fa-file cal_metrics_x.json ]
-      %% calMetricsYJson[fa:fa-file cal_metrics_y.json ]
-      calSol ----> calQA
-      %% metafits --> calQA
-      calQA --> calMetricsJson
-      %% calQA --> calMetricsYJson
+      calMetricsJson["fa:fa-file cal_metrics.json "]; class calMetricsJson file
+      calSol & polyCal --------> calQA[["fa:fa-gem calQA &nbsp;"]] --> calMetricsJson
+      class calQA proc;
+      %% metafits -...-> calQA
 
-      plotSolutions[["fa:fa-gem plotSolutions "]]
-      plotSol["fa:fa-file-image plot_{phases,amps}.png "]
-      %% plotPhases[fa:fa-file-image plot_phases.png ]
-      %% plotAmps[fa:fa-file-image plot_amps.png ]
-      %% metafits --> plotSolutions
-      calSol ----> plotSolutions
-      plotSolutions --> plotSol
-      %% plotSolutions --> plotAmps
-      %% plotSolutions --> plotPhases
+      %% plotSol["fa:fa-file-image plot_{phases,amps}.png "]; class plotSol file
+      %% metafits -...-> plotSolutions
+      %% calSol --> plotSolutions[["fa:fa-gem plotSolutions "]] --> plotSol
+      class plotSolutions proc;
     end
 
     subgraph vis_qa
-      visQA[["fa:fa-gem visQA "]]
-      visMetricsJson[fa:fa-file vis_metrics.json ]
-      class visMetricsJson partial
-      calUVFits --> visQA
-      visQA --> visMetricsJson
+      visMetricsJson[fa:fa-file vis_metrics.json ]; class visMetricsJson file
+      calUVFits --> visQA[["fa:fa-gem visQA &nbsp;"]] --> visMetricsJson
+      class visQA proc;
     end
 
     subgraph ps_metrics
-      psMetrics[["fa:fa-gem ps_metrics "]]
-      calUVFits --> psMetrics
-      psMetrics --> psMetricsDat
-      psMetricsDat[fa:fa-file-csv ps_metrics.dat ]
-      class psMetricsDat partial
+      psMetricsDat[fa:fa-file ps_metrics.dat ]; class psMetricsDat file
+      subUVFits & calUVFits --> psMetrics[["fa:fa-gem ps_metrics &nbsp;"]] --> psMetricsDat
+      class psMetrics proc;
     end
 
 
     subgraph img_qa
-      imgMetricsJson[fa:fa-file img_metrics.json ]
-      class imgMetricsJson partial
-      imgQA[["fa:fa-gem imgQA "]]
-      imgDirty --> imgQA
-      %% imgDirtyYY --> imgQA
-      %% imgDirtyV --> imgQA
-      imgQA --> imgMetricsJson
+      imgMetricsJson["fa:fa-file img_metrics.json &nbsp;"]; class imgMetricsJson file
+      imgDirty --> imgQA[[fa:fa-gem imgQA]] --> imgMetricsJson
+      class imgQA proc;
     end
   %% end
 
-  subgraph results
-    %% metaJsonTsv[fa:fa-file-csv metafits_stats.tsv ]
-    %% class metaJsonTsv result
-    %% metafitsJson --> metaJsonTsv
+  %% subgraph results
+  %%   metaJsonTsv[fa:fa-file metafits_stats.tsv ]; class metaJsonTsv file
+  %%   metafitsJson --> metaJsonTsv
 
-    %% prepStatsTsv[fa:fa-file-csv prep_stats.tsv ]
-    %% class prepStatsTsv result
-    %% prepLog --> prepStatsTsv
-    %% prepStatsJson --> prepStatsTsv
+  %%   prepStatsTsv[fa:fa-file prep_stats.tsv ]; class prepStatsTsv file
+  %%   prepLog --> prepStatsTsv
+  %%   prepStatsJson --> prepStatsTsv
 
-    %% occupancyTsv[fa:fa-file-csv occupancy.tsv ]
-    %% class occupancyTsv result
-    %% occupancyJson --> occupancyTsv
+  %%   occupancyTsv[fa:fa-file occupancy.tsv ]; class occupancyTsv file
+  %%   occupancyJson --> occupancyTsv
 
-    calMetricsTsv[fa:fa-file-csv cal_metrics.tsv ]
-    class calMetricsTsv result
-    calMetricsJson --> calMetricsTsv
+  %%   calMetricsTsv[fa:fa-file cal_metrics.tsv ]; class calMetricsTsv file
+  %%   calMetricsJson --> calMetricsTsv
 
-    visMetricsTsv[fa:fa-file-csv vis_metrics.tsv ]
-    class visMetricsTsv result
-    visMetricsJson --> visMetricsTsv
+  %%   visMetricsTsv[fa:fa-file vis_metrics.tsv ]; class visMetricsTsv file
+  %%   visMetricsJson --> visMetricsTsv
 
-    imgMetricsTsv[fa:fa-file-csv img_metrics.tsv ]
-    class imgMetricsTsv result
-    psMetricsDat --> psMetricsTsv
+  %%   imgMetricsTsv[fa:fa-file img_metrics.tsv ]; class imgMetricsTsv file
+  %%   psMetricsDat --> psMetricsTsv
 
-    psMetricsTsv[fa:fa-file-csv ps_metrics.tsv ]
-    class psMetricsTsv result
-    imgMetricsJson --> imgMetricsTsv
-  end
+  %%   psMetricsTsv[fa:fa-file ps_metrics.tsv ]; class psMetricsTsv file
+  %%   imgMetricsJson --> imgMetricsTsv
+  %% end
 ```
 
 ## Components
