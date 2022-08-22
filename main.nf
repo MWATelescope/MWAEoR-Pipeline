@@ -757,7 +757,7 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path("vis.ms")
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits")
+    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
@@ -784,10 +784,10 @@ process wscleanDirty {
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
         -pol xx,yy,v \
-        -abs-mem ${params.img_mem} \
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
-        vis.ms
+        vis.ms | tee wsclean_${name}.log
+    # no need for `-abs-mem ${params.img_mem}` on DuG, we have the node to ourself
     """
 }
 
