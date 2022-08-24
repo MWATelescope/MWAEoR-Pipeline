@@ -1,6 +1,32 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
+// download metadata from webservices
+process wsMeta {
+    input:
+    val(obsid)
+    output:
+    tuple val(obsid), path ("${obsid}_wsmeta.json")
+
+    storeDir "${params.outdir}/meta"
+    scratch true
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    errorStrategy 'ignore'
+
+    script:
+    """
+    # TODO: make this profile dependent
+    export http_proxy="http://proxy.per.dug.com:3128"
+    export https_proxy="http://proxy.per.dug.com:3128"
+    export all_proxy="proxy.per.dug.com:3128"
+    export ftp_proxy="http://proxy.per.dug.com:3128"
+
+    wget -O ${obsid}_wsmeta.json "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
+    """
+}
+
 // Ensure the raw visibility files are present, or download via ASVO
 process asvoRaw {
     input:
@@ -866,18 +892,23 @@ def parseJson(path) {
 def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
 max_ints_display = 50
 def displayInts = { l ->
-    def sb, start, end
-    (sb, start, end) = [''<<'', l[0], l[0]]
-    for (i in l[1..-1]) {
-        (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << displayRange(start, end), i, i]
-    }
-    result = (sb << displayRange(start, end))[0..-2].toString()
-    if (result.size() > max_ints_display) {
-        result.substring(0, (max_ints_display-1).intdiv(2))
-        << "..."
-        << result.substring(result.size() - (max_ints_display-1).intdiv(2))
-    } else {
-        result
+    switch (l) {
+        case { it.size() == 0 }: return "";
+        case { it.size() == 1 }: return displayRange(l[0],l[0]);
+        default:
+            def sb, start, end
+            (sb, start, end) = [''<<'', l[0], l[0]]
+            for (i in l[1..-1]) {
+                (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << displayRange(start, end), i, i]
+            }
+            result = (sb << displayRange(start, end))[0..-2].toString()
+            if (result.size() > max_ints_display) {
+                return result.substring(0, (max_ints_display-1).intdiv(2))
+                << "..."
+                << result.substring(result.size() - (max_ints_display-1).intdiv(2))
+            } else {
+                return result
+            }
     }
 }
 
@@ -910,6 +941,137 @@ def get_seconds(float time, String unit) {
     } else {
         time * unit_conversions[unit]
     }
+}
+
+// use mwa webservices to gate obsids by pointing and faults
+workflow ws {
+    take:
+        // channel of obs ids
+        obsids
+
+    main:
+        obsids | wsMeta
+
+        wsSummary = wsMeta.out.map { def (obsid, json) = it;
+                // parse json
+                def stats = parseJson(json)
+                def pointing = stats.metadata.gridpoint_number
+                def nscans = ((stats.stoptime?:0) - (stats.starttime?:0)) / (stats.int_time?:1)
+                def delays = (stats.alldelays?:[:]).values().flatten()
+                def quality = stats.quality?:[:]
+                def tiles = stats.tdict?:[:]
+                def bad_tiles = stats.bad_tiles?:[:]
+                def dead_dipoles = delays.count { it == 32 }
+                def dead_dipole_frac = dead_dipoles / delays.size()
+                def dataquality = stats.dataquality
+                def dataqualitycomment = stats.dataqualitycomment?:''
+                def faults = stats.faults?:[:]
+                def badstates = (faults.badstates?:[:]).values().flatten()
+                def badpointings = (faults.badpointings?:[:]).values().flatten()
+                def badfreqs = (faults.badfreqs?:[:]).values().flatten()
+                def badgains = (faults.badgains?:[:]).values().flatten()
+                def badbeamshape = (faults.badbeamshape?:[:]).values().flatten()
+                def significant_faults = badstates.size() + badfreqs.size() + badgains.size()
+                def fail_reasons = []
+                if (!params.filter_pointings.contains(pointing)) {
+                    fail_reasons += ["pointing=${pointing}"]
+                }
+                if (dataquality != 1) {
+                    fail_reasons += ["dataquality=${dataquality}"]
+                }
+                if (bad_tiles.size() / tiles.size() > params.filter_bad_tile_frac) {
+                    fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
+                }
+                // if (dead_dipole_frac > 0.03) {
+                //     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
+                // }
+                def summary = [
+                    fail_reasons: fail_reasons,
+                    // obs metadata
+                    nscans: nscans,
+                    ra_pointing: stats.metadata.ra_pointing,
+                    dec_pointing: stats.metadata.dec_pointing,
+                    ra_phase_center: stats.ra_phase_center?:stats.metadata.ra_pointing,
+                    dec_phase_center: stats.dec_phase_center?:stats.metadata.dec_pointing,
+                    pointing: pointing,
+                    lst: stats.metadata.local_sidereal_time_deg,
+                    freq_res: stats.freq_res,
+                    int_time: stats.int_time,
+                    tiles: tiles,
+                    bad_tiles: bad_tiles,
+                    // iono quality
+                    iono_magnitude: quality.iono_magnitude?:'',
+                    iono_pca: quality.iono_pca?:'',
+                    iono_qa: quality.iono_qa?:'',
+                    // data quality
+                    dataquality: dataquality,
+                    dataqualitycomment: dataqualitycomment,
+                    // fraction of flagged tiles
+                    flagtilefrac: bad_tiles.size() / tiles.size(),
+                    // fraction of dead dipoles
+                    dead_dipole_frac: dead_dipole_frac,
+                    // faults
+                    badstates: badstates.size(),
+                    badpointings: badpointings.size(),
+                    badfreqs: badfreqs.size(),
+                    badgains: badgains.size(),
+                    badbeamshape: badbeamshape.size(),
+                    significant_faults: significant_faults,
+                    faultstring: faults.shortstring.replaceAll(/\n\s*/, '|'),
+                ]
+                [obsid, summary]
+            }
+
+        // display wsSummary
+        wsSummary.map { def (obsid, summary) = it;
+                [
+                    obsid,
+                    summary.fail_reasons.join('|'),
+                    summary.ra_pointing,
+                    summary.dec_pointing,
+                    summary.ra_phase_center,
+                    summary.dec_phase_center,
+                    summary.pointing,
+                    summary.lst,
+                    summary.freq_res,
+                    summary.int_time,
+                    summary.nscans,
+                    summary.dataquality,
+                    summary.dataqualitycomment,
+                    summary.dead_dipole_frac,
+                    summary.flagtilefrac,
+                    displayInts(summary.bad_tiles),
+                    summary.iono_magnitude,
+                    summary.iono_pca,
+                    summary.iono_qa,
+                    summary.badstates,
+                    summary.badpointings,
+                    summary.badfreqs,
+                    summary.badgains,
+                    summary.badbeamshape,
+                    summary.significant_faults,
+                    summary.faultstring
+                ].join("\t")
+            }
+            .collectFile(
+                name: "ws_stats.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "FAIL REASON", "RA POINT", "DEC POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG",
+                    "FREQ RES", "TIME RES","N SCANS", "QUALITY", "QUALITY COMMENT",
+                    "DEAD DIPOLE FRAC","FLAG TILES FRAC", "FLAG TILES",
+                    "IONO MAG", "IONO PCA", "IONO QA",
+                    "STATE FAULTS", "POINTING FAULTS", "FREQ FAULTS", "GAIN FAULTS", "BEAM FAULTS", "SIGNIFICANT FAULTS"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/",
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+    emit:
+        // channel of good obsids
+        pass = wsSummary
+            .filter { def (_, summary) = it; summary.fail_reasons == [] }
+            .map { def (obsid, _) = it; obsid }
 }
 
 // ensure raw files are downloaded
@@ -1453,6 +1615,11 @@ workflow img {
 workflow {
     // get obsids from csv
     obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
+
+    // analyse obsids with web services
+    obsids | ws
+    workingObsids = ws.out.pass
+    workingObsids.count().view { "working obsids: ${it}" }
 
     // download and preprocess raw obsids
     obsids | raw | prep
