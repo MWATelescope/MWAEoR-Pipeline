@@ -308,6 +308,7 @@ process flagQA {
     from json import dump as json_dump
     from glob import glob
     from os.path import basename
+    import numpy as np
     import re
 
     RE_MWAX_NAME = (
@@ -338,12 +339,17 @@ process flagQA {
 
     paths = sorted(glob("*.mwaf"))
     total_occupancy = 0
+    total_non_preflagged_bl_occupancy = 0
     num_coarse_chans = len(paths)
+    num_non_preflagged_chans = 0
     with \
         open('${obsid}_occupancy.json', 'w') as out, \
         fits.open("${obsid}.metafits") as meta \
     :
         data = {'obsid': ${obsid}, 'channels': {}}
+        t = meta['TILEDATA'].data
+        preflagged_ants = np.unique(t[t['Flag'] > 0]['Antenna'])
+        data['preflagged_ants'] = preflagged_ants.tolist()
         metafits_coarse_chans = [*map(int, split_strip_filter(meta[0].header['CHANNELS']))]
         for path in paths:
             filename_info = parse_filename(path, metafits_coarse_chans)
@@ -352,12 +358,24 @@ process flagQA {
             chan_id = filename_info.get('rec_chan', basename(path))
             data['channels'][chan_id] = {}
             with fits.open(path) as hdus:
-                flag_data = hdus[1].data['FLAGS']
+                flag_data = hdus['FLAGS'].data['FLAGS']
                 occupancy = flag_data.sum() / flag_data.size
                 data['channels'][chan_id]['occupancy'] = occupancy
                 total_occupancy += occupancy
-        total_occupancy /= num_coarse_chans
+                bls = hdus['BL_OCC'].data
+                non_preflagged_bls = bls[~(np.isin(bls['Antenna1'],preflagged_ants)|np.isin(bls['Antenna2'],preflagged_ants))]
+                non_preflagged_bl_count = non_preflagged_bls.shape[0]
+                if non_preflagged_bl_count:
+                    num_non_preflagged_chans += 1
+                    non_preflagged_bl_occupancy = non_preflagged_bls['Occupancy'].sum() / non_preflagged_bls.shape[0]
+                    data['channels'][chan_id]['non_preflagged_bl_occupancy'] = non_preflagged_bl_occupancy
+                    total_non_preflagged_bl_occupancy += non_preflagged_bl_occupancy
+        if num_coarse_chans:
+            total_occupancy /= num_coarse_chans
         data['total_occupancy'] = total_occupancy
+        if num_non_preflagged_chans:
+            total_non_preflagged_bl_occupancy /= num_non_preflagged_chans
+        data['total_non_preflagged_bl_occupancy'] = total_non_preflagged_bl_occupancy
         json_dump(data, out, indent=4)
     """
 }
@@ -1253,12 +1271,12 @@ workflow flagGate {
             // form row of tsv from json fields we care about
             .map { def (obsid, json) = it;
                 def stats = jslurp.parse(json)
-                def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.occupancy }
-                ([obsid, stats.total_occupancy] + chan_occupancy).join("\t")
+                def chan_occupancy = sky_chans.collect { ch -> (stats.channels?[ch]?.non_preflagged_bl_occupancy)?:'' }
+                ([obsid, stats.total_occupancy, stats.total_non_preflagged_bl_occupancy] + chan_occupancy).join("\t")
             }
             .collectFile(
                 name: "occupancy.tsv", newLine: true, sort: true,
-                seed: (["OBS", "TOTAL OCCUPANCY"] + sky_chans).join("\t"),
+                seed: (["OBS", "TOTAL OCCUPANCY", "NON PREFLAGGED"] + sky_chans).join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
             // display output path and number of lines
