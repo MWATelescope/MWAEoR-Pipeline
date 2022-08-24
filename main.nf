@@ -898,6 +898,172 @@ process imgQA {
     """
 }
 
+// polarimetry composite raster
+process polComp {
+    input:
+    tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
+    output:
+    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
+
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
+
+    tag "${obsid}.${name}"
+
+    errorStrategy 'ignore'
+    stageInMode "copy"
+
+    module "miniconda/4.8.3"
+    conda "/data/curtin_mwaeor/sw/conda/dev"
+
+    // without this, nextflow checks for the output before fs has had time
+    // to sync, causing it to think the job has failed.
+    afterScript "sleep 20s; ls ${task.storeDir}"
+    beforeScript "ls -al"
+
+    script:
+    """
+    #!/data/curtin_mwaeor/sw/conda/dev/bin/python
+
+    from astropy.io import fits
+    from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch
+    from astropy.visualization import ImageNormalize, PowerDistStretch, SinhStretch, LogStretch, AsinhStretch
+    from astropy.visualization.lupton_rgb import AsinhMapping, LinearMapping
+    from astropy.visualization.wcsaxes import WCSAxesSubplot, WCSAxes
+    from astropy.wcs import WCS
+    from matplotlib.patches import Rectangle, Circle
+    from matplotlib.colors import LinearSegmentedColormap
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.axes_grid1.axes_divider import AxesDivider, HBoxDivider, make_axes_locatable, Size
+    from mpl_toolkits.axes_grid1.axes_rgb import make_rgb_axes
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+    import numpy as np
+    from os.path import basename
+    from glob import glob
+
+    plt.style.use(astropy_mpl_style)
+
+    header = None
+    data = {}
+    for key in ["XX", "YY", "V"]:
+        path = glob(f"*${obsid}*${name}*{key}*.fits")[0]
+        with fits.open(path) as hdus:
+            if not header:
+                header = hdus[0].header
+            data[key] = hdus[0].data[0,0,:,:]
+
+    wcs = WCS(header)
+    img_size = header['NAXIS1'], header['NAXIS2']
+    # TODO: beam stuff
+    # cell_size = header['CDELT1'], header['CDELT2']
+    # beam_shape = header['BMAJ'], header['BMIN'], header['BPA']
+
+    # normalize 0-percentile to 0-1, use same percentile for XX and YY
+    i_percentile = np.percentile(np.stack((data["XX"], data["YY"])), 99.5)
+    v_percentile = np.percentile(data["V"], 99.5)
+    norm = {
+        "XX": data["XX"] / i_percentile,
+        "YY": data["YY"] / i_percentile,
+        "V": data["V"] / v_percentile,
+    }
+
+    rgbMap = AsinhMapping(0., stretch=3., Q=5.)
+    rgb = rgbMap.make_rgb_image(norm["XX"], norm["V"], norm["YY"])
+
+    sources = np.array([
+        [0, -27], # eor0
+        [6.4549166666666675, -26.04], # PKS0023_026
+        # [45, -26.04]
+    ])
+
+    # stretch=AsinhStretch(0.05)
+    # stretch=PowerDistStretch(0.05)
+    stretch=SinhStretch()
+
+    dpi = 100
+    with plt.style.context('dark_background'):
+        # axis setup
+        img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
+
+        axd = img_fig.subplot_mosaic(
+            [
+                ["Comp", "XX"],
+                ["Comp", "YY"],
+                ["Comp", "V"],
+            ],
+            subplot_kw={"projection": wcs, "slices": ('x', 'y', 0, 0)},
+            gridspec_kw={ "width_ratios": [3, 1], },
+            sharex=True, sharey=True
+        )
+
+        for ax in axd.values():
+            ax.set_ylabel("", visible=False)
+            ax.set_xlabel("", visible=False)
+            ax.set_label("")
+
+        divider = AxesDivider(axd['Comp'])
+        locator = divider.new_locator(nx=0, ny=0)
+        axd['Comp'].set_axes_locator(locator)
+
+        sub_xsize = (1/3) * Size.AxesX(axd['Comp'])
+        cb_xsize = (1/10) * sub_xsize
+        ysize = (1./3) * Size.AxesY(axd['Comp'])
+
+        divider.set_horizontal([Size.AxesX(axd['Comp']), sub_xsize, cb_xsize])
+        divider.set_vertical([ysize, ysize, ysize])
+
+        axd['Comp'].set_axes_locator(divider.new_locator(0, 0, ny1=-1))
+        axd["Comp"].tick_params(axis="y", direction="in", pad=-30, horizontalalighment="left")
+        axd["Comp"].tick_params(axis="x", direction="in", pad=-20, verticalalignment="bottom")
+        axd["Comp"].imshow(rgb)
+        axd["Comp"].set_title("${obsid} - ${name}", y=0.95, fontdict={'verticalalignment':'top'})
+
+        for key, ny, neg_col, pos_col, vmax in [
+            ['XX', 2, 'cyan', 'red', i_percentile],
+            ['YY', 1, 'yellow', 'blue', i_percentile],
+            ['V', 0, 'magenta', 'green', v_percentile]
+        ]:
+            ax = axd[key]
+            ax.set_title(key, y=0.95, fontdict={'verticalalignment':'top'})
+            ax.set_axes_locator(divider.new_locator(nx=1, ny=ny))
+            cmap = LinearSegmentedColormap.from_list(f'{neg_col}-bl-{pos_col}', [neg_col, 'black', pos_col], gamma=1)
+            norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
+            im = ax.imshow(data[key], cmap=cmap, norm=norm)
+            for coord in ax.coords:
+                coord.set_ticklabel_visible(False)
+            cax = inset_axes(
+                ax,
+                width="5%",
+                height="100%",
+                loc='lower left',
+                bbox_to_anchor=(1.0, 0., 1, 1),
+                bbox_transform=ax.transAxes,
+                borderpad=0,
+                axes_kwargs={ "axisbelow": False}
+            )
+            cbar = img_fig.colorbar(im, cax=cax)
+
+        for ax in axd.values():
+            ax.scatter(sources[:,0], sources[:,1], s=100, edgecolor='white', facecolor='none', transform=ax.get_transform('world'))
+            ax.add_patch(Rectangle((0, 0), 100, 100, edgecolor='white', fill=False, zorder=999))
+
+        #  hist_ax = inset_axes(
+        #      axd["Comp"],
+        #      width="100%",
+        #      height="20%",
+        #      loc='lower left',
+        #      bbox_to_anchor=(0., -0.25, 1, 1),
+        #      bbox_transform=axd['Comp'].transAxes,
+        #      borderpad=0,
+        #  )
+
+        #  hist_ax.hist(data["XX"].flatten(), bins=1000, color='red', alpha=0.5, histtype='step')
+        #  hist_ax.hist(data["YY"].flatten(), bins=1000, color='blue', alpha=0.5, histtype='step')
+        #  hist_ax.hist(data["V"].flatten(), bins=1000, color='green', alpha=0.5, histtype='step')
+
+        plt.savefig('${obsid}_${name}_polcomp.png', bbox_inches='tight', dpi=dpi)
+    """
+}
+
 import groovy.json.JsonSlurper
 import groovy.json.StringEscapeUtils
 jslurp = new JsonSlurper()
@@ -1628,6 +1794,20 @@ workflow img {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        polComp.out.map { def (obsid, name, png) = it;
+                [obsid, name, png].join("\t")
+            }
+            .collectFile(
+                name: "pol_comp.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "IMG NAME", "PNG"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
 }
 
 workflow {
@@ -1640,13 +1820,14 @@ workflow {
     workingObsids.count().view { "working obsids: ${it}" }
 
     // download and preprocess raw obsids
-    obsids | raw | prep
+    workingObsids | raw | prep
 
     // channel of metafits for each obsid: tuple(obsid, metafits)
     obsMetafits = raw.out.map { def (obsid, metafits, _) = it; [obsid, metafits] }
 
     // channel of obsids that pass the flag gate
     unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate
+    unflaggedObsids.count().view { "unflagged obsids: ${it}" }
 
     // calibrate each obs that passes flag gate:
     unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits) | cal
