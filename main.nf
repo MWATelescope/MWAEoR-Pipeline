@@ -1,28 +1,22 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-// download metadata from webservices
+// download observation metadata from webservices in json format
 process wsMeta {
     input:
     val(obsid)
     output:
     tuple val(obsid), path ("${obsid}_wsmeta.json")
 
+    // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
-    scratch true
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
-    errorStrategy 'ignore'
-
     script:
     """
-    # TODO: make this profile dependent
-    export http_proxy="http://proxy.per.dug.com:3128"
-    export https_proxy="http://proxy.per.dug.com:3128"
-    export all_proxy="proxy.per.dug.com:3128"
-    export ftp_proxy="http://proxy.per.dug.com:3128"
-
+    #!/bin/bash
+    ${params.proxy_prelude} # ensure proxy is set if needed
     wget -O ${obsid}_wsmeta.json "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
     """
 }
@@ -34,9 +28,7 @@ process asvoRaw {
     output:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
 
-    // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/$obsid/raw"
-    scratch true
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
@@ -54,7 +46,8 @@ process asvoRaw {
         }
         retry_reason = [
             1: "general or permission",
-            11: "Resource temporarily unavailable"
+            11: "Resource temporarily unavailable",
+            75: "Temporary failure, try again"
         ][task.exitStatus] ?: "unknown"
         wait_hours = Math.pow(2, task.attempt)
         println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
@@ -65,17 +58,10 @@ process asvoRaw {
     script:
     """
     # echo commands, exit on any failures
-    set -ex
+    set -eux
     export MWA_ASVO_API_KEY="${params.asvo_api_key}"
 
-    env | sort
-    df \$TMPDIR
-
-    # TODO: make this profile dependent
-    export http_proxy="http://proxy.per.dug.com:3128"
-    export https_proxy="http://proxy.per.dug.com:3128"
-    export all_proxy="proxy.per.dug.com:3128"
-    export ftp_proxy="http://proxy.per.dug.com:3128"
+    ${params.proxy_prelude} # ensure proxy is set if needed
 
     function ensure_disk_space {
         local needed=\$1
@@ -88,70 +74,51 @@ process asvoRaw {
             return 0
         fi
         echo "Could not determine disk space in \$PWD"
-        exit 1
-    }
-
-    # download any ASVO jobs for the obsid that are ready
-    function maybe_get_first_ready_job {
-        # extract id url and size from ready download vis jobs
-        ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
-            | tee /dev/stderr \
-            | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
-            | tee ready.tsv
-        if read -r jobid url size hash < ready.tsv; then
-            ensure_disk_space "\$size" || exit \$?
-            # giant-squid download --keep-zip --hash -v \$jobid 2>&1 | tee download.log
-            # if [ \${PIPESTATUS[0]} -ne 0 ]; then
-            #     echo "Download failed, see download.log"
-            #     exit 1
-            # fi
-            wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
-                | tee >(tar -x) \
-                | sha1sum -c <(echo "\$hash -")
-            ps=("\${PIPESTATUS[@]}")
-            if [ \${ps[0]} -ne 0 ]; then
-                echo "Download failed. status=\${ps[0]}"
-                exit \${ps[0]}
-            elif [ \${ps[1]} -ne 0 ]; then
-                echo "Untar failed. status=\${ps[1]}"
-                exit \${ps[1]}
-            elif [ \${ps[2]} -ne 0 ]; then
-                echo "Hash check failed. status=\${ps[2]}"
-                exit \${ps[2]}
-            fi
-            return 0
-        fi
-        echo "no ready jobs"
-        return 1
+        exit 28
     }
 
     # submit a job to ASVO, suppress failure if a job already exists.
-    ${params.giant_squid} submit-vis --delivery "acacia" $obsid -w || true
-
-    # download any ready jobs, exit if success, else suppress warning
-    maybe_get_first_ready_job && exit 0 || true
+    ${params.giant_squid} submit-vis --delivery "acacia" $obsid || true
 
     # extract id and state from pending download vis jobs
-    ${params.giant_squid} list -j --types download_visibilities --states queued,processing -- $obsid \
+    ${params.giant_squid} list -j --types download_visibilities --states queued,processing,error -- $obsid \
         | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
         | tee pending.tsv
 
-    # if pending jobs, wait for the first to complete and try downloading again
-    if read -r jobid state < pending.tsv; then
-        echo "[obs:$obsid]: waiting until \$jobid with state \$state is Ready"
-        ${params.giant_squid} wait -j -- \$jobid
-        # a new job is ready, so try and get it
-        maybe_get_first_ready_job
-        exit \$?
-    fi
+    # extract id url size hash from any ready download vis jobs for this obsid
+    ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
+        | tee /dev/stderr \
+        | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
+        | tee ready.tsv
 
-    # show errors if no pending jobs
-    ${params.giant_squid} list -j --types download_visibilities --states error -- $obsid \
-    | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
-    | tee errors.tsv
+    # download the first ready jobs
+    if read -r jobid url size hash < ready.tsv; then
+        ensure_disk_space "\$size" || exit \$?
+        # wget into two pipes:
+        # - first pipe untars the archive to disk
+        # - second pipe validates the sha sum
+        wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
+            | tee >(tar -x) \
+            | sha1sum -c <(echo "\$hash -")
+        ps=("\${PIPESTATUS[@]}")
+        if [ \${ps[0]} -ne 0 ]; then
+            echo "Download failed. status=\${ps[0]}"
+            exit \${ps[0]}
+        elif [ \${ps[1]} -ne 0 ]; then
+            echo "Untar failed. status=\${ps[1]}"
+            exit \${ps[1]}
+        elif [ \${ps[2]} -ne 0 ]; then
+            echo "Hash check failed. status=\${ps[2]}"
+            exit \${ps[2]}
+        fi
+        exit 0 # success
+    fi
+    echo "no ready jobs"
+    exit 75 # temporary
     """
 }
 
+// extract relevant info from metafits into json
 process metaJson {
     input:
     tuple val(obsid), path("${obsid}.metafits")
@@ -163,14 +130,10 @@ process metaJson {
 
     tag "${obsid}"
 
-    // if this script returns failure, don't progress this vis
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-
     module 'python/3.9.7'
+    // TODO: try this:
+    // module "miniconda/4.8.3"
+    // conda "${params.astro_conda}"
 
     script:
     """
@@ -217,15 +180,13 @@ process birliPrep {
     // label jobs that need a bigger cpu allocation
     label "cpu"
 
-    // this is necessary for singularity
-    stageInMode "copy"
+    // birli runs in singularity
     module "singularity"
 
     script:
     flag_template = obsid as int > 1300000000 ? "${obsid}${spw}_ch%%%.mwaf" : "${obsid}${spw}_%%.mwaf"
     """
-    ls -alt
-    df -B1 .
+    set -eux
     ${params.birli} \
         -u "birli_${obsid}${spw}.uvfits" \
         -f "${flag_template}" \
@@ -233,6 +194,10 @@ process birliPrep {
         --avg-time-res ${params.prep_time_res_s} \
         --avg-freq-res ${params.prep_freq_res_khz} \
         ${obsid}*.fits 2>&1 | tee birli_prep.log
+    if [ ! -f "birli_${obsid}${spw}.uvfits" ]; then
+        echo "no uvfits produced, birli failed silently"
+        exit 1
+    fi
     """
 }
 
@@ -248,14 +213,10 @@ process prepStats {
 
     tag "${obsid}"
 
-    // if this script returns failure, don't progress this vis
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-
     module 'python/3.9.7'
+    // TODO: try this:
+    // module "miniconda/4.8.3"
+    // conda "${params.astro_conda}"
 
     script:
     """
@@ -291,14 +252,9 @@ process flagQA {
 
     tag "${obsid}"
 
-    // if this script returns failure, don't progress this obs to calibration, just ignore
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-
     module 'python/3.9.7'
+    // module "miniconda/4.8.3"
+    // conda "${params.astro_conda}"
 
     script:
     """
@@ -380,61 +336,168 @@ process flagQA {
     """
 }
 
+def groovy2bashAssocArray(map, name) {
+    // size = map.collect { _, v -> v.size() }.max()
+    "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
+}
+
+// // ensure calibration solutions are present, or calibrate prep with hyperdrive
+// // do multiple calibration solutions for each obs
+// process hypCalSolMux {
+//     input:
+//     tuple val(obsids), val(dical_names), val(dical_args), path("*"), path("*") // metafits, uvfits
+//     output:
+//     tuple val(obsids), val(dical_names), path("hyp_soln_${name_glob}.fits"), path("hyp_model_${name_glob}.uvfits"), path("hyp_di-cal_${name_glob}.log")
+
+//     storeDir "${params.outdir}/cal_tmp/"
+
+//     // label jobs that need a bigger gpu allocation
+//     label "gpu"
+
+//
+
+//     module "cuda/11.3.1:gcc-rt/9.2.0"
+
+//     afterScript "ls ${task.storeDir}"
+
+//     script:
+//     obs_cals = [obsids, dical_names].transpose().collect { it.join("_") }
+//     name_glob = "{" + obs_cals.join(',') + "}"
+//     """
+//     # use this control which GPU we're sending the job to
+//     export CUDA_VISIBLE_DEVICES=0
+
+//     set -eux
+//     export num_gpus="\$(nvidia-smi -L | wc -l)"
+//     if [ \$num_gpus -eq 0 ]; then
+//         echo "no gpus found"
+//         exit 1
+//     fi
+//     if [ \$num_gpus -ne ${params.num_gpus} ]; then
+//         echo "warning: expected \$num_gpus to be ${params.num_gpus}"
+//     fi
+//     ${groovy2bashAssocArray(dical_args, "dical_args")}
+//     task_obsids=(${obsids.join(' ')})
+//     task_dical_names=(${dical_names.join(' ')})
+//     if [ \${#task_obsids[@]} -ne \${#task_dical_names[@]} ]; then
+//         echo "number of obsids (\${#task_obsids[@]}) doesn't match number of dical names (\${#task_dical_names[@]})"
+//         exit 1
+//     fi
+//     export n_tasks="\${#task_obsids[@]}"
+//     if [ \$n_tasks -eq 0 ]; then
+//         echo "no tasks to do"
+//         exit 0
+//     fi
+//     if [ \$n_tasks -gt \$num_gpus ]; then
+//         echo "warning: more tasks than gpus";
+//     fi
+//     for task in \$(seq 0 \$((n_tasks-1))); do
+//         obsid=\${task_obsids[\$task]}
+//         name=\${task_dical_names[\$task]}
+//         args=\${dical_args[\$name]}
+//         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
+//         # if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
+//         #     wait \$(jobs -rp)
+//         # fi
+//         # hyperdrive di-cal backgrounded in a subshell
+//         (
+//             ${params.hyperdrive} di-calibrate \${args} \
+//                 --data "\${obsid}.metafits" *\${obsid}*.uvfits \
+//                 --beam "${params.beam_path}" \
+//                 --source-list "${params.sourcelist}" \
+//                 --outputs "hyp_soln_\${obsid}_\${name}.fits" \
+//                 --model-filenames "hyp_model_\${obsid}_\${name}.uvfits" \
+//                 > "hyp_di-cal_\${obsid}_\${name}.log"
+//         ) &
+//         # increment the target device mod num_gpus
+//         CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
+//     done
+
+//     # wait for all the background jobs to finish
+//     export result=0
+//     wait \$(jobs -rp) || result=\$?
+
+//     # print out important info from log
+//     if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
+//         grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+//     fi
+
+//     exit \$result
+//     """
+// }
+
 // ensure calibration solutions are present, or calibrate prep with hyperdrive
+// do multiple calibration solutions for each obs, depending on dical_args
 process hypCalSol {
     input:
-    tuple val(obsid), val(spw), path("${obsid}.metafits"), path("${obsid}${spw}.uvfits"), path("dical_args.csv")
+    tuple val(obsid), val(dical_args), path("${obsid}.metafits"), path("${obsid}.uvfits") // metafits, uvfits
     output:
-    tuple val(obsid), val(spw), path("hyp_soln_${obsid}${spw}_??l_src4k.fits"), path("hyp_di-cal_${obsid}${spw}_??l_src4k.log")
+    tuple val(obsid), path("hyp_soln_${obsid}_${name_glob}.fits"), path("hyp_di-cal_${obsid}_${name_glob}.log")
+    // todo: model subtract: path("hyp_model_${obsid}_${name_glob}.uvfits")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}${spw}"
+    tag "${obsid}"
+
     // label jobs that need a bigger gpu allocation
     label "gpu"
 
-    errorStrategy 'ignore'
-
     module "cuda/11.3.1:gcc-rt/9.2.0"
-    stageInMode "copy"
+
+    afterScript "ls ${task.storeDir}"
 
     script:
+    dical_names = dical_args.keySet().collect()
+    name_glob = (dical_names.size() > 1) ? "{" + dical_names.join(',') + "}" : dical_names[0]
     """
-    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
-    # use this control which GPU we're sending the job to
+    set -eux
     export CUDA_VISIBLE_DEVICES=0
-
-    set -ex
-    ls -al
     export num_gpus="\$(nvidia-smi -L | wc -l)"
     if [ \$num_gpus -eq 0 ]; then
         echo "no gpus found"
         exit 1
     fi
-    # for each calibration parameter set in dical_args.csv, run hyperdrive di-cal
-    while IFS=, read -r dical_name dical_args; do
+    if [ \$num_gpus -ne ${params.num_gpus} ]; then
+        echo "warning: expected \$num_gpus to be ${params.num_gpus}"
+    fi
+    ${groovy2bashAssocArray(dical_args, "dical_args")}
+    if [ \${#dical_args[@]} -eq 0 ]; then
+        echo "no dical args"
+        exit 0
+    fi
+    if [ \${#dical_args[@]} -gt \$num_gpus ]; then
+        echo "warning: more dical args than gpus";
+    fi
+    for name in \${!dical_args[@]}; do
+        args=\${dical_args[\$name]}
         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
         if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
             wait \$(jobs -rp)
         fi
         # hyperdrive di-cal backgrounded in a subshell
         (
-            ${params.hyperdrive} di-calibrate \${dical_args} \
-                --data "${obsid}.metafits" "${obsid}${spw}.uvfits" \
+            ${params.hyperdrive} di-calibrate \${args} \
+                --data "${obsid}.metafits" "${obsid}.uvfits" \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
-                --outputs "hyp_soln_${obsid}${spw}_\${dical_name}.fits" \
-                > hyp_di-cal_${obsid}${spw}_\${dical_name}.log
+                --outputs "hyp_soln_${obsid}_\${name}.fits" \
+                > "hyp_di-cal_${obsid}_\${name}.log"
         ) &
+        # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
         # increment the target device mod num_gpus
         CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
-    done < <(cut -d',' -f1,2 dical_args.csv | sort | uniq)
+    done
 
     # wait for all the background jobs to finish
-    wait \$(jobs -rp)
+    export result=0
+    wait \$(jobs -rp) || result=\$?
 
     # print out important info from log
-    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
+        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    fi
+
+    exit \$result
     """
 }
 
@@ -447,13 +510,11 @@ process polyFit {
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
 
     module 'python/3.9.7'
+    // TODO: try this:
+    // module "miniconda/4.8.3"
+    // conda "${params.astro_conda}"
 
     script:
     name = "poly_${dical_name}"
@@ -537,69 +598,65 @@ process polyFit {
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyUV {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
-        val(dical_name), val(apply_name), val(apply_args)
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("hyp_soln_${obsid}_${cal_name}.fits"), \
+        val(cal_name), val(apply_name), val(apply_args)
     output:
-    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.uvfits"), \
-        path("hyp_apply_${vis_name}.log")
+    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.uvfits"), path("hyp_apply_${vis_name}.log")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${dical_name}_${apply_name}"
+    tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
 
-    errorStrategy 'ignore'
-
     module "gcc-rt/9.2.0"
-    stageInMode "copy"
 
     script:
-    vis_name = "${dical_name}_${apply_name}"
+    vis_name = "${cal_name}_${apply_name}"
     """
     # hyperdrive solutions apply uvfits
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${dical_name}.fits" \
+        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
         --outputs "hyp_${obsid}_${vis_name}.uvfits" \
         | tee hyp_apply_${vis_name}.log
 
     # print out important info from log
-    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
+        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    fi
     """
 }
 
 // ensure calibrated ms are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyMS {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("*"), \
-        val(dical_name), val(apply_name), val(apply_args)
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("hyp_soln_${obsid}_${cal_name}.fits"), \
+        val(cal_name), val(apply_name), val(apply_args)
     output:
-    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), \
-        path("hyp_apply_${vis_name}_ms.log")
+    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), path("hyp_apply_${vis_name}_ms.log")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
-    tag "${obsid}.${dical_name}_${apply_name}"
+    tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
 
-    errorStrategy 'ignore'
-
     module "gcc-rt/9.2.0"
-    stageInMode "copy"
 
     script:
-    vis_name = "${dical_name}_${apply_name}"
+    vis_name = "${cal_name}_${apply_name}"
     """
     # hyperdrive solutions apply ms
     ${params.hyperdrive} solutions-apply ${apply_args} \
         --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${dical_name}.fits" \
+        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
         --outputs "hyp_${obsid}_${vis_name}.ms" \
         | tee hyp_apply_${vis_name}_ms.log
 
     # print out important info from log
-    grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
+        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    fi
     """
 }
 
@@ -608,30 +665,31 @@ process hypSubUV {
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.uvfits")
     output:
     tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.uvfits"), \
-        path("hyp_${sub_name}_uv.log")
+        path("hyp_vis-sub_${name}_uv.log")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}.${name}"
     label "gpu"
 
-    errorStrategy 'ignore'
-
     module "gcc-rt/9.2.0"
 
     script:
     sub_name = "sub_${name}"
     """
-    ls -al
-    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
     ${params.hyperdrive} vis-sub \
         --data "${obsid}.metafits" "hyp_${obsid}_${name}.uvfits" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
         --invert --num-sources 4000 \
         --outputs "hyp_${obsid}_${sub_name}.uvfits" \
-        | tee hyp_${sub_name}_uv.log
-    # TODO: ^ num sources is hardcoded twice
+        | tee hyp_vis-sub_${name}_uv.log
+    # TODO: ^ num sources is hardcoded twice, would be better to re-use model from cal
+
+    # print out important info from log
+    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
+        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+    fi
     """
 }
 process hypSubMS {
@@ -639,29 +697,25 @@ process hypSubMS {
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.ms")
     output:
     tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.ms"), \
-        path("hyp_${sub_name}_ms.log")
+        path("hyp_vis-sub_${name}_ms.log")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}.${name}"
     label "gpu"
 
-    errorStrategy 'ignore'
-
     module "gcc-rt/9.2.0"
 
     script:
     sub_name = "sub_${name}"
     """
-    ls -al
-    export HYPERDRIVE_CUDA_COMPUTE=${params.cuda_compute}
     ${params.hyperdrive} vis-sub \
         --data "${obsid}.metafits" "hyp_${obsid}_${name}.ms" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
         --invert --num-sources 4000 \
         --outputs "hyp_${obsid}_${sub_name}.ms" \
-        | tee hyp_${sub_name}_ms.log
+        | tee hyp_vis-sub_${name}_ms.log
     """
 }
 
@@ -676,23 +730,18 @@ process visQA {
 
     tag "${obsid}.${name}"
 
-    errorStrategy 'ignore'
-
     label 'cpu'
 
     // needed for singularity
-    stageInMode "copy"
-    module "singularity"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
+    // module "singularity"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     """
+    #!/bin/bash
     set -ex
-    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_visqa.py *.uvfits --out "hyp_${obsid}_${name}_vis_metrics.json"
+    run_visqa.py *.uvfits --out "hyp_${obsid}_${name}_vis_metrics.json"
     """
 }
 
@@ -707,21 +756,17 @@ process calQA {
 
     tag "${obsid}.${name}"
 
-    errorStrategy 'ignore'
     // maxRetries 1
 
-    stageInMode "copy"
-    module "singularity"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
+    // module "singularity"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     """
+    #!/bin/bash
     set -ex
-    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_calqa.py soln.fits ${obsid}.metafits --pol X --out "hyp_soln_${obsid}_${name}_X.json"
+    run_calqa.py soln.fits ${obsid}.metafits --pol X --out "hyp_soln_${obsid}_${name}_X.json"
     """
 }
 
@@ -733,13 +778,10 @@ process solJson {
 
     storeDir "${params.outdir}/${obsid}/cal_qa"
     tag "${obsid}.${dical_name}"
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
 
     module 'python/3.9.7'
+    // module "miniconda/4.8.3"
+    // conda "${params.astro_conda}"
 
     script:
     """
@@ -777,19 +819,13 @@ process plotSols {
 
     tag "${obsid}.${name}"
 
-    errorStrategy 'ignore'
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-
     script:
     """
     hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
     """
 }
 
-// process plotCalMetrics {
+// TODO: process plotCalMetrics {
 //     input:
 //     tuple val(name), path("*")
 //     output:
@@ -808,15 +844,6 @@ process wscleanDirty {
     tag "${obsid}.${name}"
     label "cpu"
     label "img"
-
-    errorStrategy 'ignore'
-
-    // this is necessary for singularity
-    stageInMode "copy"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
 
     script:
     """
@@ -847,13 +874,6 @@ process psMetrics {
 
     tag "${obsid}.${name}"
 
-    errorStrategy 'ignore'
-    stageInMode "copy"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-
     module "cfitsio/3.470:gcc-rt/9.2.0"
 
     script:
@@ -876,25 +896,25 @@ process imgQA {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
 
-    storeDir "${params.outdir}/${obsid}/img_qa"
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
 
     tag "${obsid}.${name}"
 
-    // TODO: figure out why this keeps failing
-    errorStrategy 'ignore'
-
-    stageInMode "copy"
-    module "singularity"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
+    // module "singularity"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
+    // """
+    // set -ex
+    // singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
+    //     run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
+    // """
+
     """
+    #!/bin/bash
     set -ex
-    singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-        run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
+    run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
     """
 }
 
@@ -909,20 +929,12 @@ process polComp {
 
     tag "${obsid}.${name}"
 
-    errorStrategy 'ignore'
-    stageInMode "copy"
-
     module "miniconda/4.8.3"
-    conda "/data/curtin_mwaeor/sw/conda/dev"
-
-    // without this, nextflow checks for the output before fs has had time
-    // to sync, causing it to think the job has failed.
-    afterScript "sleep 20s; ls ${task.storeDir}"
-    beforeScript "ls -al"
+    conda "${params.astro_conda}"
 
     script:
     """
-    #!/data/curtin_mwaeor/sw/conda/dev/bin/python
+    #!${params.astro_conda}/bin/python
 
     from astropy.io import fits
     from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch
@@ -1072,6 +1084,9 @@ def parseJson(path) {
     jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"NaN"'))
 }
 
+import java.text.SimpleDateFormat
+SimpleDateFormat logDateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
+
 // display a long list of ints, replace bursts of consecutive numbers with ranges
 def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
 max_ints_display = 50
@@ -1110,7 +1125,6 @@ def contigRanges(l) {
             return (sb << (start..end))[0..-1]
     }
 }
-
 
 unit_conversions = [
     "s": 1,
@@ -1166,9 +1180,9 @@ workflow ws {
                 if (bad_tiles.size() / tiles.size() > params.filter_bad_tile_frac) {
                     fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
                 }
-                // if (dead_dipole_frac > 0.03) {
-                //     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
-                // }
+                if (dead_dipole_frac > params.filter_dead_dipole_frac) {
+                    fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
+                }
                 def summary = [
                     fail_reasons: fail_reasons,
                     // obs metadata
@@ -1202,6 +1216,10 @@ workflow ws {
                     badbeamshape: badbeamshape.size(),
                     significant_faults: significant_faults,
                     faultstring: faults.shortstring.replaceAll(/\n\s*/, '|'),
+                    // files
+                    files: stats.files.toString(),
+                    num_data_files: stats.num_data_files,
+                    num_data_files_archived: stats.num_data_files_archived,
                 ]
                 [obsid, summary]
             }
@@ -1461,32 +1479,36 @@ workflow cal {
         // channel of metafits and preprocessed uvfits: tuple(obsid, metafits, uvfits)
         obsMetaVis
     main:
-        // create a channel of a single csv for calibration args with columns:
-        // - short name that appears in calibration solution filename
-        // - args for hyperdrive soln apply args
-        dical_args = channel
-            .fromPath(params.dical_args_path)
-            .collect()
-
-        // create a channel of calibration parameter sets from a csv with columns:
-        // - short name that appears in calibration solution filename
-        // - short name that appears in the apply filename
-        // - args for hyperdrive soln apply args
-        apply_args = channel
-            .fromPath(params.apply_args_path)
-            .splitCsv(header: false)
-
         // hyperdrive di-calibrate on each obs
         obsMetaVis
-            // set spw to ""
-            .map { def (obsid, metafits, uvfits) = it; [obsid, "", metafits, uvfits] }
-            .combine(dical_args)
+            .map { def (obsids, metafits, uvfits) = it
+                [obsids, params.dical_args, metafits, uvfits]
+            }
             | hypCalSol
 
         // channel of solutions for each unflagged obsid: tuple(obsid, solutions)
-        obsSolns = hypCalSol.out.map { def (obsid, _, solutions) = it; [obsid, solutions] }
+        obsSolns = hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] }
         // channel of metafits for each obsid: tuple(obsid, metafits)
         obsMetafits = obsMetaVis.map { def (obsid, metafits, _) = it; [obsid, metafits] }
+
+        // hyperdrive dical log analysis
+        hypCalSol.out.map { def (obsid, _, diCalLog) = it;
+                def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
+                def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
+                def convergedTime = logDateFmt.parse(convergedMatch[1])
+                def convergedNumerator = convergedMatch[2] as int
+                def convergedDenominator = convergedMatch[3] as int
+                def convergedDurationSec = (convergedTime.time - startTime.time) / 1000
+
+                [obsid, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
+            }
+            .collectFile(
+                name: "cal_timings.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
 
         // channel of individual dical solutions: tuple(obsid, name, soln)
         // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
@@ -1585,27 +1607,25 @@ workflow cal {
             | view { [it, it.readLines().size()] }
 
         // hyperdrive apply-solutions using apply solution args file:
-        // - take tuple(obsid, name, soln) from both eachCal and polyFit
-        // - match with tuple(dical_name, apply_name, apply_args) on dical_name
+        // - take tuple(obsid, cal_name, soln) from both eachCal and polyFit
+        // - lookup [apply_name, apply_args] from params.apply_args on cal_name
         // - match with tuple(obsid, metafits, prepUVFits) by obsid
         obsMetaVis
             .cross(
-                apply_args
-                    .cross(
-                        eachCal
-                            .mix(polyFit.out)
-                            .map { def (obsid, name, soln) = it; [name.toString(), obsid, soln] }
-                    )
-                    .map {
-                        def (dical_name, apply_name, apply_args) = it[0]
-                        def (_, obsid, soln) = it[1]
-                        [obsid, soln, dical_name, apply_name, apply_args]
+                eachCal
+                    .mix(polyFit.out)
+                    .filter { def (obsid, cal_name, soln) = it;
+                        params.apply_args[cal_name] != null
+                    }
+                    .map { def (obsid, cal_name, soln) = it;
+                        def (apply_name, apply_args) = params.apply_args[cal_name]
+                        [obsid, soln, cal_name, apply_name, apply_args]
                     }
             )
             .map {
                 def (obsid, metafits, prepUVFits) = it[0]
-                def (_, soln, dical_name, apply_name, apply_args) = it[1]
-                [obsid, metafits, prepUVFits, soln, dical_name, apply_name, apply_args]
+                def (_, soln, cal_name, apply_name, apply_args) = it[1]
+                [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
             }
             | (hypApplyUV & hypApplyMS)
 
@@ -1762,7 +1782,9 @@ workflow img {
         obsNameMS | wscleanDirty
 
         // imgQA for all groups of images
-        wscleanDirty.out | imgQA
+        wscleanDirty.out
+            .map { def (obsid, name, imgs) = it; [obsid, name, imgs] }
+            | (imgQA & polComp)
 
         // collect imgQA results as .tsv
         imgQA.out
@@ -1816,18 +1838,26 @@ workflow {
 
     // analyse obsids with web services
     obsids | ws
-    workingObsids = ws.out.pass
-    workingObsids.count().view { "working obsids: ${it}" }
+    filteredObsids = ws.out.pass
+    filteredObsids.collectFile(
+        name: "filtered_obsids.csv", newLine: true, sort: true,
+        storeDir: "${params.outdir}/results${params.result_suffix}/"
+    )
+    | view { [it, it.readLines().size()] }
 
     // download and preprocess raw obsids
-    workingObsids | raw | prep
+    filteredObsids | raw | prep
 
     // channel of metafits for each obsid: tuple(obsid, metafits)
     obsMetafits = raw.out.map { def (obsid, metafits, _) = it; [obsid, metafits] }
 
     // channel of obsids that pass the flag gate
     unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate
-    unflaggedObsids.count().view { "unflagged obsids: ${it}" }
+    unflaggedObsids.collectFile(
+        name: "unflagged_obsids.csv", newLine: true, sort: true,
+        storeDir: "${params.outdir}/results${params.result_suffix}/"
+    )
+    | view { [it, it.readLines().size()] }
 
     // calibrate each obs that passes flag gate:
     unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits) | cal
