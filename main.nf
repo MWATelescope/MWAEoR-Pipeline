@@ -448,10 +448,11 @@ process hypCalSol {
 
     script:
     dical_names = dical_args.keySet().collect()
-    name_glob = (dical_names.size() > 1) ? "{" + dical_names.join(',') + "}" : dical_names[0]
+    para = dical_names.size() > 1
+    name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
     """
     set -eux
-    export CUDA_VISIBLE_DEVICES=0
+    ${para ? "export CUDA_VISIBLE_DEVICES=0" : ""}
     export num_gpus="\$(nvidia-smi -L | wc -l)"
     if [ \$num_gpus -eq 0 ]; then
         echo "no gpus found"
@@ -470,10 +471,6 @@ process hypCalSol {
     fi
     for name in \${!dical_args[@]}; do
         args=\${dical_args[\$name]}
-        # on first iteration, this does nothing. on nth, wait for all background jobs to finish
-        if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
-            wait \$(jobs -rp)
-        fi
         # hyperdrive di-cal backgrounded in a subshell
         (
             ${params.hyperdrive} di-calibrate \${args} \
@@ -485,7 +482,7 @@ process hypCalSol {
         ) &
         # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
         # increment the target device mod num_gpus
-        CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
+        ${para ? "CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))" : ""}
     done
 
     # wait for all the background jobs to finish
@@ -733,7 +730,6 @@ process visQA {
     label 'cpu'
 
     // needed for singularity
-    // module "singularity"
     module "miniconda/4.8.3"
     conda "${params.astro_conda}"
 
@@ -756,9 +752,6 @@ process calQA {
 
     tag "${obsid}.${name}"
 
-    // maxRetries 1
-
-    // module "singularity"
     module "miniconda/4.8.3"
     conda "${params.astro_conda}"
 
@@ -900,7 +893,6 @@ process imgQA {
 
     tag "${obsid}.${name}"
 
-    // module "singularity"
     module "miniconda/4.8.3"
     conda "${params.astro_conda}"
 
