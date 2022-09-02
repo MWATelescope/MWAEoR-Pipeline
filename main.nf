@@ -818,12 +818,29 @@ process plotSols {
     """
 }
 
-// TODO: process plotCalMetrics {
-//     input:
-//     tuple val(name), path("*")
-//     output:
-//     tuple val(name), path("*")
-// }
+process plotCalQA {
+    input:
+    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.json")
+    output:
+    tuple val(obsid), val(name), \
+        path("calmetrics_${obsid}_${name}_fft.png"), \
+        path("calmetrics_${obsid}_${name}_variance.png"), \
+        path("calmetrics_${obsid}_${name}_dlyspectrum.png")
+
+    storeDir "${params.outdir}/${obsid}/cal_qa"
+
+    tag "${obsid}.${name}"
+
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
+
+    script:
+    """
+    #!/bin/bash
+    set -ex
+    plot_calqa.py "hyp_soln_${obsid}_${name}.json" --out "calmetrics_${obsid}_${name}.png" --save
+    """
+}
 
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
@@ -1547,6 +1564,9 @@ workflow cal {
                 [obsid, name, metafits, soln]
             }
             | (plotSols & calQA)
+
+        // plot calQA results
+        calQA.out | plotCalQA
 
         // collect calQA results as .tsv
         calQA.out
