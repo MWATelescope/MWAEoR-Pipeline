@@ -1561,7 +1561,7 @@ workflow cal {
                     (stats.UNUSED_ANTS?:0) / 100,
                     (stats.NON_CONVERGED_CHS?:0) / 100,
                     stats.CONVERGENCE_VAR?[0],
-                    stats.CONVERGENCE_VAR?[0] * 1e14,
+                    stats.CONVERGENCE_VAR?[0] == "NaN" ? "NaN" : stats.CONVERGENCE_VAR?[0] * 1e14,
                     stats.XX?.SKEWNESS_UVCUT?:'',
                     stats.XX?.RMS_AMPVAR_ANT?:'',
                     stats.XX?.RMS_AMPVAR_FREQ?:'',
