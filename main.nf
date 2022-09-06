@@ -1091,6 +1091,8 @@ workflow ws {
                     summary.freq_res,
                     summary.int_time,
                     summary.nscans,
+                    summary.num_data_files,
+                    summary.num_data_files_archived,
                     summary.dataquality,
                     summary.dataqualitycomment,
                     summary.dead_dipole_frac,
@@ -1105,7 +1107,7 @@ workflow ws {
                     summary.badgains,
                     summary.badbeamshape,
                     summary.significant_faults,
-                    summary.faultstring
+                    summary.faultstring,
                 ].join("\t")
             }
             .collectFile(
