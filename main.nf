@@ -1692,7 +1692,10 @@ workflow img {
 
 workflow {
     // get obsids from csv
-    obsids = channel.fromPath(params.obsids_path).splitCsv().flatten()
+    obsids = channel.fromPath(params.obsids_path)
+        .splitCsv()
+        .flatten()
+        .filter { line -> !line.startsWith('#') }
 
     // analyse obsids with web services
     obsids | ws
