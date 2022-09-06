@@ -341,91 +341,6 @@ def groovy2bashAssocArray(map, name) {
     "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
 }
 
-// // ensure calibration solutions are present, or calibrate prep with hyperdrive
-// // do multiple calibration solutions for each obs
-// process hypCalSolMux {
-//     input:
-//     tuple val(obsids), val(dical_names), val(dical_args), path("*"), path("*") // metafits, uvfits
-//     output:
-//     tuple val(obsids), val(dical_names), path("hyp_soln_${name_glob}.fits"), path("hyp_model_${name_glob}.uvfits"), path("hyp_di-cal_${name_glob}.log")
-
-//     storeDir "${params.outdir}/cal_tmp/"
-
-//     // label jobs that need a bigger gpu allocation
-//     label "gpu"
-
-//
-
-//     module "cuda/11.3.1:gcc-rt/9.2.0"
-
-//     afterScript "ls ${task.storeDir}"
-
-//     script:
-//     obs_cals = [obsids, dical_names].transpose().collect { it.join("_") }
-//     name_glob = "{" + obs_cals.join(',') + "}"
-//     """
-//     # use this control which GPU we're sending the job to
-//     export CUDA_VISIBLE_DEVICES=0
-
-//     set -eux
-//     export num_gpus="\$(nvidia-smi -L | wc -l)"
-//     if [ \$num_gpus -eq 0 ]; then
-//         echo "no gpus found"
-//         exit 1
-//     fi
-//     if [ \$num_gpus -ne ${params.num_gpus} ]; then
-//         echo "warning: expected \$num_gpus to be ${params.num_gpus}"
-//     fi
-//     ${groovy2bashAssocArray(dical_args, "dical_args")}
-//     task_obsids=(${obsids.join(' ')})
-//     task_dical_names=(${dical_names.join(' ')})
-//     if [ \${#task_obsids[@]} -ne \${#task_dical_names[@]} ]; then
-//         echo "number of obsids (\${#task_obsids[@]}) doesn't match number of dical names (\${#task_dical_names[@]})"
-//         exit 1
-//     fi
-//     export n_tasks="\${#task_obsids[@]}"
-//     if [ \$n_tasks -eq 0 ]; then
-//         echo "no tasks to do"
-//         exit 0
-//     fi
-//     if [ \$n_tasks -gt \$num_gpus ]; then
-//         echo "warning: more tasks than gpus";
-//     fi
-//     for task in \$(seq 0 \$((n_tasks-1))); do
-//         obsid=\${task_obsids[\$task]}
-//         name=\${task_dical_names[\$task]}
-//         args=\${dical_args[\$name]}
-//         # on first iteration, this does nothing. on nth, wait for all background jobs to finish
-//         # if [[ \$CUDA_VISIBLE_DEVICES -eq 0 ]]; then
-//         #     wait \$(jobs -rp)
-//         # fi
-//         # hyperdrive di-cal backgrounded in a subshell
-//         (
-//             ${params.hyperdrive} di-calibrate \${args} \
-//                 --data "\${obsid}.metafits" *\${obsid}*.uvfits \
-//                 --beam "${params.beam_path}" \
-//                 --source-list "${params.sourcelist}" \
-//                 --outputs "hyp_soln_\${obsid}_\${name}.fits" \
-//                 --model-filenames "hyp_model_\${obsid}_\${name}.uvfits" \
-//                 > "hyp_di-cal_\${obsid}_\${name}.log"
-//         ) &
-//         # increment the target device mod num_gpus
-//         CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))
-//     done
-
-//     # wait for all the background jobs to finish
-//     export result=0
-//     wait \$(jobs -rp) || result=\$?
-
-//     # print out important info from log
-//     if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
-//         grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
-//     fi
-
-//     exit \$result
-//     """
-// }
-
 // ensure calibration solutions are present, or calibrate prep with hyperdrive
 // do multiple calibration solutions for each obs, depending on dical_args
 process hypCalSol {
@@ -503,92 +418,23 @@ process polyFit {
     input:
     tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
     output:
-    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.fits")
+    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.fits"), path("polyfit_${obsid}_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
-    module 'python/3.9.7'
-    // TODO: try this:
-    // module "miniconda/4.8.3"
-    // conda "${params.astro_conda}"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     name = "poly_${dical_name}"
     """
-    #!/usr/bin/env python
-    # this is nextflow-ified version of /astro/mwaeor/ctrott/poly_fit.py
-    # TODO: this deserves its own version control
-
-    from astropy.io import fits
-    import numpy as np
-    from numpy.polynomial import Polynomial
-
-
-    def get_unflagged_indices(n_bands, n_chan, clip_width=0):
-        # Returns indices of unflagged frequency channels
-        edge_flags = 2 + clip_width
-        centre_flag = n_chan // 2
-
-        channels = np.arange(n_chan)
-        channels = np.delete(channels, centre_flag)
-        channels = channels[edge_flags:-edge_flags]
-
-        all_channels = []
-        for n in range(n_bands):
-            for c in channels:
-                all_channels.append(c+(n*n_chan))
-        return all_channels
-
-
-    def fit_hyperdrive_sols(sols, results, order=3, clip_width=0):
-        # Fits polynomial to real and imaginary part of hyperdrive solutions
-        # Remove flagged channels
-        # Hyperdrive solutions have dimensions ((time),ant,freq,pols)
-
-        n_bands = 24
-        n_ants, n_freqs, n_pols = np.shape(sols)
-        assert n_freqs % n_bands == 0
-        n_chan = n_freqs // n_bands
-
-        models_out = np.zeros_like(sols, dtype=complex)
-
-        clipped_x = get_unflagged_indices(n_bands, n_chan, clip_width=clip_width)
-        # filter any channels where result is NaN
-        clipped_x = [ x for x in clipped_x if not np.isnan(results[x]) ]
-
-        # Remove flagged tiles which are nan at first unflagged frequency and pol
-        good_tiles = np.argwhere(~np.isnan(sols[:, clipped_x[0], 0]))
-
-        freq_array = np.arange(n_freqs)
-
-        for ant in good_tiles:
-            for pol in range(n_pols):
-                z_r = Polynomial.fit(clipped_x, np.real(
-                    sols[ant, clipped_x, pol]), deg=order)
-                z_i = Polynomial.fit(clipped_x, np.imag(
-                    sols[ant, clipped_x, pol]), deg=order)
-                models_out[ant, :, pol] = z_r(freq_array) + z_i(freq_array) * 1j
-
-        return models_out
-
-    infile = "hyp_soln_${obsid}_${dical_name}.fits"
-    outfile = "hyp_soln_${obsid}_${name}.fits"
-
-    with fits.open(infile) as hdus:
-        # Reads hyperdrive solutions from fits file into numpy array
-        data = hdus["SOLUTIONS"].data
-        for i_timeblock in range(data.shape[0]):
-            sols = data[i_timeblock, :, :, ::2] + data[i_timeblock, :, :, 1::2] * 1j
-            results = hdus["RESULTS"].data[i_timeblock,:]
-
-            fit_sols = fit_hyperdrive_sols(sols, results)
-
-            # Write fitted solutions
-            hdus["SOLUTIONS"].data[i_timeblock, :, :, ::2] = np.real(fit_sols)
-            hdus["SOLUTIONS"].data[i_timeblock, :, :, 1::2] = np.imag(fit_sols)
-
-        hdus.writeto(outfile, overwrite="True")
+    #!/bin/bash
+    set -ex
+    run_polyfit.py \
+        hyp_soln_${obsid}_${dical_name}.fits \
+        --outfile "hyp_soln_${obsid}_${name}.fits" \
+        | tee polyfit_${obsid}_${name}.log
     """
 }
 
@@ -729,7 +575,6 @@ process visQA {
 
     label 'cpu'
 
-    // needed for singularity
     module "miniconda/4.8.3"
     conda "${params.astro_conda}"
 
@@ -852,7 +697,6 @@ process wscleanDirty {
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
     tag "${obsid}.${name}"
-    label "cpu"
     label "img"
 
     script:
