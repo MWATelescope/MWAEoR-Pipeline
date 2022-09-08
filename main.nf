@@ -1003,7 +1003,7 @@ workflow ws {
     main:
         obsids | wsMeta
 
-        wsSummary = wsMeta.out.map { def (obsid, json) = it;
+        wsSummary = wsMeta.out.map { obsid, json ->
                 // parse json
                 def stats = parseJson(json)
                 def pointing = stats.metadata.gridpoint_number
@@ -1078,7 +1078,7 @@ workflow ws {
             }
 
         // display wsSummary
-        wsSummary.map { def (obsid, summary) = it;
+        wsSummary.map { obsid, summary ->
                 [
                     obsid,
                     summary.fail_reasons.join('|'),
@@ -1127,8 +1127,8 @@ workflow ws {
     emit:
         // channel of good obsids
         pass = wsSummary
-            .filter { def (_, summary) = it; summary.fail_reasons == [] }
-            .map { def (obsid, _) = it; obsid }
+            .filter { _, summary -> summary.fail_reasons == [] }
+            .map { obsid, _ -> obsid }
 }
 
 // ensure raw files are downloaded
@@ -1142,7 +1142,7 @@ workflow raw {
         // collect disk usage stats from asvoRaw stage
         asvoRaw.out
             // form row of tsv
-            .map { def (obsid, metafits, gpuboxes) = it; [
+            .map { obsid, metafits, gpuboxes -> [
                 obsid,
                 metafits.size(), // size of metafits [B]
                 gpuboxes.size(), // number of gpubox files
@@ -1159,13 +1159,13 @@ workflow raw {
 
         // analyse metafits stats
         asvoRaw.out
-            .map { def (obsid, metafits, _) = it; [obsid, metafits] }
+            .map { obsid, metafits, _ -> [obsid, metafits] }
             | metaJson
 
         // collect metafits stats
         metaJson.out
             // for row of tsv from metafits json fields we care about
-            .map { def (obsid, json) = it;
+            .map { obsid, json ->
                 def stats = jslurp.parse(json)
                 // def row = [obsid]
                 // row += [
@@ -1217,22 +1217,22 @@ workflow prep {
         // preprocess raw files with Birli
         obsRawFiles
             // set spw to ""
-            .map { def (obsid, metafits, gpuboxes) = it; [obsid, "", metafits, gpuboxes] }
+            .map { obsid, metafits, gpuboxes -> [obsid, "", metafits, gpuboxes] }
             | birliPrep
 
         // get info about preprocessing stage
         birliPrep.out
-            .map { def (obsid, _, prepUVFits, __, ___) = it; [obsid, prepUVFits] }
+            .map { def (obsid, _, prepUVFits) = it; [obsid, prepUVFits] }
             | prepStats
 
         // collect prep stats
         prepStats.out
             // join with uvfits, mwaf and birli log
-            .join( birliPrep.out.map { def (obsid, _, prepUVFits, prepMwafs, prepLog) = it;
+            .join( birliPrep.out.map { obsid, _, prepUVFits, prepMwafs, prepLog ->
                 [obsid, prepUVFits, prepMwafs, prepLog]
             })
             // form row of tsv from json fields we care about
-            .map { def (obsid, json, prepVis, prepMwafs, prepLog) = it;
+            .map { obsid, json, prepVis, prepMwafs, prepLog ->
                 def stats = jslurp.parse(json)
                 // parse birli log for missing hdus
                 def missing_hdus = (prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/)
@@ -1288,7 +1288,7 @@ workflow prep {
             | view { [it, it.readLines().size()] }
     emit:
         // channel of preprocessed files: tuple(obsid, prepUVFits)
-        obsPrepUVFits = birliPrep.out.map { def (obsid, _, prepUVFits, __) = it; [obsid, prepUVFits] }
+        obsPrepUVFits = birliPrep.out.map { def (obsid, _, prepUVFits) = it; [obsid, prepUVFits] }
         // channel of mwaf files for each obsid: tuple(obsid, mwafs)
         obsMwafs = birliPrep.out.map { def (obsid, _, __, prepMwafs) = it; [obsid, prepMwafs] }
 }
@@ -1308,7 +1308,7 @@ workflow flagGate {
         def sky_chans = (131..154).collect { ch -> "$ch".toString() }
         flagQA.out
             // form row of tsv from json fields we care about
-            .map { def (obsid, json) = it;
+            .map { obsid, json ->
                 def stats = jslurp.parse(json)
                 def chan_occupancy = sky_chans.collect { ch -> (stats.channels?[ch]?.non_preflagged_bl_occupancy)?:'' }
                 ([obsid, stats.total_occupancy, stats.total_non_preflagged_bl_occupancy] + chan_occupancy).join("\t")
@@ -1324,9 +1324,9 @@ workflow flagGate {
     emit:
         // channel of obsids which pass the flag gate
         pass = flagQA.out
-            .map { def (obsid, json) = it; [obsid, jslurp.parse(json).total_occupancy] }
-            .filter { def (_, occ) = it; occ && occ < params.flag_occupancy_threshold }
-            .map { def (obsid, _) = it; obsid }
+            .map { obsid, json -> [obsid, jslurp.parse(json).total_occupancy] }
+            .filter { _, occ -> occ && occ < params.flag_occupancy_threshold }
+            .map { obsid, _ -> obsid }
 }
 
 workflow cal {
@@ -1341,13 +1341,8 @@ workflow cal {
             }
             | hypCalSol
 
-        // channel of solutions for each unflagged obsid: tuple(obsid, solutions)
-        obsSolns = hypCalSol.out.map { def (obsid, solutions) = it; [obsid, solutions] }
-        // channel of metafits for each obsid: tuple(obsid, metafits)
-        obsMetafits = obsMetaVis.map { def (obsid, metafits, _) = it; [obsid, metafits] }
-
         // hyperdrive dical log analysis
-        hypCalSol.out.map { def (obsid, _, diCalLog) = it;
+        hypCalSol.out.map { obsid, _, diCalLog ->
                 def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
                 def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
                 def convergedTime = logDateFmt.parse(convergedMatch[1])
@@ -1365,11 +1360,13 @@ workflow cal {
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
 
+        // channel of solutions for each obsid: tuple(obsid, solutions)
+        obsSolns = hypCalSol.out.map { obsid, solutions, _ -> [obsid, solutions] }
         // channel of individual dical solutions: tuple(obsid, name, soln)
         // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
         eachCal = obsSolns
             .transpose()
-            .map { def (obsid, soln) = it
+            .map { obsid, soln ->
                 // give each calibration a name from basename of solution fits
                 def name = soln.getBaseName().split('_')[3..-1].join('_')
                 [obsid, name, soln]
@@ -1381,7 +1378,7 @@ workflow cal {
         // collect solJson results as .tsv
         solJson.out
             // form row of tsv from json fields we care about
-            .map { def (obsid, name, json) = it;
+            .map { obsid, name, json ->
                 def stats = parseJson(json)
                 def results = stats.RESULTS?[0]?:[]
                 def (nans, convergences) = results.split { it == "NaN" }
@@ -1402,10 +1399,18 @@ workflow cal {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
+        // channel of individual polyfit solutions: tuple(obsid, name, soln)
+        eachPolyCal = polyFit.out.map { obsid, name, soln, _ -> [obsid, name, soln] }
+        // channel of all dical and polyfit solutions: tuple(obsid, name, soln)
+        allCal = eachCal.mix(eachPolyCal)
+
+        // channel of metafits for each obsid: tuple(obsid, metafits)
+        obsMetafits = obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits] }
         // calibration QA and plot solutions
         obsMetafits
-            // join with hyp_soln from ensureCal
-            .cross(eachCal.mix(polyFit.out))
+            // join with solutions from eachCal and eachPolyCal
+            .cross(allCal)
+            // .map { (obsid, metafits), (_, name, soln) ->
             .map { def (obsid, metafits) = it[0]; def (_, name, soln) = it[1]
                 [obsid, name, metafits, soln]
             }
@@ -1417,7 +1422,7 @@ workflow cal {
         // collect calQA results as .tsv
         calQA.out
             // form row of tsv from json fields we care about
-            .map { def (obsid, name, json) = it;
+            .map { obsid, name, json ->
                 def stats = parseJson(json)
                 [
                     obsid,
@@ -1470,12 +1475,11 @@ workflow cal {
         // - match with tuple(obsid, metafits, prepUVFits) by obsid
         obsMetaVis
             .cross(
-                eachCal
-                    .mix(polyFit.out)
-                    .filter { def (obsid, cal_name, soln) = it;
+                allCal
+                    .filter { obsid, cal_name, _ ->
                         params.apply_args[cal_name] != null
                     }
-                    .map { def (obsid, cal_name, soln) = it;
+                    .map { obsid, cal_name, soln ->
                         def (apply_name, apply_args) = params.apply_args[cal_name]
                         [obsid, soln, cal_name, apply_name, apply_args]
                     }
@@ -1489,11 +1493,7 @@ workflow cal {
 
         // get subtracted uvfits vis
         obsMetaVis
-            .cross(
-                hypApplyUV.out
-                    // TODO: exclude poly_50l without hardcoding twice.
-                    .filter { def (_, name) = it; !(name ==~ /poly_50l.*/) }
-            )
+            .cross(hypApplyUV.out)
             .map {
                 def (obsid, metafits, _) = it[0]
                 def (__, name, vis) = it[1];
@@ -1503,11 +1503,7 @@ workflow cal {
 
         // get subtracted ms vis
         obsMetaVis
-            .cross(
-                hypApplyMS.out
-                    // TODO: exclude poly_50l without hardcoding twice.
-                    .filter { def (_, name) = it; !(name ==~ /poly_50l.*/) }
-            )
+            .cross(hypApplyMS.out)
             .map {
                 def (obsid, metafits, _) = it[0]
                 def (__, name, vis) = it[1];
@@ -1519,11 +1515,11 @@ workflow cal {
         // channel of calibrated or subtracted uvfits: tuple(obsid, name, uvfits)
         obsNameUvfits = hypApplyUV.out
             .mix(hypSubUV.out)
-            .map { def (obsid, name, vis) = it; [obsid, name, vis] }
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
         // channel of calibrated measurement sets: tuple(obsid, name, ms)
         obsNameMS = hypApplyMS.out
             .mix(hypSubMS.out)
-            .map { def (obsid, name, vis) = it; [obsid, name, vis] }
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
 }
 
 // process uvfits visibilities
@@ -1535,13 +1531,13 @@ workflow uvfits {
         obsNameUvfits | psMetrics
         // TODO: tap?
         obsNameUvfits
-            .filter { def (_, name) = it; !name.toString().startsWith("sub_") }
+            .filter { _, name, __ -> !name.toString().startsWith("sub_") }
             | visQA
 
         // collect visQA results as .tsv
         visQA.out
             // form row of tsv from json fields we care about
-            .map { def (obsid, name, json) = it;
+            .map { obsid, name, json ->
                 def stats = parseJson(json);
                 [
                     obsid,
@@ -1604,7 +1600,7 @@ workflow uvfits {
         // collect psMetrics as a .dat
         psMetrics.out
             // read the content of each ps_metrics file including the trailing newline
-            .map { def (obsid, vis_name, dat) = it; dat.getText() }
+            .map { obsid, vis_name, dat, _ -> dat.getText() }
             .collectFile(
                 name: "ps_metrics.dat",
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
@@ -1615,7 +1611,7 @@ workflow uvfits {
         // collect psMetrics as a .tsv
         psMetrics.out
             // form each row of tsv
-            .map { def (obsid, vis_name, dat) = it;
+            .map { obsid, vis_name, dat, _ ->
                 def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
                 ([obsid, vis_name] + dat_values).join("\t")
             }
@@ -1641,13 +1637,13 @@ workflow img {
 
         // imgQA for all groups of images
         wscleanDirty.out
-            .map { def (obsid, name, imgs) = it; [obsid, name, imgs] }
+            .map { obsid, name, imgs, _ -> [obsid, name, imgs] }
             | (imgQA & polComp)
 
         // collect imgQA results as .tsv
         imgQA.out
             // form row of tsv from json fields we care about
-            .map { def (obsid, name, json) = it;
+            .map { obsid, name, json ->
                 // parse json
                 // def stats = jslurp.parse(json)
                 // TODO: fix nasty hack to deal with NaNs
@@ -1675,7 +1671,7 @@ workflow img {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        polComp.out.map { def (obsid, name, png) = it;
+        polComp.out.map { obsid, name, png ->
                 [obsid, name, png].join("\t")
             }
             .collectFile(
@@ -1710,7 +1706,7 @@ workflow {
     filteredObsids | raw | prep
 
     // channel of metafits for each obsid: tuple(obsid, metafits)
-    obsMetafits = raw.out.map { def (obsid, metafits, _) = it; [obsid, metafits] }
+    obsMetafits = raw.out.map { obsid, metafits, _ -> [obsid, metafits] }
 
     // channel of obsids that pass the flag gate
     unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate
