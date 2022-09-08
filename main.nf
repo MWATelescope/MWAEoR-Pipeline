@@ -1372,8 +1372,19 @@ workflow cal {
                 [obsid, name, soln]
             }
 
-        // do polyfit, generate json from solns
-        eachCal | (polyFit & solJson)
+        // generate json from solns
+        eachCal | solJson
+
+        // channel of all dical (and polyfit) solutions: tuple(obsid, name, soln)
+        if (!params.nopoly) {
+            // do polyFit if nopoly is not set
+            eachCal | polyFit
+            // channel of individual polyfit solutions: tuple(obsid, name, soln)
+            eachPolyCal = polyFit.out.map { obsid, name, soln, _ -> [obsid, name, soln] }
+            allCal = eachCal.mix(eachPolyCal)
+        } else {
+            allCal = eachCal
+        }
 
         // collect solJson results as .tsv
         solJson.out
@@ -1399,11 +1410,6 @@ workflow cal {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        // channel of individual polyfit solutions: tuple(obsid, name, soln)
-        eachPolyCal = polyFit.out.map { obsid, name, soln, _ -> [obsid, name, soln] }
-        // channel of all dical and polyfit solutions: tuple(obsid, name, soln)
-        allCal = eachCal.mix(eachPolyCal)
-
         // channel of metafits for each obsid: tuple(obsid, metafits)
         obsMetafits = obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits] }
         // calibration QA and plot solutions
@@ -1427,12 +1433,13 @@ workflow cal {
                 [
                     obsid,
                     name,
+                    stats.STATUS?:'',
                     (stats.UNUSED_BLS?:0) / 100,
                     (stats.UNUSED_CHS?:0) / 100,
                     (stats.UNUSED_ANTS?:0) / 100,
                     (stats.NON_CONVERGED_CHS?:0) / 100,
-                    stats.CONVERGENCE_VAR?[0],
-                    stats.CONVERGENCE_VAR?[0] == "NaN" ? "NaN" : stats.CONVERGENCE_VAR?[0] * 1e14,
+                    stats.CONVERGENCE_VAR,
+                    stats.CONVERGENCE_VAR == "NaN" ? "NaN" : stats.CONVERGENCE_VAR * 1e14,
                     stats.XX?.SKEWNESS_UVCUT?:'',
                     stats.XX?.RMS_AMPVAR_ANT?:'',
                     stats.XX?.RMS_AMPVAR_FREQ?:'',
@@ -1443,12 +1450,13 @@ workflow cal {
                     stats.YY?.RMS_AMPVAR_FREQ?:'',
                     stats.YY?.DFFT_POWER?:'',
                     stats.YY?.RECEIVER_CHISQVAR?:'',
+                    stats.FAILURE_REASON,
                 ].join("\t")
             }
             .collectFile(
                 name: "cal_metrics.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME",
+                    "OBS", "CAL NAME", "STATUS",
                     "BL UNUSED FRAC", "CH UNUSED FRAC", "ANT UNUSED FRAC",
                     "NON CONVG CHS FRAC",
                     "CONVG VAR",
@@ -1463,63 +1471,27 @@ workflow cal {
                     "YY RMS AMPVAR FREQ",
                     "YY DFFT POWER",
                     "YY RECEIVER CHISQVAR",
+                    "FAILURE_REASON"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        // hyperdrive apply-solutions using apply solution args file:
-        // - take tuple(obsid, cal_name, soln) from both eachCal and polyFit
-        // - lookup [apply_name, apply_args] from params.apply_args on cal_name
-        // - match with tuple(obsid, metafits, prepUVFits) by obsid
-        obsMetaVis
-            .cross(
-                allCal
-                    .filter { obsid, cal_name, _ ->
-                        params.apply_args[cal_name] != null
-                    }
-                    .map { obsid, cal_name, soln ->
-                        def (apply_name, apply_args) = params.apply_args[cal_name]
-                        [obsid, soln, cal_name, apply_name, apply_args]
-                    }
-            )
-            .map {
-                def (obsid, metafits, prepUVFits) = it[0]
-                def (_, soln, cal_name, apply_name, apply_args) = it[1]
-                [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
-            }
-            | (hypApplyUV & hypApplyMS)
-
-        // get subtracted uvfits vis
-        obsMetaVis
-            .cross(hypApplyUV.out)
-            .map {
-                def (obsid, metafits, _) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis]
-            }
-            | hypSubUV
-
-        // get subtracted ms vis
-        obsMetaVis
-            .cross(hypApplyMS.out)
-            .map {
-                def (obsid, metafits, _) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis]
-            }
-            | hypSubMS
+    // channel of obsids and names that pass qa. tuple(obsid, name)
+    // - take tuple(obsid, cal_name, json) from calQA.out
+    // - filter on json.STATUS == "PASS"
+    // - take obsid and name
+    obsidNamePass = calQA.out
+        .filter { _, __, json -> parseJson(json).STATUS == "PASS" }
+        .map { obsid, name, _ -> [obsid, name] }
 
     emit:
-        // channel of calibrated or subtracted uvfits: tuple(obsid, name, uvfits)
-        obsNameUvfits = hypApplyUV.out
-            .mix(hypSubUV.out)
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
-        // channel of calibrated measurement sets: tuple(obsid, name, ms)
-        obsNameMS = hypApplyMS.out
-            .mix(hypSubMS.out)
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        // channel of calibration solutions that pass qa. tuple(obsid, name, cal)
+        // - take tuple(obsid, cal_name, soln) from allCal
+        // - match with obsidNamePass on (obsid, cal_name)
+        passCal = allCal
+            .join(obsidNamePass, by: [0,1] )
 }
 
 // process uvfits visibilities
@@ -1562,8 +1534,6 @@ workflow uvfits {
                     stats.REDUNDANT?.YY?.VAR_PHS_CHISQ?:'',
                     stats.REDUNDANT?.YY?.MVAR_AMP_DIFF?:'',
                     stats.REDUNDANT?.YY?.MVAR_PHS_DIFF?:'',
-                    // stats.AUTOS?.XX?.POOR_TIMES?[0],
-                    // stats.AUTOS?.YY?.POOR_TIMES?[0]
                 ].join("\t")
             }
             .collectFile(
@@ -1590,7 +1560,6 @@ workflow uvfits {
                     "R:YY VAR PHS CHISQ",
                     "R:YY MVAR AMP DIFF",
                     "R:YY MVAR PHS DIFF",
-                    // "XX POOR TIMES", "YY POOR TIMES"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
@@ -1702,7 +1671,8 @@ workflow {
     )
     | view { [it, it.readLines().size()] }
 
-    // download and preprocess raw obsids
+    // download and preprocess raw obsids, unless nodl is set
+    if (params.nodl) { println("params.nodl set, exiting."); return }
     filteredObsids | raw | prep
 
     // channel of metafits for each obsid: tuple(obsid, metafits)
@@ -1716,12 +1686,79 @@ workflow {
     )
     | view { [it, it.readLines().size()] }
 
-    // calibrate each obs that passes flag gate:
-    unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits) | cal
+    // calibrate each obs that passes flag gate unless nocal is set:
+    if (params.nocal) { println("params.nocal set, exiting."); return }
+    obsMetaVis = unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits)
+    obsMetaVis | cal
+
+    if (params.noapply) { println("params.noapply set, exiting."); return }
+    // channel of arguments for hypApply{UV,MS}
+    // - take tuple(obsid, cal_name, soln) from obsNameSoln
+    // - lookup [apply_name, apply_args] from params.apply_args on cal_name
+    // - match with tuple(obsid, metafits, prepUVFits) by obsid
+    allApply = obsMetaVis
+        .cross(
+            cal.out.passCal
+                .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
+                .map { obsid, cal_name, soln ->
+                    def (apply_name, apply_args) = params.apply_args[cal_name]
+                    [obsid, soln, cal_name, apply_name, apply_args]
+                }
+        )
+        .map {
+            def (obsid, metafits, prepUVFits) = it[0]
+            def (_, soln, cal_name, apply_name, apply_args) = it[1]
+            [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
+        }
+
+    allApply | hypApplyUV
+
+    // channel of calibrated (or subtracted) uvfits: tuple(obsid, name, uvfits)
+    if (params.nosub) {
+        obsNameUvfits = hypApplyUV.out
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
+    } else {
+        // get subtracted uvfits vis
+        obsMetaVis
+            .cross(hypApplyUV.out)
+            .map {
+                def (obsid, metafits, _) = it[0]
+                def (__, name, vis) = it[1];
+                [obsid, name, metafits, vis]
+            }
+            | hypSubUV
+
+        obsNameUvfits = hypApplyUV.out
+            .mix(hypSubUV.out)
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
+    }
 
     // QA uvfits visibilities
-    cal.out.obsNameUvfits | uvfits
+    obsNameUvfits | uvfits
 
-    // QA images of measurementsets
-    cal.out.obsNameMS | img
+    // TODO: filter out obsids that don't pass uvfits qa
+    allApply | hypApplyMS
+
+    // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
+    if (params.nosub) {
+        obsNameMS = hypApplyMS.out
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
+    } else {
+        // get subtracted ms vis
+        obsMetaVis
+            .cross(hypApplyMS.out)
+            .map {
+                def (obsid, metafits, _) = it[0]
+                def (__, name, vis) = it[1];
+                [obsid, name, metafits, vis]
+            }
+            | hypSubMS
+
+        obsNameMS = hypApplyMS.out
+            .mix(hypSubMS.out)
+            .map { obsid, name, vis, _ -> [obsid, name, vis] }
+    }
+
+    // image and qa measurementsets
+    obsNameMS | img
 }
