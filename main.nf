@@ -929,6 +929,29 @@ process polComp {
     """
 }
 
+process archive {
+    input:
+        tuple val(bucket_suffix), path(x)
+    output:
+        path("${x}.shadow")
+
+    tag "$x"
+    storeDir "${params.outdir}/.fakebuckets/${bucket}"
+
+    module "rclone"
+    stageInMode "symlink"
+
+    script:
+    bucket = "${params.bucket_prefix}.${bucket_suffix}"
+    """
+    #!/bin/bash -eux
+    touch "${x}.shadow"
+    ${params.proxy_prelude} # ensure proxy is set if needed
+    rclone mkdir "${bucket}"
+    rclone copyto --copy-links "$x" "${bucket}/$x"
+    """
+}
+
 import groovy.json.JsonSlurper
 import groovy.json.StringEscapeUtils
 jslurp = new JsonSlurper()
@@ -1327,6 +1350,8 @@ workflow flagGate {
             .map { obsid, json -> [obsid, jslurp.parse(json).total_occupancy] }
             .filter { _, occ -> occ && occ < params.flag_occupancy_threshold }
             .map { obsid, _ -> obsid }
+        // channel of files to archive, and their buckets
+        // archive = flagQA.out.map { _, json -> ["flagqa", json]}
 }
 
 workflow cal {
@@ -1492,6 +1517,8 @@ workflow cal {
         // - match with obsidNamePass on (obsid, cal_name)
         passCal = allCal
             .join(obsidNamePass, by: [0,1] )
+        // channel of files to archive, and their buckets
+        archive = calQA.out.map { _, __, json -> ["calqa", json]}
 }
 
 // process uvfits visibilities
@@ -1594,6 +1621,10 @@ workflow uvfits {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+    emit:
+        // channel of files to archive, and their buckets
+        archive = visQA.out.map { _, __, json -> ["visqa", json]}
 }
 
 // image measurement sets and QA images
@@ -1613,9 +1644,6 @@ workflow img {
         imgQA.out
             // form row of tsv from json fields we care about
             .map { obsid, name, json ->
-                // parse json
-                // def stats = jslurp.parse(json)
-                // TODO: fix nasty hack to deal with NaNs
                 def stats = parseJson(json)
                 [
                     obsid,
@@ -1653,6 +1681,12 @@ workflow img {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
+    emit:
+        // channel of files to archive, and their buckets
+        archive = wscleanDirty.out
+            .transpose()
+            .map { _, __, img, ___ -> ["img", img]}
+            .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
 }
 
 workflow {
@@ -1761,4 +1795,13 @@ workflow {
 
     // image and qa measurementsets
     obsNameMS | img
+
+    if (params.archive) {
+        cal.out.passCal.map { _, __, soln -> ["soln", soln] }
+            .mix(obsNameUvfits.map { _, __, vis -> ["uvfits", vis]})
+            .mix(cal.out.archive)
+            .mix(uvfits.out.archive)
+            .mix(img.out.archive)
+            | archive
+    }
 }
