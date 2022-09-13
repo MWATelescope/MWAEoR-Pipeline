@@ -130,14 +130,12 @@ process metaJson {
 
     tag "${obsid}"
 
-    module 'python/3.9.7'
-    // TODO: try this:
-    // module "miniconda/4.8.3"
-    // conda "${params.astro_conda}"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     """
-    #!/usr/bin/env python
+    #!${params.astro_conda}/bin/python
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -252,13 +250,12 @@ process flagQA {
 
     tag "${obsid}"
 
-    module 'python/3.9.7'
-    // module "miniconda/4.8.3"
-    // conda "${params.astro_conda}"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     """
-    #!/usr/bin/env python
+    #!${params.astro_conda}/bin/python
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -608,6 +605,7 @@ process calQA {
     """
 }
 
+// write info from solutions to json
 process solJson {
     input:
     tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
@@ -617,15 +615,12 @@ process solJson {
     storeDir "${params.outdir}/${obsid}/cal_qa"
     tag "${obsid}.${dical_name}"
 
-    module 'python/3.9.7'
-    // module "miniconda/4.8.3"
-    // conda "${params.astro_conda}"
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
 
     script:
     """
-    #!/usr/bin/env python
-    # this is nextflow-ified version of /astro/mwaeor/ctrott/poly_fit.py
-    # TODO: this deserves its own version control
+    #!${params.astro_conda}/bin/python
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -758,12 +753,6 @@ process imgQA {
     conda "${params.astro_conda}"
 
     script:
-    // """
-    // set -ex
-    // singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home ${params.mwa_qa_sif} \
-    //     run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
-    // """
-
     """
     #!/bin/bash
     set -ex
