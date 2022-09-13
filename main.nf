@@ -957,7 +957,7 @@ import groovy.json.StringEscapeUtils
 jslurp = new JsonSlurper()
 def parseJson(path) {
     // TODO: fix nasty hack to deal with NaNs
-    jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"NaN"'))
+    jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"$1"'))
 }
 
 import java.text.SimpleDateFormat
