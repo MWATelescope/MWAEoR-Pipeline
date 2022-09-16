@@ -42,96 +42,6 @@ process wsMetafits {
     """
 }
 
-// Ensure the raw visibility files are present, or download via ASVO
-process asvoRaw {
-    input:
-    val obsid
-    output:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
-
-    storeDir "${params.outdir}/${obsid}/raw"
-    // tag to identify job in squeue and nf logs
-    tag "${obsid}"
-
-    // allow multiple retries
-    maxRetries 5
-    // exponential backoff: sleep for 2^attempt hours after each fail
-    errorStrategy {
-        failure_reason = [
-            5: "I/O error or hash mitch",
-            28: "No space left on device",
-        ][task.exitStatus]
-        if (failure_reason) {
-            println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
-            return 'ignore'
-        }
-        retry_reason = [
-            1: "general or permission",
-            11: "Resource temporarily unavailable",
-            75: "Temporary failure, try again"
-        ][task.exitStatus] ?: "unknown"
-        wait_hours = Math.pow(2, task.attempt)
-        println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
-        sleep(wait_hours * 60*60*1000 as long)
-        return 'retry'
-    }
-
-    script:
-    """
-    # echo commands, exit on any failures
-    set -eux
-    export MWA_ASVO_API_KEY="${params.asvo_api_key}"
-
-    ${params.proxy_prelude} # ensure proxy is set if needed
-
-    # submit a job to ASVO, suppress failure if a job already exists.
-    ${params.giant_squid} submit-vis --delivery "acacia" $obsid || true
-
-    # extract id and state from pending download vis jobs
-    ${params.giant_squid} list -j --types download_visibilities --states queued,processing,error -- $obsid \
-        | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
-        | tee pending.tsv
-
-    # extract id url size hash from any ready download vis jobs for this obsid
-    ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
-        | tee /dev/stderr \
-        | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
-        | tee ready.tsv
-
-    # download the first ready jobs
-    if read -r jobid url size hash < ready.tsv; then
-        if read -r avail < <(df --output=avail -B1 . | tail -n 1); then
-            if [[ \$avail -lt \$needed ]]; then
-                echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail B"
-                exit 28  # No space left on device
-            fi
-        else
-            echo "Warning: Could not determine disk space in \$PWD"
-        fi
-        # wget into two pipes:
-        # - first pipe untars the archive to disk
-        # - second pipe validates the sha sum
-        wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
-            | tee >(tar -x) \
-            | sha1sum -c <(echo "\$hash -")
-        ps=("\${PIPESTATUS[@]}")
-        if [ \${ps[0]} -ne 0 ]; then
-            echo "Download failed. status=\${ps[0]}"
-            exit \${ps[0]}
-        elif [ \${ps[1]} -ne 0 ]; then
-            echo "Untar failed. status=\${ps[1]}"
-            exit \${ps[1]}
-        elif [ \${ps[2]} -ne 0 ]; then
-            echo "Hash check failed. status=\${ps[2]}"
-            exit \${ps[2]}
-        fi
-        exit 0 # success
-    fi
-    echo "no ready jobs"
-    exit 75 # temporary
-    """
-}
-
 // download preprocessed files from asvo
 process asvoPrep {
     input:
@@ -223,87 +133,6 @@ process asvoPrep {
     """
 }
 
-// extract relevant info from metafits into json
-process metaJson {
-    input:
-    tuple val(obsid), path("${obsid}.metafits")
-    output:
-    tuple val(obsid), path("${obsid}.metafits.json")
-
-    scratch false
-    storeDir "${params.outdir}/${obsid}/raw"
-
-    tag "${obsid}"
-
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
-
-    script:
-    """
-    #!${params.astro_conda}/bin/python
-
-    from astropy.io import fits
-    from json import dump as json_dump
-    from collections import OrderedDict
-
-    with \
-        open('${obsid}.metafits.json', 'w') as out, \
-        fits.open("${obsid}.metafits") as hdus \
-    :
-        data = OrderedDict()
-        for key in hdus['PRIMARY'].header:
-            if type(hdus['PRIMARY'].header[key]) not in [bool, int, str, float]:
-                continue
-            data[key] = hdus['PRIMARY'].header[key]
-            if key in [ 'RECVRS', 'DELAYS', 'CHANNELS', 'CHANSEL' ]:
-                data[key] = [*filter(None, map(lambda t: t.strip(), data[key].split(',')))]
-
-        data['FLAGGED_INPUTS'] = [
-            r['TileName'] + r['Pol']
-            for r in hdus['TILEDATA'].data
-            if r['Flag'] == 1
-        ]
-
-        data['DELAYS'] = hdus['TILEDATA'].data['Delays'].tolist()
-
-        json_dump(data, out, indent=4)
-    """
-}
-
-// Ensure preprocessed observation is present, or preprocess raw with Birli
-process birliPrep {
-    input:
-    tuple val(obsid), val(spw), path("${obsid}.metafits"), path("*") // <-preserves names of fits files
-    output:
-    tuple val(obsid), val(spw), path("birli_${obsid}${spw}.uvfits"), path("${obsid}${spw}*.mwaf"), path("birli_prep.log")
-
-    storeDir "${params.outdir}/${obsid}/prep"
-
-    tag "${obsid}${spw}"
-    // label jobs that need a bigger cpu allocation
-    label "cpu"
-
-    // birli runs in singularity
-    module "singularity"
-
-    script:
-    flag_template = obsid as int > 1300000000 ? "${obsid}${spw}_ch%%%.mwaf" : "${obsid}${spw}_%%.mwaf"
-    """
-    set -eux
-    ${params.birli} \
-        -u "birli_${obsid}${spw}.uvfits" \
-        -f "${flag_template}" \
-        -m "${obsid}.metafits" \
-        --avg-time-res ${params.prep_time_res_s} \
-        --avg-freq-res ${params.prep_freq_res_khz} \
-        ${obsid}*.fits 2>&1 | tee birli_prep.log
-    if [ ! -f "birli_${obsid}${spw}.uvfits" ]; then
-        echo "no uvfits produced, birli failed silently"
-        exit 1
-    fi
-    """
-}
-
 // QA tasks for flags.
 process flagQA {
     input:
@@ -386,7 +215,7 @@ process flagQA {
         flagged_sky_chans = np.array(sky_chans)[flagged_cchan_idxs].tolist()
         data['flagged_sky_chans'] = flagged_sky_chans
         data['flagged_fchan_idxs'] = np.where(flagged_mask.all(axis=(0,1)))[0].tolist()
-        
+
         # occupancy of non-preflagged baselines by coarse channel
         unflagged_bl_occupancy = np.sum(unflagged_bl_flag_count, axis=(0,2)) / (num_unflagged_blts * num_fchans)
 
@@ -1224,176 +1053,23 @@ workflow ws {
         pass | wsMetafits
 
     emit:
-        // channel of good obsids with their metafits
+        // channel of good obsids with their metafits: tuple(obsid, metafits)
         obsMetafits = wsMetafits.out
 }
 
-// ensure raw files are downloaded
-workflow raw {
-    take:
-        // channel of obs ids
-        obsids
-    main:
-        asvoRaw(obsids)
-
-        // collect disk usage stats from asvoRaw stage
-        asvoRaw.out
-            // form row of tsv
-            .map { obsid, metafits, gpuboxes -> [
-                obsid,
-                metafits.size(), // size of metafits [B]
-                gpuboxes.size(), // number of gpubox files
-                gpuboxes.collect(path -> path.size()).sum() // total gpubox size [B]
-            ].join("\t") }
-            .collectFile(
-                name: "raw_stats.tsv", newLine: true, sort: true,
-                // "seed" is the header of the tsv file
-                seed: ["OBS","META SIZE","N GPUBOX","GPUBOX SIZE"].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
-
-        // analyse metafits stats
-        asvoRaw.out
-            .map { obsid, metafits, _ -> [obsid, metafits] }
-            | metaJson
-
-        // collect metafits stats
-        metaJson.out
-            // for row of tsv from metafits json fields we care about
-            .map { obsid, json ->
-                def stats = jslurp.parse(json)
-                def flagged_inputs = stats.FLAGGED_INPUTS?:[]
-                def delays = (stats.DELAYS?:[]).flatten()
-                [
-                    obsid,
-                    stats."DATE-OBS",
-                    stats.RA,
-                    stats.DEC,
-                    stats.GRIDNUM,
-                    stats.CENTCHAN,
-                    stats.FINECHAN,
-                    stats.INTTIME,
-                    stats.NSCANS,
-                    stats.NINPUTS,
-                    (delays.count { it == 32 } / delays.size()), // fraction of dead dipole
-                    flagged_inputs.size(), // number of flagged inputs
-                    flagged_inputs.join('\t') // flagged input names
-                ].join("\t")
-            }
-            .collectFile(
-                name: "metafits_stats.tsv", newLine: true, sort: true,
-                seed: [
-                    "OBS", "DATE", "RA", "DEC", "POINT",
-                    "CENT CH","FREQ RES",
-                    "TIME RES","N SCANS",
-                    "N INPS","DEAD DIPOLE FRAC","N FLAG INPS","FLAG INPS"
-                ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/",
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
-
-    emit:
-        // channel of all raw files: tuple(obsid, metafits, gpuboxes)
-        obsRawFiles = asvoRaw.out
-}
-
-// ensure preprocessed uvfits and flags have been generated from raw files
+// ensure preprocessed uvfits are downloaded
 workflow prep {
     take:
-        // channel of raw files: tuple(obsid, metafits, gpuboxes)
-        obsRawFiles
+        // channel of obsids with their metafits: tuple(obsid, metafits)
+        obsMetafits
     main:
-        // preprocess raw files with Birli
-        obsRawFiles
-            // set spw to ""
-            .map { obsid, metafits, gpuboxes -> [obsid, "", metafits, gpuboxes] }
-            | birliPrep
+        // download preprocessed uvfits
+        obsMetafits
+            .map { obsid, _ -> obsid }
+            | asvoPrep
 
-        // get info about preprocessing stage
-        birliPrep.out
-            .map { def (obsid, _, prepUVFits) = it; [obsid, prepUVFits] }
-            | flagQA
-
-        // collect prep stats
-        flagQA.out
-            // join with uvfits, mwaf and birli log
-            .join( birliPrep.out.map { obsid, _, prepUVFits, prepMwafs, prepLog ->
-                [obsid, prepUVFits, prepMwafs, prepLog]
-            })
-            // form row of tsv from json fields we care about
-            .map { obsid, json, prepVis, prepMwafs, prepLog ->
-                def stats = jslurp.parse(json)
-                // parse birli log for missing hdus
-                def missing_hdus = (prepLog.getText() =~ /NoDataForTimeStepCoarseChannel \{ timestep_index: (\d+), coarse_chan_index: (\d+) \}/)
-                    .collect { m -> [tstep:m[1], cchan:m[2]] }
-                // parse birli for missing durations
-                def durations = (prepLog.getText() =~ /(\w+) duration: ([\d.]+)([^\d.\s]*)/)
-                    .collect()
-                    .collectEntries  { m ->
-                        def (stage, time, unit) = [m[1].toString(), m[2] as float, m[3].toString()]
-                        [(stage):get_seconds(time, unit)]
-                    }
-                // display a compressed version of missing hdus
-                def missing_timesteps_by_gpubox = missing_hdus
-                    .groupBy { m -> m.cchan }
-                    .collect { cchan, pairs ->
-                        [cchan as int, displayInts(pairs.collect {pair -> pair.tstep as int})].join(":")
-                    }
-                    .sort();
-                [
-                    obsid,
-                    // prep stats json
-                    stats.num_chans,
-                    stats.num_times,
-                    stats.num_baselines,
-                    // disk usage
-                    prepVis.size(), // size of uvfits [B]
-                    prepMwafs.size(), // number of mwaf
-                    prepMwafs.collect(path -> path.size()).sum(), // total mwaf size [B]
-                    // parse birli log durations
-                    durations?.read?:'',
-                    durations?.flag?:'',
-                    durations?.correct_passband?:'',
-                    durations?.correct_digital?:'',
-                    durations?.correct_geom?:'',
-                    durations?.correct_cable?:'',
-                    durations?.write?:'',
-                    durations?.total?:'',
-                    missing_hdus.size(),
-                    missing_timesteps_by_gpubox.join("|"),
-                ].join("\t")
-            }
-            .collectFile(
-                name: "prep_stats.tsv", newLine: true, sort: true,
-                seed: [
-                    "OBS","N CHAN","N TIME","N BL","UVFITS BYTES", "N MWAF","MWAF BYTES",
-                    "DUR READ", "DUR FLAG", "DUR CORR PB", "DUR CORR DIG", "DUR CORR GEOM",
-                    "DUR CORR CABLE", "DUR WRITE", "DUR TOTAL",
-                    "MISSING HDUs"
-                ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
-    emit:
-        // channel of preprocessed files: tuple(obsid, prepUVFits)
-        obsPrepUVFits = birliPrep.out.map { def (obsid, _, prepUVFits) = it; [obsid, prepUVFits] }
-        // channel of mwaf files for each obsid: tuple(obsid, mwafs)
-        obsMwafs = birliPrep.out.map { def (obsid, _, __, prepMwafs) = it; [obsid, prepMwafs] }
-}
-
-// analyse flags of preprocessed visibilities, emit obsids which pass flag occupancy threshold
-workflow flag {
-    take:
-        // channel of tuple(obsid, metafits, uvfits)
-        obsMetaVis
-
-    main:
         // analyse flag occupancy
-        obsMetaVis | flagQA
+        obsMetafits.join(asvoPrep.out) | flagQA
 
         // collect flagQA results
         // TODO: collect sky_chans from flagQA
@@ -1405,7 +1081,7 @@ workflow flag {
                 def flagged_sky_chans = stats.flagged_sky_chans?:[]
                 def chan_occupancy = sky_chans.collect { ch -> (stats.channels?[ch]?.non_preflagged_bl_occupancy)?:'' }
                 ([
-                    obsid, 
+                    obsid,
                     stats.num_chans?:'',
                     displayInts(flagged_sky_chans),
                     displayInts(stats.flagged_fchan_idxs?:[]),
@@ -1413,30 +1089,32 @@ workflow flag {
                     stats.num_times?:'',
                     stats.num_baselines?:'',
                     displayInts(stats.flagged_timestep_idxs?:[]),
-                    stats.total_occupancy, 
+                    stats.total_occupancy,
                     stats.total_non_preflagged_bl_occupancy
                 ] + chan_occupancy).join("\t")
             }
             .collectFile(
                 name: "occupancy.tsv", newLine: true, sort: true,
                 seed: ([
-                    "OBS", 
+                    "OBS",
                     "N CHAN", "FLAGGED SKY CHANS", "FLAGGED FINE CHANS", "FLAGGED SKY CHAN FRAC",
                     "N TIME","N BL", "FLAGGED TIMESTEPS",
-                    "TOTAL OCCUPANCY", "NON PREFLAGGED"] + sky_chans).join("\t"),
+                    "TOTAL OCCUPANCY", "NON PREFLAGGED"
+                ] + sky_chans).join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
     emit:
-        // channel of obsids which pass the flag gate
-        pass = flagQA.out
-            .map { obsid, json -> [obsid, jslurp.parse(json).total_occupancy] }
-            .filter { _, occ -> occ && occ < params.flag_occupancy_threshold }
+        // channel of obsids which pass the flag gate: tuple(obsid, metafits, uvfits)
+        obsMetaVis = flagQA.out
+            .filter { obsid, json ->
+                jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
+            }
             .map { obsid, _ -> obsid }
-        // channel of files to archive, and their buckets
-        // archive = flagQA.out.map { _, json -> ["flagqa", json]}
+            .join(obsMetafits)
+            .join(asvoPrep.out)
 }
 
 workflow cal {
@@ -1452,7 +1130,9 @@ workflow cal {
             | hypCalSol
 
         // hyperdrive dical log analysis
-        hypCalSol.out.map { obsid, _, diCalLog ->
+        hypCalSol.out
+            .transpose()
+            .map { obsid, soln, diCalLog ->
                 def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
                 def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
                 def convergedTime = logDateFmt.parse(convergedMatch[1])
@@ -1460,12 +1140,14 @@ workflow cal {
                 def convergedDenominator = convergedMatch[3] as int
                 def convergedDurationSec = (convergedTime.time - startTime.time) / 1000
 
-                [obsid, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
+                def name = soln.getBaseName().split('_')[3..-1].join('_')
+
+                [obsid, name, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
             }
             .collectFile(
                 name: "cal_timings.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
+                    "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
@@ -1784,39 +1466,37 @@ workflow {
     // analyse obsids with web services
     obsids | ws
 
-    wsObsids = ws.out.obsMetafits.map { obsid, _ -> obsid }
-    wsObsids.collectFile(
-        name: "filtered_obsids.csv", newLine: true, sort: true,
-        storeDir: "${params.outdir}/results${params.result_suffix}/"
-    )
-    | view { [it, it.readLines().size()] }
+    ws.out.obsMetafits
+        .map { obsid, _ -> obsid }
+        .collectFile(
+            name: "filtered_obsids.csv", newLine: true, sort: true,
+            storeDir: "${params.outdir}/results${params.result_suffix}/"
+        )
+        | view { [it, it.readLines().size()] }
 
-    // download preprocessed, unless nodl is set
-    if (params.nodl) { println("params.nodl set, exiting before asvoPrep."); return }
-    wsObsids | asvoPrep
-
-    // analyse flags, unless noflag is set
-    if (params.noflag) { println("params.noflag set, exiting before flag."); return }
-    ws.out.obsMetafits.join(asvoPrep.out) | flag
+    // download preprocessed, unless noprep is set
+    if (params.noprep) { println("params.noprep set, exiting before asvoPrep."); return }
+    ws.out.obsMetafits | prep
 
     // channel of obsids that pass the flag gate
-    flag.out.pass.collectFile(
-        name: "unflagged_obsids.csv", newLine: true, sort: true,
-        storeDir: "${params.outdir}/results${params.result_suffix}/"
-    )
-    | view { [it, it.readLines().size()] }
+    prep.out.obsMetaVis
+        .map { obsid, _, __ -> obsid }
+        .collectFile(
+            name: "unflagged_obsids.csv", newLine: true, sort: true,
+            storeDir: "${params.outdir}/results${params.result_suffix}/"
+        )
+        | view { [it, it.readLines().size()] }
 
     // calibrate each obs that passes flag gate unless nocal is set:
     if (params.nocal) { println("params.nocal set, exiting before cal."); return }
-    obsMetaVis = flag.out.pass.join(ws.out.obsMetafits).join(asvoPrep.out)
-    obsMetaVis | cal
+    prep.out.obsMetaVis | cal
 
     if (params.noapply) { println("params.noapply set, exiting before apply."); return }
     // channel of arguments for hypApply{UV,MS}
     // - take tuple(obsid, cal_name, soln) from obsNameSoln
     // - lookup [apply_name, apply_args] from params.apply_args on cal_name
     // - match with tuple(obsid, metafits, prepUVFits) by obsid
-    allApply = obsMetaVis
+    allApply = prep.out.obsMetaVis
         .cross(
             cal.out.passCal
                 .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
@@ -1839,7 +1519,7 @@ workflow {
             .map { obsid, name, vis, _ -> [obsid, name, vis] }
     } else {
         // get subtracted uvfits vis
-        obsMetaVis
+        prep.out.obsMetaVis
             .cross(hypApplyUV.out)
             .map {
                 def (obsid, metafits, _) = it[0]
