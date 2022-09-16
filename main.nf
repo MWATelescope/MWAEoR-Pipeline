@@ -6,7 +6,7 @@ process wsMeta {
     input:
     val(obsid)
     output:
-    tuple val(obsid), path ("${obsid}_wsmeta.json")
+    tuple val(obsid), path("${obsid}_wsmeta.json"), path("${obsid}_files.json")
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
@@ -18,6 +18,27 @@ process wsMeta {
     #!/bin/bash
     ${params.proxy_prelude} # ensure proxy is set if needed
     wget -O ${obsid}_wsmeta.json "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
+    wget -O ${obsid}_files.json "http://ws.mwatelescope.org/metadata/data_ready?obs_id=${obsid}"
+    """
+}
+
+// download observation metadata from webservices in metafits format
+process wsMetafits {
+    input:
+    val(obsid)
+    output:
+    tuple val(obsid), path("${obsid}.metafits")
+
+    // persist results in outdir, process will be skipped if files already present.
+    storeDir "${params.outdir}/${obsid}/raw"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    script:
+    """
+    #!/bin/bash
+    ${params.proxy_prelude} # ensure proxy is set if needed
+    wget -O ${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
     """
 }
 
@@ -28,7 +49,7 @@ process asvoRaw {
     output:
     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
 
-    storeDir "${params.outdir}/$obsid/raw"
+    storeDir "${params.outdir}/${obsid}/raw"
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
@@ -63,20 +84,6 @@ process asvoRaw {
 
     ${params.proxy_prelude} # ensure proxy is set if needed
 
-    function ensure_disk_space {
-        local needed=\$1
-        if read -r avail < <(df --output=avail . | tail -n 1); then
-            avail_bytes=\$((\$avail * 1000))
-            if [[ \$avail_bytes -lt \$needed ]]; then
-                echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail_bytes B"
-                exit 28  # No space left on device
-            fi
-            return 0
-        fi
-        echo "Could not determine disk space in \$PWD"
-        exit 28
-    }
-
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-vis --delivery "acacia" $obsid || true
 
@@ -93,7 +100,14 @@ process asvoRaw {
 
     # download the first ready jobs
     if read -r jobid url size hash < ready.tsv; then
-        ensure_disk_space "\$size" || exit \$?
+        if read -r avail < <(df --output=avail -B1 . | tail -n 1); then
+            if [[ \$avail -lt \$needed ]]; then
+                echo "Not enough disk space available in \$PWD, need \$needed B, have \$avail B"
+                exit 28  # No space left on device
+            fi
+        else
+            echo "Warning: Could not determine disk space in \$PWD"
+        fi
         # wget into two pipes:
         # - first pipe untars the archive to disk
         # - second pipe validates the sha sum
@@ -111,6 +125,97 @@ process asvoRaw {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
+        exit 0 # success
+    fi
+    echo "no ready jobs"
+    exit 75 # temporary
+    """
+}
+
+// download preprocessed files from asvo
+process asvoPrep {
+    input:
+    val obsid
+    output:
+    tuple val(obsid), path("birli_${obsid}.uvfits")
+
+    storeDir "${params.outdir}/$obsid/prep"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    // allow multiple retries
+    maxRetries 5
+    // exponential backoff: sleep for 2^attempt hours after each fail
+    errorStrategy {
+        failure_reason = [
+            5: "I/O error or hash mitch",
+            28: "No space left on device",
+        ][task.exitStatus]
+        if (failure_reason) {
+            println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
+            return 'ignore'
+        }
+        retry_reason = [
+            1: "general or permission",
+            11: "Resource temporarily unavailable",
+            75: "Temporary failure, try again"
+        ][task.exitStatus] ?: "unknown"
+        wait_hours = Math.pow(2, task.attempt)
+        println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
+        sleep(wait_hours * 60*60*1000 as long)
+        return 'retry'
+    }
+
+    script:
+    """
+    #!/bin/bash -eux
+
+    export MWA_ASVO_API_KEY="${params.asvo_api_key}"
+
+    ${params.proxy_prelude} # ensure proxy is set if needed
+
+    # submit a job to ASVO, suppress failure if a job already exists.
+    ${params.giant_squid} submit-conv -v \
+        -p timeres=${params.prep_time_res_s},freqres=${params.prep_freq_res_khz},conversion=uvfits,preprocessor=birli \
+        \$obsid || true
+
+    # list pending conversion jobs
+    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- $obsid
+
+    # extract id url size hash from any ready download vis jobs for this obsid
+    ${params.giant_squid} list -j --types conversion --states ready -- $obsid \
+        | tee /dev/stderr \
+        | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
+        | tee ready.tsv
+
+    # download the first ready jobs
+    if read -r jobid url size hash < ready.tsv; then
+        if read -r avail < <(df --output=avail -B1 . | tail -n 1); then
+            if [[ \$avail -lt \$size ]]; then
+                echo "Not enough disk space available in \$PWD, need \$size B, have \$avail B"
+                exit 28  # No space left on device
+            fi
+        else
+            echo "Warning: Could not determine disk space in \$PWD"
+        fi
+        # wget into two pipes:
+        # - first pipe untars the archive to disk
+        # - second pipe validates the sha sum
+        wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
+            | tee >(tar -x) \
+            | sha1sum -c <(echo "\$hash -")
+        ps=("\${PIPESTATUS[@]}")
+        if [ \${ps[0]} -ne 0 ]; then
+            echo "Download failed. status=\${ps[0]}"
+            exit \${ps[0]}
+        elif [ \${ps[1]} -ne 0 ]; then
+            echo "Untar failed. status=\${ps[1]}"
+            exit \${ps[1]}
+        elif [ \${ps[2]} -ne 0 ]; then
+            echo "Hash check failed. status=\${ps[2]}"
+            exit \${ps[2]}
+        fi
+        mv ${obsid}.uvfits birli_${obsid}.uvfits
         exit 0 # success
     fi
     echo "no ready jobs"
@@ -199,50 +304,10 @@ process birliPrep {
     """
 }
 
-// Simple check for vis, to catch "past end of file" errors
-process prepStats {
-    input:
-    tuple val(obsid), path("birli_${obsid}.uvfits")
-    output:
-    tuple val(obsid), path("${obsid}_prep_stats.json")
-
-    scratch false
-    storeDir "${params.outdir}/${obsid}/prep"
-
-    tag "${obsid}"
-
-    module 'python/3.9.7'
-    // TODO: try this:
-    // module "miniconda/4.8.3"
-    // conda "${params.astro_conda}"
-
-    script:
-    """
-    #!/usr/bin/env python
-
-    from astropy.io import fits
-    from json import dump as json_dump
-    from collections import OrderedDict
-
-    with \
-        open('${obsid}_prep_stats.json', 'w') as out, \
-        fits.open("birli_${obsid}.uvfits") as hdus \
-    :
-        data = OrderedDict()
-        first_shape=hdus[0].data[0].data.shape
-        data['num_chans']=first_shape[2]
-        all_times=hdus[0].data['DATE']
-        data['num_times']=len(set(all_times))
-        data['num_baselines']=len(all_times)//data['num_times']
-
-        json_dump(data, out, indent=4)
-    """
-}
-
 // QA tasks for flags.
 process flagQA {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("*") // <-preserves names of mwaf files
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits")
     output:
     tuple val(obsid), path("${obsid}_occupancy.json")
 
@@ -259,75 +324,89 @@ process flagQA {
 
     from astropy.io import fits
     from json import dump as json_dump
-    from glob import glob
-    from os.path import basename
     import numpy as np
-    import re
-
-    RE_MWAX_NAME = (
-        r"\\S+_ch(?P<rec_chan>\\d{3}).mwaf"
-    )
-    RE_MWA_LGCY_NAME = (
-        r"\\S+_(?P<gpubox_num>\\d{2}).mwaf"
-    )
-
-    def parse_filename(name, metafits_coarse_chans):
-        result = {}
-        if match:=re.match(RE_MWAX_NAME, name):
-            result.update({
-                'type': 'mwax',
-                'rec_chan': int(match.group('rec_chan')),
-            })
-            result['gpubox_num'] = int(metafits_coarse_chans.index(result['rec_chan']))
-        elif match:=re.match(RE_MWA_LGCY_NAME, name):
-            result.update({
-                'type': 'legacy',
-                'gpubox_num': int(match.group('gpubox_num')),
-            })
-            result['rec_chan'] = int(metafits_coarse_chans[result['gpubox_num']-1])
-        return result
 
     def split_strip_filter(str):
         return list(filter(None, map(lambda tok: tok.strip(), str.split(','))))
 
-    paths = sorted(glob("*.mwaf"))
     total_occupancy = 0
     total_non_preflagged_bl_occupancy = 0
-    num_coarse_chans = len(paths)
-    num_non_preflagged_chans = 0
+    num_cchans = 0
+    num_unflagged_cchans = 0
     with \
         open('${obsid}_occupancy.json', 'w') as out, \
-        fits.open("${obsid}.metafits") as meta \
+        fits.open("${obsid}.metafits") as meta, \
+        fits.open("${obsid}.uvfits") as uv \
     :
         data = {'obsid': ${obsid}, 'channels': {}}
-        t = meta['TILEDATA'].data
-        preflagged_ants = np.unique(t[t['Flag'] > 0]['Antenna'])
+        td = meta['TILEDATA'].data
+        preflagged_ants = np.unique(td[td['Flag'] > 0]['Antenna'])
         data['preflagged_ants'] = preflagged_ants.tolist()
-        metafits_coarse_chans = [*map(int, split_strip_filter(meta[0].header['CHANNELS']))]
-        for path in paths:
-            filename_info = parse_filename(path, metafits_coarse_chans)
-            if not data.get('type'):
-                data['type'] = filename_info.get('type', '???')
-            chan_id = filename_info.get('rec_chan', basename(path))
-            data['channels'][chan_id] = {}
-            with fits.open(path) as hdus:
-                flag_data = hdus['FLAGS'].data['FLAGS']
-                occupancy = flag_data.sum() / flag_data.size
-                data['channels'][chan_id]['occupancy'] = occupancy
-                total_occupancy += occupancy
-                bls = hdus['BL_OCC'].data
-                non_preflagged_bls = bls[~(np.isin(bls['Antenna1'],preflagged_ants)|np.isin(bls['Antenna2'],preflagged_ants))]
-                non_preflagged_bl_count = non_preflagged_bls.shape[0]
-                if non_preflagged_bl_count:
-                    num_non_preflagged_chans += 1
-                    non_preflagged_bl_occupancy = non_preflagged_bls['Occupancy'].sum() / non_preflagged_bls.shape[0]
-                    data['channels'][chan_id]['non_preflagged_bl_occupancy'] = non_preflagged_bl_occupancy
-                    total_non_preflagged_bl_occupancy += non_preflagged_bl_occupancy
-        if num_coarse_chans:
-            total_occupancy /= num_coarse_chans
+        sky_chans = [*map(int, split_strip_filter(meta[0].header['CHANNELS']))]
+        num_cchans = len(sky_chans)
+
+        vis_hdu = uv['PRIMARY']
+        baseline_array = np.int16(vis_hdu.data["BASELINE"])
+        num_blts = len(baseline_array)
+        num_bls = len(np.unique(baseline_array))
+        data['num_baselines']=num_bls
+        num_times = num_blts // num_bls
+        data['num_times']=num_times
+        vis_shape = vis_hdu.data.data.shape
+        assert vis_shape[0] == num_blts, 'vis shape 0 != num_blts'
+
+        num_chans = vis_hdu.header['NAXIS4']
+        data['num_chans']=num_chans
+        assert num_chans % num_cchans == 0, 'uvfits channels is not divisible by coarse chans'
+        num_fchans = num_chans // num_cchans # number of fine chans per coarse
+        assert num_fchans * num_cchans == vis_shape[3], 'vis shape 3 != NAXIS4'
+
+        ant_2_array = baseline_array % 256 - 1
+        ant_1_array = (baseline_array - ant_2_array) // 256 - 1
+        antpair_array = np.stack((ant_1_array, ant_2_array), axis=1)
+        preflagged_blts_mask = np.isin(antpair_array, preflagged_ants).any(axis=1)
+        # unflagged_blt_idxs = np.where(np.logical_not(preflagged_blts_mask))[0]
+        (unflagged_blt_idxs,) = np.where(np.logical_not(preflagged_blts_mask))
+        num_unflagged_blts = len(unflagged_blt_idxs)
+        num_unflagged_bls = num_unflagged_blts // num_times
+        unflagged_fraction = num_unflagged_blts / num_blts
+
+        # assumption: vis data axes 1,2 (ra/dec?) are not used
+        # assumption: flags are the same for all pols, so only use pol=0
+        # 4d weight array: [time, baseline, coarse channel, fine channel]
+        weights = vis_hdu.data.data[unflagged_blt_idxs, 0, 0, :, 0, 2].reshape(
+            (num_times, num_unflagged_bls, num_cchans, num_fchans))
+        # flag count for unflagged bls by [time, coarse channel, fine channel]
+        unflagged_bl_flag_count = np.sum(np.int64(weights <= 0), axis=1)
+        # where unflagged_bl_flag_count is flagged for all baselines
+        flagged_mask = unflagged_bl_flag_count == num_unflagged_bls
+        data['flagged_timestep_idxs'] = np.where(flagged_mask.all(axis=(1,2)))[0].tolist()
+        flagged_cchan_idxs = np.where(flagged_mask.all(axis=(0,2)))[0].tolist()
+        data['flagged_cchan_idxs'] = flagged_cchan_idxs
+        flagged_sky_chans = np.array(sky_chans)[flagged_cchan_idxs].tolist()
+        data['flagged_sky_chans'] = flagged_sky_chans
+        data['flagged_fchan_idxs'] = np.where(flagged_mask.all(axis=(0,1)))[0].tolist()
+        
+        # occupancy of non-preflagged baselines by coarse channel
+        unflagged_bl_occupancy = np.sum(unflagged_bl_flag_count, axis=(0,2)) / (num_unflagged_blts * num_fchans)
+
+        for chan_idx, cchan_unflagged_bl_occupancy in enumerate(unflagged_bl_occupancy):
+            if chan_idx not in flagged_cchan_idxs:
+                num_unflagged_cchans += 1
+                total_non_preflagged_bl_occupancy += cchan_unflagged_bl_occupancy
+            sky_chan = sky_chans[chan_idx]
+            cchan_total_occupancy = (unflagged_fraction * cchan_unflagged_bl_occupancy) + (1 - unflagged_fraction)
+            total_occupancy += cchan_total_occupancy
+            data['channels'][sky_chan] = {
+                'occupancy': cchan_total_occupancy,
+                'non_preflagged_bl_occupancy': cchan_unflagged_bl_occupancy,
+                'flagged': chan_idx in data['flagged_cchan_idxs']
+            }
+        if num_cchans:
+            total_occupancy /= num_cchans
         data['total_occupancy'] = total_occupancy
-        if num_non_preflagged_chans:
-            total_non_preflagged_bl_occupancy /= num_non_preflagged_chans
+        if num_unflagged_cchans:
+            total_non_preflagged_bl_occupancy /= num_unflagged_cchans
         data['total_non_preflagged_bl_occupancy'] = total_non_preflagged_bl_occupancy
         json_dump(data, out, indent=4)
     """
@@ -1015,7 +1094,7 @@ workflow ws {
     main:
         obsids | wsMeta
 
-        wsSummary = wsMeta.out.map { obsid, json ->
+        wsSummary = wsMeta.out.map { obsid, json, filesJson ->
                 // parse json
                 def stats = parseJson(json)
                 def pointing = stats.metadata.gridpoint_number
@@ -1036,6 +1115,8 @@ workflow ws {
                 def badbeamshape = (faults.badbeamshape?:[:]).values().flatten()
                 def significant_faults = badstates.size() + badfreqs.size() + badgains.size()
                 def fail_reasons = []
+
+                def fileStats = parseJson(filesJson)
                 if (!params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
@@ -1082,9 +1163,9 @@ workflow ws {
                     significant_faults: significant_faults,
                     faultstring: faults.shortstring.replaceAll(/\n\s*/, '|'),
                     // files
-                    files: stats.files.toString(),
-                    num_data_files: stats.num_data_files,
-                    num_data_files_archived: stats.num_data_files_archived,
+                    // files: fileStats.files.toString(),
+                    num_data_files: fileStats.num_data_files,
+                    num_data_files_archived: fileStats.num_data_files_archived,
                 ]
                 [obsid, summary]
             }
@@ -1136,11 +1217,15 @@ workflow ws {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-    emit:
-        // channel of good obsids
         pass = wsSummary
             .filter { _, summary -> summary.fail_reasons == [] }
             .map { obsid, _ -> obsid }
+
+        pass | wsMetafits
+
+    emit:
+        // channel of good obsids with their metafits
+        obsMetafits = wsMetafits.out
 }
 
 // ensure raw files are downloaded
@@ -1179,11 +1264,6 @@ workflow raw {
             // for row of tsv from metafits json fields we care about
             .map { obsid, json ->
                 def stats = jslurp.parse(json)
-                // def row = [obsid]
-                // row += [
-                //     "DATE-OBS", "GRIDNUM", "CENTCHAN", "FINECHAN", "INTTIME",
-                //     "NSCANS", "NINPUTS"
-                // ].collect { stats.get(it) }
                 def flagged_inputs = stats.FLAGGED_INPUTS?:[]
                 def delays = (stats.DELAYS?:[]).flatten()
                 [
@@ -1235,10 +1315,10 @@ workflow prep {
         // get info about preprocessing stage
         birliPrep.out
             .map { def (obsid, _, prepUVFits) = it; [obsid, prepUVFits] }
-            | prepStats
+            | flagQA
 
         // collect prep stats
-        prepStats.out
+        flagQA.out
             // join with uvfits, mwaf and birli log
             .join( birliPrep.out.map { obsid, _, prepUVFits, prepMwafs, prepLog ->
                 [obsid, prepUVFits, prepMwafs, prepLog]
@@ -1305,15 +1385,15 @@ workflow prep {
         obsMwafs = birliPrep.out.map { def (obsid, _, __, prepMwafs) = it; [obsid, prepMwafs] }
 }
 
-// only emit obsids which pass flag occupancy threshold
-workflow flagGate {
+// analyse flags of preprocessed visibilities, emit obsids which pass flag occupancy threshold
+workflow flag {
     take:
-        // channel of required files: tuple(obsid, metafits, mwafs)
-        flagFiles
+        // channel of tuple(obsid, metafits, uvfits)
+        obsMetaVis
 
     main:
         // analyse flag occupancy
-        flagFiles | flagQA
+        obsMetaVis | flagQA
 
         // collect flagQA results
         // TODO: collect sky_chans from flagQA
@@ -1322,12 +1402,28 @@ workflow flagGate {
             // form row of tsv from json fields we care about
             .map { obsid, json ->
                 def stats = jslurp.parse(json)
+                def flagged_sky_chans = stats.flagged_sky_chans?:[]
                 def chan_occupancy = sky_chans.collect { ch -> (stats.channels?[ch]?.non_preflagged_bl_occupancy)?:'' }
-                ([obsid, stats.total_occupancy, stats.total_non_preflagged_bl_occupancy] + chan_occupancy).join("\t")
+                ([
+                    obsid, 
+                    stats.num_chans?:'',
+                    displayInts(flagged_sky_chans),
+                    displayInts(stats.flagged_fchan_idxs?:[]),
+                    flagged_sky_chans.size/chan_occupancy.size,
+                    stats.num_times?:'',
+                    stats.num_baselines?:'',
+                    displayInts(stats.flagged_timestep_idxs?:[]),
+                    stats.total_occupancy, 
+                    stats.total_non_preflagged_bl_occupancy
+                ] + chan_occupancy).join("\t")
             }
             .collectFile(
                 name: "occupancy.tsv", newLine: true, sort: true,
-                seed: (["OBS", "TOTAL OCCUPANCY", "NON PREFLAGGED"] + sky_chans).join("\t"),
+                seed: ([
+                    "OBS", 
+                    "N CHAN", "FLAGGED SKY CHANS", "FLAGGED FINE CHANS", "FLAGGED SKY CHAN FRAC",
+                    "N TIME","N BL", "FLAGGED TIMESTEPS",
+                    "TOTAL OCCUPANCY", "NON PREFLAGGED"] + sky_chans).join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
             )
             // display output path and number of lines
@@ -1687,34 +1783,35 @@ workflow {
 
     // analyse obsids with web services
     obsids | ws
-    filteredObsids = ws.out.pass
-    filteredObsids.collectFile(
+
+    wsObsids = ws.out.obsMetafits.map { obsid, _ -> obsid }
+    wsObsids.collectFile(
         name: "filtered_obsids.csv", newLine: true, sort: true,
         storeDir: "${params.outdir}/results${params.result_suffix}/"
     )
     | view { [it, it.readLines().size()] }
 
-    // download and preprocess raw obsids, unless nodl is set
-    if (params.nodl) { println("params.nodl set, exiting."); return }
-    filteredObsids | raw | prep
+    // download preprocessed, unless nodl is set
+    if (params.nodl) { println("params.nodl set, exiting before asvoPrep."); return }
+    wsObsids | asvoPrep
 
-    // channel of metafits for each obsid: tuple(obsid, metafits)
-    obsMetafits = raw.out.map { obsid, metafits, _ -> [obsid, metafits] }
+    // analyse flags, unless noflag is set
+    if (params.noflag) { println("params.noflag set, exiting before flag."); return }
+    ws.out.obsMetafits.join(asvoPrep.out) | flag
 
     // channel of obsids that pass the flag gate
-    unflaggedObsids = obsMetafits.join(prep.out.obsMwafs) | flagGate
-    unflaggedObsids.collectFile(
+    flag.out.pass.collectFile(
         name: "unflagged_obsids.csv", newLine: true, sort: true,
         storeDir: "${params.outdir}/results${params.result_suffix}/"
     )
     | view { [it, it.readLines().size()] }
 
     // calibrate each obs that passes flag gate unless nocal is set:
-    if (params.nocal) { println("params.nocal set, exiting."); return }
-    obsMetaVis = unflaggedObsids.join(obsMetafits).join(prep.out.obsPrepUVFits)
+    if (params.nocal) { println("params.nocal set, exiting before cal."); return }
+    obsMetaVis = flag.out.pass.join(ws.out.obsMetafits).join(asvoPrep.out)
     obsMetaVis | cal
 
-    if (params.noapply) { println("params.noapply set, exiting."); return }
+    if (params.noapply) { println("params.noapply set, exiting before apply."); return }
     // channel of arguments for hypApply{UV,MS}
     // - take tuple(obsid, cal_name, soln) from obsNameSoln
     // - lookup [apply_name, apply_args] from params.apply_args on cal_name

@@ -23,142 +23,163 @@
 
 %% ff0000
 graph TD;
-  classDef fileIn fill:#2aa198;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
   classDef file fill:#268bd2;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
-  %% subgraph config
-    obsids>fa:fa-file obsids.csv ]; class obsids fileIn
-    %% dicalArgs>fa:fa-file dical_args.csv ]; class dicalArgs fileIn
-    %% applyArgs>fa:fa-file apply_args.csv ]; class applyArgs fileIn
-    %% nfConfig>fa:fa-file-code nextflow.config ]; class nfConfig fileIn
-  %% end
+  classDef incompleteDecision fill:#EEC3B1;
 
-  %% subgraph storage
-    subgraph raw
-      metafits[fa:fa-file metafits ]; class metafits file
-      gpufits[fa:fa-file gpubox ]; class gpufits file
-      obsids --> asvoRaw[["fa:fa-tape asvoRaw &nbsp;"]] --> metafits & gpufits
-      class asvoRaw proc
-      %% metafits -.-> metaJson[["fa:fa-cogs metaJson "]] -.-> metafitsJson
-      class metaJson proc
+    subgraph meta
+      obsids>fa:fa-file obsids.csv ]; class obsids in
+      wsMeta[[fa:fa-download wsMeta]]; class wsMeta proc
+      ws([fa:fa-server MWA web services ]); class ws in
+      wsmetaJson[/fa:fa-file wsmeta.json /]; class wsmetaJson file
+      %% wsfilesJson[/fa:fa-file files.json /]; class wsfilesJson file
+      metafits[/fa:fa-file metafits /]; class metafits file
+
+      obsids --> wsMeta --> ws --> wsmetaJson & metafits
+
+      wsGate{"fa:fa-check wsGate &nbsp;&nbsp;"}; class wsGate decision;
+      wsmetaJson --> wsGate
+
+      nfConfigMeta>fa:fa-file-code nextflow.config ]; class nfConfigMeta in
+      nfConfigMeta --"pointing/tile/dipole filters"-----> wsGate
     end
 
     subgraph prep
-      prepUVFits[fa:fa-file prep uvfits ]; class prepUVFits file
-      flags[fa:fa-file flags ]; class flags file
-      prepLog[fa:fa-file prep log ]; class prepLog file
-      occupancyJson[fa:fa-file-code occupancy.json ]; class occupancyJson file
+      asvoPrep[[fa:fa-bolt asvoPrep]]; class asvoPrep proc
+      asvo([fa:fa-server MWA ASVO ]); class asvo in
+      prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file
 
-      metafits & gpufits --> birliPrep[[fa:fa-bolt birliPrep]] --> prepUVFits & flags & prepLog
-      class birliPrep proc
+      wsGate --"obs pass"--> asvoPrep --> asvo --> prepUVFits
 
-      flags --> flagQA[["fa:fa-gem flagQA &nbsp;"]] --> occupancyJson;
-      class flagQA proc;
-      %% metafits -...-> flagQA;
+      flagQA[["fa:fa-gem flagQA &nbsp;"]]; class flagQA proc;
+      occupancyJson[/fa:fa-file-code occupancy.json /]; class occupancyJson file
+      prepUVFits --> flagQA --> occupancyJson;
+      %% metafits -.-> flagQA;
 
-      occupancyJson & prepUVFits --> flagGate{"fa:fa-flag flagGate &nbsp;&nbsp;"};
-      class flagGate decision;
-      %% nfConfig --"occupancy_threshold"--> flagGate;
+      flagGate{"fa:fa-flag flagGate &nbsp;&nbsp;"}; class flagGate decision;
+      occupancyJson --> flagGate
+
+      nfConfigPrep>fa:fa-file-code nextflow.config ]; class nfConfigPrep in
+      nfConfigPrep --"occupancy_threshold"--> flagGate;
     end
 
 
     subgraph cal
-      goodUVFits[fa:fa-file good uvfits ]; class goodUVFits file
-      calSol[fa:fa-file-excel cal solutions ]; class calSol file
-      polyCal[fa:fa-file-excel poly solutions ]; class polyCal file
-      calUVFits[fa:fa-file cal uvfits ]; class calUVFits file
-      calMS[fa:fa-file cal ms ]; class calMS file
+      %% goodUVFits[/fa:fa-file good uvfits /]; class goodUVFits file
+      calSol[/fa:fa-file-excel cal solutions /]; class calSol file
+      hypCalSol[["fa:fa-wrench hypCalSol &nbsp;"]]; class hypCalSol proc
+      %% dicalLog[/fa:fa-file dical log /]; class dicalLog file
 
-      flagGate --"obs pass"--> goodUVFits
-      goodUVFits --> hypCalSol[["fa:fa-wrench hypCalSol &nbsp;"]] --> calSol
-      class hypCalSol proc
+      flagGate --"obs pass"--> hypCalSol --> calSol
+      %% hypCalSol --> dicalLog
       %% dicalArgs --> hypCalSol
       %% metafits -...-> hypCalSol
 
-      calSol --> polyFit[["fa:fa-chart-line polyFit &nbsp;"]] --> polyCal
-      class polyFit proc
+      polyCal[/fa:fa-file-excel poly solutions /]; class polyCal file
+      polyFit[["fa:fa-chart-line polyFit &nbsp;"]]; class polyFit proc
+      calSol --> polyFit --> polyCal
 
-      calSol & polyCal & goodUVFits --> hypApplyUV[["fa:fa-times-circle hypApplyUV &nbsp;"]] --> calUVFits
-      class hypApplyUV proc
-      %% applyArgs -...-> hypApplyUV
-      %% metafits -...-> hypApplyUV
+      nfConfigCal>fa:fa-file-code nextflow.config ]; class nfConfigCal in
+      hypCalSol --"dical args"--- nfConfigCal
 
-      calSol & polyCal & goodUVFits --> hypApplyMS[["fa:fa-times-circle hypApplyMS &nbsp;"]] --> calMS
-      class hypApplyMS proc
-      %% applyArgs -...-> hypApplyMS
-      %% metafits -...-> hypApplyMS
+      %% end
+      %% subgraph cal_qa
+
+      calQA[["fa:fa-gem calQA &nbsp;"]]; class calQA proc;
+      calMetricsJson[/"fa:fa-file cal_metrics.json "/]; class calMetricsJson file
+      calSol & polyCal --> calQA --> calMetricsJson
+      %% metafits -...-> calQA
+
+      calGate{"fa:fa-check calGate &nbsp;&nbsp;"}; class calGate decision;
+      calMetricsJson --> calGate
+
+      acaciaCal([fa:fa-box-open acacia]); class acaciaCal out
+      calSol & polyCal & calMetricsJson --> acaciaCal
+
+      plotSolutions[["fa:fa-gem plotSolutions "]]; class plotSolutions proc
+      plotSol[/"fa:fa-file-image plot_{phases,amps}.png "/]; class plotSol file
+      polyCal & calSol --> plotSolutions --> plotSol
+      %% metafits -...-> plotSolutions
     end
-    subgraph sub
-      subUVFits[fa:fa-file sub uvfits ]; class subUVFits file
-      subMS[fa:fa-file sub ms ]; class subMS file
-      calUVFits --> hypSubUV[["fa:fa-minus-circle hypSubUV &nbsp;"]] --> subUVFits
-      class hypSubUV proc
-      calMS --> hypSubMS[["fa:fa-minus-circle hypSubMS &nbsp;"]] --> subMS
-      class hypSubMS proc
+
+    subgraph uvfits
+      %% nfConfigApply>fa:fa-file-code nextflow.config ]; class nfConfigApply in
+      calUVFits[/fa:fa-file cal uvfits /]; class calUVFits file
+
+      hypApplyUV[["fa:fa-times-circle hypApplyUV &nbsp;"]]; class hypApplyUV proc
+      calGate --"uvfits"--> hypApplyUV --> calUVFits
+      %% metafits -...-> hypApplyUV
+      nfConfigCal --"apply args"--> hypApplyUV
+
+      %% end
+      %% subgraph sub
+      subUVFits[/fa:fa-file sub uvfits /]; class subUVFits file
+      hypSubUV[["fa:fa-minus-circle hypSubUV &nbsp;"]]; class hypSubUV proc
+      calUVFits --> hypSubUV --> subUVFits
+
+      %% end
+      %% subgraph ps_metrics
+      psMetricsDat[/fa:fa-file ps_metrics.dat /]; class psMetricsDat file
+      psMetrics[["fa:fa-gem ps_metrics &nbsp;"]]; class psMetrics proc;
+      subUVFits & calUVFits --> psMetrics --> psMetricsDat
+
+      %% end
+      %% subgraph vis_qa
+      visMetricsJson[/fa:fa-file vis_metrics.json /]; class visMetricsJson file
+      visQA[["fa:fa-gem visQA &nbsp;"]]; class visQA proc;
+      calUVFits --> visQA --> visMetricsJson
+
+      visGate{"fa:fa-check visGate &nbsp;&nbsp;"}; class visGate incompleteDecision;
+      visMetricsJson & psMetricsDat -.-> visGate
+
+      acaciaUVFits([fa:fa-box-open acacia]); class acaciaUVFits out
+      visMetricsJson & calUVFits & subUVFits --> acaciaUVFits
     end
 
     subgraph img
-      imgDirty["fa:fa-file-image image-{XX,YY,V}-dirty.fits "]; class imgDirty file
-      calMS & subMS --> wscleanDirty[["fa:fa-image wscleanDirty &nbsp;"]] --> imgDirty
-      class wscleanDirty proc
-      %% metafits -...-> wscleanDirty
+      calMS[/fa:fa-file cal ms /]; class calMS file
+      hypApplyMS[["fa:fa-times-circle hypApplyMS &nbsp;"]]; class hypApplyMS proc
+      visGate --"uvfits"--> hypApplyMS --> calMS
+      %% calGate --"uvfits"--> hypApplyMS --> calMS
+      %% applyArgs -...-> hypApplyMS
+      %% metafits -...-> hypApplyMS
+      subMS[/fa:fa-file sub ms /]; class subMS file
+      hypSubMS[["fa:fa-minus-circle hypSubMS &nbsp;"]]; class hypSubMS proc
+      calMS --> hypSubMS --> subMS
+
+      imgDirty[/"fa:fa-file-image image-{XX,YY,V}-dirty.fits "/]; class imgDirty file
+      wscleanDirty[["fa:fa-image wscleanDirty &nbsp;"]]; class wscleanDirty proc
+      calMS & subMS --> wscleanDirty --> imgDirty
+
+      %% end
+      %% subgraph img_qa
+      imgMetricsJson[/"fa:fa-file img_metrics.json &nbsp;"/]; class imgMetricsJson file
+      imgQA[[fa:fa-gem imgQA]]; class imgQA proc;
+      imgDirty --> imgQA --> imgMetricsJson
+
+      acaciaImg([fa:fa-box-open acacia]); class acaciaImg out
+      imgMetricsJson & imgDirty --> acaciaImg
+
+      imgGate{"fa:fa-check imgGate &nbsp;&nbsp;"}; class imgGate incompleteDecision;
+      imgMetricsJson -.-> imgGate
+
+      nfConfigCal --"apply args"--> hypApplyMS
     end
 
-    subgraph cal_qa
-      calMetricsJson["fa:fa-file cal_metrics.json "]; class calMetricsJson file
-      calSol & polyCal --------> calQA[["fa:fa-gem calQA &nbsp;"]] --> calMetricsJson
-      class calQA proc;
-      %% metafits -...-> calQA
-
-      %% plotSol["fa:fa-file-image plot_{phases,amps}.png "]; class plotSol file
-      %% metafits -...-> plotSolutions
-      %% calSol --> plotSolutions[["fa:fa-gem plotSolutions "]] --> plotSol
-      class plotSolutions proc;
+    subgraph "Power Spectrum"
+      chips[[fa:fa-bolt chips]]; class chips proc
+      powerSpectrum[/"fa:fa-file-image power_spectrum "/]; class powerSpectrum file
+      imgGate -.-> chips -.-> powerSpectrum
     end
 
-    subgraph vis_qa
-      visMetricsJson[fa:fa-file vis_metrics.json ]; class visMetricsJson file
-      calUVFits --> visQA[["fa:fa-gem visQA &nbsp;"]] --> visMetricsJson
-      class visQA proc;
-    end
-
-    subgraph ps_metrics
-      psMetricsDat[fa:fa-file ps_metrics.dat ]; class psMetricsDat file
-      subUVFits & calUVFits --> psMetrics[["fa:fa-gem ps_metrics &nbsp;"]] --> psMetricsDat
-      class psMetrics proc;
-    end
-
-
-    subgraph img_qa
-      imgMetricsJson["fa:fa-file img_metrics.json &nbsp;"]; class imgMetricsJson file
-      imgDirty --> imgQA[[fa:fa-gem imgQA]] --> imgMetricsJson
-      class imgQA proc;
-    end
-  %% end
-
-  %% subgraph results
-  %%   metaJsonTsv[fa:fa-file metafits_stats.tsv ]; class metaJsonTsv file
-  %%   metafitsJson --> metaJsonTsv
-
-  %%   prepStatsTsv[fa:fa-file prep_stats.tsv ]; class prepStatsTsv file
-  %%   prepLog --> prepStatsTsv
-  %%   prepStatsJson --> prepStatsTsv
-
-  %%   occupancyTsv[fa:fa-file occupancy.tsv ]; class occupancyTsv file
-  %%   occupancyJson --> occupancyTsv
-
-  %%   calMetricsTsv[fa:fa-file cal_metrics.tsv ]; class calMetricsTsv file
-  %%   calMetricsJson --> calMetricsTsv
-
-  %%   visMetricsTsv[fa:fa-file vis_metrics.tsv ]; class visMetricsTsv file
-  %%   visMetricsJson --> visMetricsTsv
-
-  %%   imgMetricsTsv[fa:fa-file img_metrics.tsv ]; class imgMetricsTsv file
-  %%   psMetricsDat --> psMetricsTsv
-
-  %%   psMetricsTsv[fa:fa-file ps_metrics.tsv ]; class psMetricsTsv file
-  %%   imgMetricsJson --> imgMetricsTsv
+    %% subgraph archive
+      %% acacia([fa:fa-box-open acacia]); class acacia out
+      %% calUVFits --> acacia
+      %% calMetricsJson --> acacia
+    %% end
   %% end
 ```
 
@@ -338,6 +359,26 @@ cd /data/curtin_mwaeor/data/${obsid}/
   --outputs "hyp_${obsid}_${cal_name}_test.uvfits" | tee "hyp_${obsid}_${cal_name}_test.log"
 ```
 
+### run wsclean
+
+```bash
+# salloc --partition=curtin_mwaeor --constraint='knl&nogpu' --time=1:00:00
+# srun --pty bash
+module use /data/curtin_mwaeor/sw/modules
+module load wsclean/3.1-knl-gcc
+export obsid=...
+cd /data/curtin_mwaeor/data/${obsid}
+OMP_NUM_THREADS=60 /data/curtin_mwaeor/sw/wsclean/3.1-knl-gcc/bin/wsclean -j 60 \
+    -weight briggs -1.0 \
+    -name wsclean_hyp_${obsid}_sub_30l_src4k_8s_80kHz \
+    -size 2048 2048 \
+    -scale 40asec \
+    -pol xx,yy,v \
+    -channels-out 24 \
+    -niter 0 \
+    cal/hyp_${obsid}_30l_src4k_4s_80kHz.ms
+```
+
 ### get times of jobs for a run
 
 ```bash
@@ -381,8 +422,9 @@ squeue --states SE --format %A -h | sort | xargs scancel
 ### get disk usage
 
 ```bash
-export stage="raw" # or prep, cal
-find /data/curtin_mwaeor/data -type d -name "${stage}" | xargs du --summarize -h | tee "du_${stage}.tsv"
+for stage in cal cal_qa flag_qa img img_qa prep ps_metrics raw vis_qa; do
+  find /data/curtin_mwaeor/data -type d -name "${stage}" | xargs du -csh | tee "du_${stage}.tsv"
+done
 ```
 
 ### dump gpufits
@@ -402,3 +444,25 @@ for gpufits in $(ls *.fits); do \
     | tee ${gpufits}.txt
 done
 ```
+
+### hard link images
+
+```bash
+find /data/curtin_mwaeor/data -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
+```
+
+### Carta
+
+no config
+
+```bash
+singularity exec --bind /data/curtin_mwaeor/data:/images --contain /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_user_config --no_system_config --no_browser /images
+```
+
+user config
+
+```bash
+singularity exec --bind /data/curtin_mwaeor/data:/images /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_system_config --debug_no_auth /images
+```
+
+open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_80kHz-MFS-XX-dirty.fits`
