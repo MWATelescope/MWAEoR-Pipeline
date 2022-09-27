@@ -87,13 +87,13 @@ process asvoPrep {
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-conv -v \
         -p timeres=${params.prep_time_res_s},freqres=${params.prep_freq_res_khz},conversion=uvfits,preprocessor=birli \
-        ${obsid} || true
+        \$obsid || true
 
     # list pending conversion jobs
-    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- ${obsid}
+    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- $obsid
 
     # extract id url size hash from any ready download vis jobs for this obsid
-    ${params.giant_squid} list -j --types conversion --states ready -- ${obsid} \
+    ${params.giant_squid} list -j --types conversion --states ready -- $obsid \
         | tee /dev/stderr \
         | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
         | tee ready.tsv
@@ -923,6 +923,13 @@ workflow ws {
     main:
         obsids | wsMeta
 
+        quality_updates = file(params.quality_updates_path)
+            .readLines()
+            .collectEntries { line ->
+                def (obsid, quality, comment) = line.split(',')
+                [obsid, [dataquality: quality, dataqualitycomment: comment]]
+            }
+
         wsSummary = wsMeta.out.map { obsid, json, filesJson ->
                 // parse json
                 def stats = parseJson(json)
@@ -932,27 +939,29 @@ workflow ws {
                 def quality = stats.quality?:[:]
                 def tiles = stats.tdict?:[:]
                 def bad_tiles = stats.bad_tiles?:[:]
-                def dead_dipoles = delays.count { it == 32 }
-                def dead_dipole_frac = dead_dipoles / delays.size()
-                def dataquality = stats.dataquality
-                def dataqualitycomment = stats.dataqualitycomment?:''
+                def n_bad_tiles = bad_tiles.size()
+                def bad_tile_frac = n_bad_tiles / tiles.size()
+                def n_dead_dipoles = delays.count { it == 32 }
+                def dead_dipole_frac = n_dead_dipoles / delays.size()
+                def quality_update = quality_updates[obsid]?:[:]
+                def dataquality = Float.valueOf(quality_update.dataquality?:stats.dataquality?:0)
+                def dataqualitycomment = quality_update.dataqualitycomment?:stats.dataqualitycomment?:''
                 def faults = stats.faults?:[:]
                 def badstates = (faults.badstates?:[:]).values().flatten()
                 def badpointings = (faults.badpointings?:[:]).values().flatten()
                 def badfreqs = (faults.badfreqs?:[:]).values().flatten()
                 def badgains = (faults.badgains?:[:]).values().flatten()
                 def badbeamshape = (faults.badbeamshape?:[:]).values().flatten()
-                def significant_faults = badstates.size() + badfreqs.size() + badgains.size()
                 def fail_reasons = []
 
                 def fileStats = parseJson(filesJson)
                 if (!params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
-                if (dataquality != 1) {
-                    fail_reasons += ["dataquality=${dataquality}"]
+                if (dataquality > params.filter_quality) {
+                    fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
                 }
-                if (bad_tiles.size() / tiles.size() > params.filter_bad_tile_frac) {
+                if (bad_tile_frac > params.filter_bad_tile_frac) {
                     fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
                 }
                 if (dead_dipole_frac > params.filter_dead_dipole_frac) {
@@ -980,17 +989,19 @@ workflow ws {
                     dataquality: dataquality,
                     dataqualitycomment: dataqualitycomment,
                     // fraction of flagged tiles
-                    flagtilefrac: bad_tiles.size() / tiles.size(),
+                    bad_tile_frac: bad_tile_frac,
+                    n_bad_tiles: n_bad_tiles,
                     // fraction of dead dipoles
                     dead_dipole_frac: dead_dipole_frac,
+                    n_dead_dipoles: n_dead_dipoles,
                     // faults
                     badstates: badstates.size(),
                     badpointings: badpointings.size(),
                     badfreqs: badfreqs.size(),
                     badgains: badgains.size(),
                     badbeamshape: badbeamshape.size(),
-                    significant_faults: significant_faults,
-                    faultstring: faults.shortstring.replaceAll(/\n\s*/, '|'),
+                    // significant_faults: significant_faults,
+                    fault_str: faults.shortstring.replaceAll(/\n\s*/, '|'),
                     // files
                     // files: fileStats.files.toString(),
                     num_data_files: fileStats.num_data_files,
@@ -1010,36 +1021,45 @@ workflow ws {
                     summary.dec_phase_center,
                     summary.pointing,
                     summary.lst,
+
                     summary.freq_res,
                     summary.int_time,
                     summary.nscans,
+
                     summary.num_data_files,
                     summary.num_data_files_archived,
+
                     summary.dataquality,
                     summary.dataqualitycomment,
+
+                    summary.n_dead_dipoles,
                     summary.dead_dipole_frac,
-                    summary.flagtilefrac,
+                    summary.n_bad_tiles,
+                    summary.bad_tile_frac,
                     displayInts(summary.bad_tiles),
+
                     summary.iono_magnitude,
                     summary.iono_pca,
                     summary.iono_qa,
+
                     summary.badstates,
                     summary.badpointings,
                     summary.badfreqs,
                     summary.badgains,
                     summary.badbeamshape,
-                    summary.significant_faults,
-                    summary.faultstring,
+                    summary.fault_str,
                 ].join("\t")
             }
             .collectFile(
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "FAIL REASON", "RA POINT", "DEC POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG",
-                    "FREQ RES", "TIME RES","N SCANS", "QUALITY", "QUALITY COMMENT",
-                    "DEAD DIPOLE FRAC","FLAG TILES FRAC", "FLAG TILES",
+                    "FREQ RES", "TIME RES","N SCANS",
+                    "N FILES", "N ARCHIVED",
+                    "QUALITY", "QUALITY COMMENT",
+                    "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "FLAG TILES",
                     "IONO MAG", "IONO PCA", "IONO QA",
-                    "STATE FAULTS", "POINTING FAULTS", "FREQ FAULTS", "GAIN FAULTS", "BEAM FAULTS", "SIGNIFICANT FAULTS"
+                    "STATE FAULTS", "POINTING FAULTS", "FREQ FAULTS", "GAIN FAULTS", "BEAM FAULTS", "FAULT STR"
                 ].join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/",
             )
