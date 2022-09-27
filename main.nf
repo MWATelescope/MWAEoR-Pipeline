@@ -87,13 +87,13 @@ process asvoPrep {
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-conv -v \
         -p timeres=${params.prep_time_res_s},freqres=${params.prep_freq_res_khz},conversion=uvfits,preprocessor=birli \
-        \$obsid || true
+        ${obsid} || true
 
     # list pending conversion jobs
-    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- $obsid
+    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- ${obsid}
 
     # extract id url size hash from any ready download vis jobs for this obsid
-    ${params.giant_squid} list -j --types conversion --states ready -- $obsid \
+    ${params.giant_squid} list -j --types conversion --states ready -- ${obsid} \
         | tee /dev/stderr \
         | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
         | tee ready.tsv
