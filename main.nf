@@ -498,7 +498,7 @@ process calQA {
     output:
     tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}_X.json")
 
-    storeDir "${params.outdir}/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -520,7 +520,7 @@ process solJson {
     output:
     tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits.json")
 
-    storeDir "${params.outdir}/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
     module "miniconda/4.8.3"
@@ -556,7 +556,7 @@ process plotSols {
     output:
     tuple val(obsid), path("hyp_soln_${obsid}*_${name}_{phases,amps}.png")
 
-    storeDir "${params.outdir}/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -575,7 +575,7 @@ process plotCalQA {
         path("calmetrics_${obsid}_${name}_variance.png"), \
         path("calmetrics_${obsid}_${name}_dlyspectrum.png")
 
-    storeDir "${params.outdir}/${obsid}/cal_qa"
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
