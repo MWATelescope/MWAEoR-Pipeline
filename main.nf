@@ -467,7 +467,31 @@ process hypSubMS {
     """
 }
 
-// QA tasks that can be run on each visibility file.
+// QA tasks that can be run on preprocessed visibility files.
+process prepVisQA {
+    input:
+    tuple val(obsid), path("birli_${obsid}.uvfits")
+    output:
+    tuple val(obsid), path("birli_${obsid}_prepvis_metrics.json")
+
+    storeDir "${params.outdir}/${obsid}/vis_qa"
+
+    tag "${obsid}"
+
+    label 'cpu'
+
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
+
+    script:
+    """
+    #!/bin/bash
+    set -ex
+    run_prepvisqa.py birli_${obsid}.uvfits --out "birli_${obsid}_prepvis_metrics.json"
+    """
+}
+
+// QA tasks that can be run on calibrated visibility files.
 process visQA {
     input:
     tuple val(obsid), val(name), path("hyp_${obsid}_${name}.uvfits")
@@ -547,6 +571,27 @@ process solJson {
         data["TOTAL_CONV"] = np.nanprod(results)
         print(repr(data))
         json_dump(data, out, indent=4)
+    """
+}
+
+process plotPrepVisQA {
+    input:
+    tuple val(obsid), path("birli_${obsid}_prepvis_metrics.json")
+    output:
+    tuple val(obsid), path("prepvis_metrics_${obsid}_rms.png")
+
+    storeDir "${params.outdir}/${obsid}/prep"
+
+    tag "${obsid}"
+
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
+
+    script:
+    """
+    #!/bin/bash
+    set -ex
+    plot_prepvisqa.py "birli_${obsid}_prepvis_metrics.json" --out "prepvis_metrics_${obsid}_rms.png" --save
     """
 }
 
@@ -1087,6 +1132,72 @@ workflow prep {
         obsMetafits
             .map { obsid, _ -> obsid }
             | asvoPrep
+            | prepVisQA
+        // uncomment this to skip prep and flag QA
+        // emit:
+        //     obsMetaVis = obsMetafits.join(asvoPrep.out)
+        //     obsFlags = asvoPrep.out.map { obsid, _ -> [obsid, []]}
+
+        def tileUpdates = file(params.tile_updates_path)
+            .readLines()
+            .collect { line ->
+                def (firstObsid, lastObsid, tileIdxs) = line.split(',') + ['', '']
+                [firstObsid as int, lastObsid as int, (tileIdxs as String).split("\\|").collect {it as Integer} ]
+            }
+
+        // collect prepVisQA results as .tsv
+        prepVisQA.out
+            // form row of tsv from json fields we care about
+            .map { obsid, json ->
+                def stats = parseJson(json);
+                [
+                    obsid,
+                    stats.NANTS?:'',
+                    stats.NTIMES?:'',
+                    stats.NFREQS?:'',
+                    stats.NPOLS?:'',
+                    stats.XX?.MXRMS_AMP_ANT?:'',
+                    stats.XX?.MNRMS_AMP_ANT?:'',
+                    stats.XX?.MXRMS_AMP_FREQ?:'',
+                    stats.XX?.MNRMS_AMP_FREQ?:'',
+                    stats.XX?.NPOOR_ANTENNAS?:'',
+                    displayInts(stats.XX?.POOR_ANTENNAS?:[]),
+                    stats.YY?.MXRMS_AMP_ANT?:'',
+                    stats.YY?.MNRMS_AMP_ANT?:'',
+                    stats.YY?.MXRMS_AMP_FREQ?:'',
+                    stats.YY?.MNRMS_AMP_FREQ?:'',
+                    stats.YY?.NPOOR_ANTENNAS?:'',
+                    displayInts(stats.YY?.POOR_ANTENNAS?:[]),
+                ].join("\t")
+            }
+            .collectFile(
+                name: "prepvis_metrics.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS",
+                    "NANTS",
+                    "NTIMES",
+                    "NFREQS",
+                    "NPOLS",
+                    "XX MXRMS_AMP_ANT",
+                    "XX MNRMS_AMP_ANT",
+                    "XX MXRMS_AMP_FREQ",
+                    "XX MNRMS_AMP_FREQ",
+                    "XX NPOOR_ANTENNAS",
+                    "XX POOR_ANTENNAS",
+                    "YY MXRMS_AMP_ANT",
+                    "YY MNRMS_AMP_ANT",
+                    "YY MXRMS_AMP_FREQ",
+                    "YY MNRMS_AMP_FREQ",
+                    "YY NPOOR_ANTENNAS",
+                    "YY POOR_ANTENNAS",
+                ].join("\t"),
+                storeDir: "${params.outdir}/results${params.result_suffix}/"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        // plot prepvisQA
+        prepVisQA.out | plotPrepVisQA
 
         // analyse flag occupancy
         obsMetafits.join(asvoPrep.out) | flagQA
@@ -1109,6 +1220,7 @@ workflow prep {
                     stats.num_times?:'',
                     stats.num_baselines?:'',
                     displayInts(stats.flagged_timestep_idxs?:[]),
+                    displayInts(stats.preflagged_ants?:[]),
                     stats.total_occupancy,
                     stats.total_non_preflagged_bl_occupancy
                 ] + chan_occupancy).join("\t")
@@ -1118,7 +1230,7 @@ workflow prep {
                 seed: ([
                     "OBS",
                     "N CHAN", "FLAGGED SKY CHANS", "FLAGGED FINE CHANS", "FLAGGED SKY CHAN FRAC",
-                    "N TIME","N BL", "FLAGGED TIMESTEPS",
+                    "N TIME","N BL", "FLAGGED TIMESTEPS", "FLAGGED ANTS",
                     "TOTAL OCCUPANCY", "NON PREFLAGGED"
                 ] + sky_chans).join("\t"),
                 storeDir: "${params.outdir}/results${params.result_suffix}/"
@@ -1135,6 +1247,29 @@ workflow prep {
             .map { obsid, _ -> obsid }
             .join(obsMetafits)
             .join(asvoPrep.out)
+        // channel of extra flags for each obsid
+        obsFlags = prepVisQA.out
+            .join(flagQA.out)
+            .map { obsid, prepJson, flagJson ->
+                def flagStats = parseJson(flagJson);
+                def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
+                def prepStats = parseJson(prepJson);
+                def prepAntennas = ((prepStats.XX?.POOR_ANTENNAS?:[]) + (prepStats.YY?.POOR_ANTENNAS?:[])) as Set
+                def manualAntennas = ([]) as Set
+                tileUpdates.each {
+                    def (firstObsid, lastObsid, tileIdxs, comment) = it
+                    if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
+                        manualAntennas.addAll(tileIdxs)
+                    }
+                }
+                [
+                    obsid,
+                    flagAntennas as int[],
+                    prepAntennas as int[],
+                    manualAntennas as int[],
+                    (prepAntennas + manualAntennas - flagAntennas) as int[]
+                ]
+            }
 }
 
 workflow cal {
