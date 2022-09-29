@@ -250,7 +250,7 @@ def groovy2bashAssocArray(map, name) {
 // do multiple calibration solutions for each obs, depending on dical_args
 process hypCalSol {
     input:
-    tuple val(obsid), val(dical_args), path("${obsid}.metafits"), path("${obsid}.uvfits") // metafits, uvfits
+    tuple val(obsid), val(dical_args), path("${obsid}.metafits"), path("${obsid}.uvfits"), val(tile_flags)
     output:
     tuple val(obsid), path("hyp_soln_${obsid}_${name_glob}.fits"), path("hyp_di-cal_${obsid}_${name_glob}.log")
     // todo: model subtract: path("hyp_model_${obsid}_${name_glob}.uvfits")
@@ -270,6 +270,7 @@ process hypCalSol {
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
+    flag_args = tile_flags.size() > 0 ? "--tile-flags ${tile_flags.join(' ')}" : ""
     """
     set -eux
     ${para ? "export CUDA_VISIBLE_DEVICES=0" : ""}
@@ -298,6 +299,7 @@ process hypCalSol {
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
                 --outputs "hyp_soln_${obsid}_\${name}.fits" \
+                ${flag_args} \
                 > "hyp_di-cal_${obsid}_\${name}.log"
         ) &
         # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
@@ -634,6 +636,50 @@ process plotCalQA {
     plot_calqa.py "hyp_soln_${obsid}_${name}.json" --out "calmetrics_${obsid}_${name}.png" --save
     """
 }
+
+process plotVisQA {
+    input:
+    tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics.json")
+    output:
+    tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics_rms.png")
+
+    storeDir "${params.outdir}/${obsid}/vis_qa"
+
+    tag "${obsid}"
+
+    module "miniconda/4.8.3"
+    conda "${params.astro_conda}"
+
+    script:
+    """
+    #!/bin/bash
+    set -ex
+    plot_visqa.py "hyp_${obsid}_${name}_vis_metrics.json" --out "hyp_${obsid}_${name}_vis_metrics_rms.png" --save
+    """
+}
+
+// process plotImgQA {
+//     input:
+//     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
+//     output:
+//     tuple val(obsid), val(name), \
+//         path("wsclean_hyp_${obsid}_${name}-MFS_rms.png"), \
+//         path("wsclean_hyp_${obsid}_${name}-MFS_pks.png")
+
+//     storeDir "${params.outdir}/${obsid}/img_qa"
+
+//     tag "${obsid}"
+
+//     module "miniconda/4.8.3"
+//     conda "${params.astro_conda}"
+
+//     script:
+//     """
+//     #!/bin/bash
+//     set -ex
+//     plot_imgqa.py "wsclean_hyp_${obsid}_${name}-MFS.json" --out "wsclean_hyp_${obsid}_${name}-MFS" --save
+//     """
+// }
 
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
@@ -1274,13 +1320,13 @@ workflow prep {
 
 workflow cal {
     take:
-        // channel of metafits and preprocessed uvfits: tuple(obsid, metafits, uvfits)
+        // channel of metafits and preprocessed uvfits: tuple(obsid, metafits, uvfits, antFlags)
         obsMetaVis
     main:
         // hyperdrive di-calibrate on each obs
         obsMetaVis
-            .map { def (obsids, metafits, uvfits) = it
-                [obsids, params.dical_args, metafits, uvfits]
+            .map { def (obsids, metafits, uvfits, antFlags) = it
+                [obsids, params.dical_args, metafits, uvfits, antFlags]
             }
             | hypCalSol
 
@@ -1300,7 +1346,7 @@ workflow cal {
                 [obsid, name, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
             }
             .collectFile(
-                name: "cal_timings.tsv", newLine: true, sort: true,
+                name: "cal_timings${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
                 ].join("\t"),
@@ -1348,7 +1394,7 @@ workflow cal {
                 ].join("\t")
             }
             .collectFile(
-                name: "cal_results.tsv", newLine: true, sort: true,
+                name: "cal_results${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
@@ -1358,7 +1404,7 @@ workflow cal {
             | view { [it, it.readLines().size()] }
 
         // channel of metafits for each obsid: tuple(obsid, metafits)
-        obsMetafits = obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits] }
+        obsMetafits = obsMetaVis.map { obsid, metafits, _, __ -> [obsid, metafits] }
         // calibration QA and plot solutions
         obsMetafits
             // join with solutions from eachCal and eachPolyCal
@@ -1377,6 +1423,7 @@ workflow cal {
             // form row of tsv from json fields we care about
             .map { obsid, name, json ->
                 def stats = parseJson(json)
+                def convg_var = stats.CONVERGENCE_VAR
                 [
                     obsid,
                     name,
@@ -1385,8 +1432,8 @@ workflow cal {
                     (stats.UNUSED_CHS?:0) / 100,
                     (stats.UNUSED_ANTS?:0) / 100,
                     (stats.NON_CONVERGED_CHS?:0) / 100,
-                    stats.CONVERGENCE_VAR,
-                    stats.CONVERGENCE_VAR == "NaN" ? "NaN" : stats.CONVERGENCE_VAR * 1e14,
+                    convg_var,
+                    (convg_var instanceof BigDecimal) ? convg_var * 1e14 : "NaN",
                     stats.XX?.SKEWNESS_UVCUT?:'',
                     stats.XX?.RMS_AMPVAR_ANT?:'',
                     stats.XX?.RMS_AMPVAR_FREQ?:'',
@@ -1401,7 +1448,7 @@ workflow cal {
                 ].join("\t")
             }
             .collectFile(
-                name: "cal_metrics.tsv", newLine: true, sort: true,
+                name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "CAL NAME", "STATUS",
                     "BL UNUSED FRAC", "CH UNUSED FRAC", "ANT UNUSED FRAC",
@@ -1514,6 +1561,8 @@ workflow uvfits {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        visQA.out | plotVisQA
 
         // collect psMetrics as a .dat
         psMetrics.out
@@ -1630,7 +1679,7 @@ workflow {
         | view { [it, it.readLines().size()] }
 
     // download preprocessed, unless noprep is set
-    if (params.noprep) { println("params.noprep set, exiting before asvoPrep."); return }
+    if (params.noprep) { println("params.noprep set, exiting before prep."); return }
     ws.out.obsMetafits | prep
 
     // channel of obsids that pass the flag gate
@@ -1642,9 +1691,32 @@ workflow {
         )
         | view { [it, it.readLines().size()] }
 
+    prep.out.obsFlags
+        .filter { obsid, flagAnts, prepAnts, manualAnts, newAnts -> newAnts.size() > 0 }
+        .map { obsid, flagAnts, prepAnts, manualAnts, newAnts ->
+            ([
+                obsid,
+                displayInts(flagAnts),
+                displayInts(prepAnts),
+                displayInts(manualAnts),
+                displayInts(newAnts),
+            ]).join("\t")
+        }
+        .collectFile(
+            name: "tile_flags.tsv", newLine: true, sort: true,
+            seed: ([ "OBS", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
+            storeDir: "${params.outdir}/results${params.result_suffix}/"
+        )
+        // display output path and number of lines
+        | view { [it, it.readLines().size()] }
+
     // calibrate each obs that passes flag gate unless nocal is set:
     if (params.nocal) { println("params.nocal set, exiting before cal."); return }
-    prep.out.obsMetaVis | cal
+    prep.out.obsMetaVis.join(
+        prep.out.obsFlags
+            // .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, []]}
+            .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
+    ) | cal
 
     if (params.noapply) { println("params.noapply set, exiting before apply."); return }
     // channel of arguments for hypApply{UV,MS}
@@ -1691,8 +1763,11 @@ workflow {
     // QA uvfits visibilities
     obsNameUvfits | uvfits
 
-    // TODO: filter out obsids that don't pass uvfits qa
+    if (params.noms) {
+        channel.from([]) | hypApplyMS
+    } else {
     allApply | hypApplyMS
+    }
 
     // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
     if (params.nosub) {
@@ -1700,7 +1775,7 @@ workflow {
             .map { obsid, name, vis, _ -> [obsid, name, vis] }
     } else {
         // get subtracted ms vis
-        obsMetaVis
+        prep.out.obsMetaVis
             .cross(hypApplyMS.out)
             .map {
                 def (obsid, metafits, _) = it[0]
@@ -1725,4 +1800,4 @@ workflow {
             .mix(img.out.archive)
             | archive
     }
-}
+    }
