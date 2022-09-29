@@ -39,12 +39,12 @@ graph TD;
       metafits[/fa:fa-file metafits /]; class metafits file
 
       obsids --> wsMeta --> ws --> wsmetaJson & metafits
-
       wsGate{"fa:fa-check wsGate &nbsp;&nbsp;"}; class wsGate decision;
-      wsmetaJson --> wsGate
-
       nfConfigMeta>fa:fa-file-code nextflow.config ]; class nfConfigMeta in
-      nfConfigMeta --"pointing/tile/dipole filters"-----> wsGate
+      qualityUpdates>fa:fa-file-code quality-updates.csv ]; class qualityUpdates in
+      qualityUpdates --"quality updates"-----> wsGate
+      wsmetaJson --"pointing/tile/dipole/quality info"--> wsGate
+      nfConfigMeta --"pointing/tile/dipole/quality filters"-----> wsGate
     end
 
     subgraph prep
@@ -52,18 +52,28 @@ graph TD;
       asvo([fa:fa-server MWA ASVO ]); class asvo in
       prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file
 
-      wsGate --"obs pass"--> asvoPrep --> asvo --> prepUVFits
+      wsGate --"passing obs, metafits"--> asvoPrep --> asvo --> prepUVFits
 
       flagQA[["fa:fa-gem flagQA &nbsp;"]]; class flagQA proc;
       occupancyJson[/fa:fa-file-code occupancy.json /]; class occupancyJson file
       prepUVFits --> flagQA --> occupancyJson;
       %% metafits -.-> flagQA;
 
+      prepVisQA[["fa:fa-gem prepVisQA &nbsp;"]]; class prepVisQA proc;
+      prepVisJson[/fa:fa-file-code prepVis.json /]; class prepVisJson file
+      prepUVFits --> prepVisQA --> prepVisJson;
+
       flagGate{"fa:fa-flag flagGate &nbsp;&nbsp;"}; class flagGate decision;
       occupancyJson --> flagGate
 
       nfConfigPrep>fa:fa-file-code nextflow.config ]; class nfConfigPrep in
-      nfConfigPrep --"occupancy_threshold"--> flagGate;
+      nfConfigPrep --"occupancy_threshold"----> flagGate;
+
+      tileUpdates>fa:fa-file-code tile-updates.csv ]; class tileUpdates in
+      tile_flags[/fa:fa-file-code tile_flags.csv /]; class tile_flags file
+      tileUpdates --"manual flags"----> tile_flags
+      prepVisJson --"prep flags"--> tile_flags
+
     end
 
 
@@ -73,7 +83,7 @@ graph TD;
       hypCalSol[["fa:fa-wrench hypCalSol &nbsp;"]]; class hypCalSol proc
       %% dicalLog[/fa:fa-file dical log /]; class dicalLog file
 
-      flagGate --"obs pass"--> hypCalSol --> calSol
+      flagGate --"passing obs, metafits, uvfits, flags"--> hypCalSol --> calSol
       %% hypCalSol --> dicalLog
       %% dicalArgs --> hypCalSol
       %% metafits -...-> hypCalSol
@@ -445,12 +455,6 @@ for gpufits in $(ls *.fits); do \
 done
 ```
 
-### hard link images
-
-```bash
-find /data/curtin_mwaeor/data -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
-```
-
 ### Carta
 
 no config
@@ -466,3 +470,12 @@ singularity exec --bind /data/curtin_mwaeor/data:/images /data/curtin_mwaeor/sw/
 ```
 
 open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_80kHz-MFS-XX-dirty.fits`
+
+## make csv file of all obsids at various stages
+
+```bash
+# downloaded, preprocessed.
+find /data/curtin_mwaeor/data/ -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv
+# calibrated
+find /data/curtin_mwaeor/data/ -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv
+```
