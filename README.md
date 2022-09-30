@@ -2,247 +2,210 @@
 
 ## Flow
 
-<!-- docker run --rm -v ${PWD}:/home/node/data minlag/mermaid-cli:latest -i /home/node/data/flow.mmd -o /home/node/data/flow.png --scale 3 --backgroundColor transparent --width 1000 --height 1800 -->
+The MWAEoR pipeline workflow takes a list of obsids and produces detailed metrics about the quality of the data by analysing the data in various stages. At the end of each stage is a gate, which prevents observations from passing to the next stage if an issue is found.
+
+### Metadata
 
 ```mermaid
-%%{init: { 'theme': 'base', 'themeVariables': {
-  'darkMode': false,
-  'background': '#00ffffff',
-  'primaryColor': '#ff0000',
-  'primaryBorderColor': '#002b36',
-  'primaryTextColor': '#002b36',
-  'secondaryColor': '#eee8d5',
-  'secondaryBorderColor': '#002b36',
-  'secondaryTextColor': '#002b36',
-  'tertiaryColor': '#fdf6e3',
-  'tertiaryBorderColor': '#002b36',
-  'tertiaryTextColor': '#002b36',
-  'lineColor': '#002b36',
-  'textColor': '#002b36'
-}  } }%%
-
-%% ff0000
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
 graph TD;
   classDef in fill:#2aa198;
   classDef out fill:#d33682;
   classDef file fill:#268bd2;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
-  classDef incompleteDecision fill:#EEC3B1;
 
-    subgraph meta
-      obsids>fa:fa-file obsids.csv ]; class obsids in
-      wsMeta[[fa:fa-download wsMeta]]; class wsMeta proc
-      ws([fa:fa-server MWA web services ]); class ws in
-      wsmetaJson[/fa:fa-file wsmeta.json /]; class wsmetaJson file
-      %% wsfilesJson[/fa:fa-file files.json /]; class wsfilesJson file
-      metafits[/fa:fa-file metafits /]; class metafits file
+  subgraph
+    obsids --> wsMeta --> ws --> wsmetaJson;
+    ws ---> metafits
+    qualityUpdates --"quality updates"-----> wsGate;
+    wsmetaJson --"pointing, tile, dipole, quality"--> wsGate;
+    nfConfigMeta --"filters"-----> wsGate;
 
-      obsids --> wsMeta --> ws --> wsmetaJson & metafits
-      wsGate{"fa:fa-check wsGate &nbsp;&nbsp;"}; class wsGate decision;
-      nfConfigMeta>fa:fa-file-code nextflow.config ]; class nfConfigMeta in
-      qualityUpdates>fa:fa-file-code quality-updates.csv ]; class qualityUpdates in
-      qualityUpdates --"quality updates"-----> wsGate
-      wsmetaJson --"pointing/tile/dipole/quality info"--> wsGate
-      nfConfigMeta --"pointing/tile/dipole/quality filters"-----> wsGate
-    end
-
-    subgraph prep
-      asvoPrep[[fa:fa-bolt asvoPrep]]; class asvoPrep proc
-      asvo([fa:fa-server MWA ASVO ]); class asvo in
-      prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file
-
-      wsGate --"passing obs, metafits"--> asvoPrep --> asvo --> prepUVFits
-
-      flagQA[["fa:fa-gem flagQA &nbsp;"]]; class flagQA proc;
-      occupancyJson[/fa:fa-file-code occupancy.json /]; class occupancyJson file
-      prepUVFits --> flagQA --> occupancyJson;
-      %% metafits -.-> flagQA;
-
-      prepVisQA[["fa:fa-gem prepVisQA &nbsp;"]]; class prepVisQA proc;
-      prepVisJson[/fa:fa-file-code prepVis.json /]; class prepVisJson file
-      prepUVFits --> prepVisQA --> prepVisJson;
-
-      flagGate{"fa:fa-flag flagGate &nbsp;&nbsp;"}; class flagGate decision;
-      occupancyJson --> flagGate
-
-      nfConfigPrep>fa:fa-file-code nextflow.config ]; class nfConfigPrep in
-      nfConfigPrep --"occupancy_threshold"----> flagGate;
-
-      tileUpdates>fa:fa-file-code tile-updates.csv ]; class tileUpdates in
-      tile_flags[/fa:fa-file-code tile_flags.csv /]; class tile_flags file
-      tileUpdates --"manual flags"----> tile_flags
-      prepVisJson --"prep flags"--> tile_flags
-
-    end
-
-
-    subgraph cal
-      %% goodUVFits[/fa:fa-file good uvfits /]; class goodUVFits file
-      calSol[/fa:fa-file-excel cal solutions /]; class calSol file
-      hypCalSol[["fa:fa-wrench hypCalSol &nbsp;"]]; class hypCalSol proc
-      %% dicalLog[/fa:fa-file dical log /]; class dicalLog file
-
-      flagGate --"passing obs, metafits, uvfits, flags"--> hypCalSol --> calSol
-      %% hypCalSol --> dicalLog
-      %% dicalArgs --> hypCalSol
-      %% metafits -...-> hypCalSol
-
-      polyCal[/fa:fa-file-excel poly solutions /]; class polyCal file
-      polyFit[["fa:fa-chart-line polyFit &nbsp;"]]; class polyFit proc
-      calSol --> polyFit --> polyCal
-
-      nfConfigCal>fa:fa-file-code nextflow.config ]; class nfConfigCal in
-      hypCalSol --"dical args"--- nfConfigCal
-
-      %% end
-      %% subgraph cal_qa
-
-      calQA[["fa:fa-gem calQA &nbsp;"]]; class calQA proc;
-      calMetricsJson[/"fa:fa-file cal_metrics.json "/]; class calMetricsJson file
-      calSol & polyCal --> calQA --> calMetricsJson
-      %% metafits -...-> calQA
-
-      calGate{"fa:fa-check calGate &nbsp;&nbsp;"}; class calGate decision;
-      calMetricsJson --> calGate
-
-      acaciaCal([fa:fa-box-open acacia]); class acaciaCal out
-      calSol & polyCal & calMetricsJson --> acaciaCal
-
-      plotSolutions[["fa:fa-gem plotSolutions "]]; class plotSolutions proc
-      plotSol[/"fa:fa-file-image plot_{phases,amps}.png "/]; class plotSol file
-      polyCal & calSol --> plotSolutions --> plotSol
-      %% metafits -...-> plotSolutions
-    end
-
-    subgraph uvfits
-      %% nfConfigApply>fa:fa-file-code nextflow.config ]; class nfConfigApply in
-      calUVFits[/fa:fa-file cal uvfits /]; class calUVFits file
-
-      hypApplyUV[["fa:fa-times-circle hypApplyUV &nbsp;"]]; class hypApplyUV proc
-      calGate --"uvfits"--> hypApplyUV --> calUVFits
-      %% metafits -...-> hypApplyUV
-      nfConfigCal --"apply args"--> hypApplyUV
-
-      %% end
-      %% subgraph sub
-      subUVFits[/fa:fa-file sub uvfits /]; class subUVFits file
-      hypSubUV[["fa:fa-minus-circle hypSubUV &nbsp;"]]; class hypSubUV proc
-      calUVFits --> hypSubUV --> subUVFits
-
-      %% end
-      %% subgraph ps_metrics
-      psMetricsDat[/fa:fa-file ps_metrics.dat /]; class psMetricsDat file
-      psMetrics[["fa:fa-gem ps_metrics &nbsp;"]]; class psMetrics proc;
-      subUVFits & calUVFits --> psMetrics --> psMetricsDat
-
-      %% end
-      %% subgraph vis_qa
-      visMetricsJson[/fa:fa-file vis_metrics.json /]; class visMetricsJson file
-      visQA[["fa:fa-gem visQA &nbsp;"]]; class visQA proc;
-      calUVFits --> visQA --> visMetricsJson
-
-      visGate{"fa:fa-check visGate &nbsp;&nbsp;"}; class visGate incompleteDecision;
-      visMetricsJson & psMetricsDat -.-> visGate
-
-      acaciaUVFits([fa:fa-box-open acacia]); class acaciaUVFits out
-      visMetricsJson & calUVFits & subUVFits --> acaciaUVFits
-    end
-
-    subgraph img
-      calMS[/fa:fa-file cal ms /]; class calMS file
-      hypApplyMS[["fa:fa-times-circle hypApplyMS &nbsp;"]]; class hypApplyMS proc
-      visGate --"uvfits"--> hypApplyMS --> calMS
-      %% calGate --"uvfits"--> hypApplyMS --> calMS
-      %% applyArgs -...-> hypApplyMS
-      %% metafits -...-> hypApplyMS
-      subMS[/fa:fa-file sub ms /]; class subMS file
-      hypSubMS[["fa:fa-minus-circle hypSubMS &nbsp;"]]; class hypSubMS proc
-      calMS --> hypSubMS --> subMS
-
-      imgDirty[/"fa:fa-file-image image-{XX,YY,V}-dirty.fits "/]; class imgDirty file
-      wscleanDirty[["fa:fa-image wscleanDirty &nbsp;"]]; class wscleanDirty proc
-      calMS & subMS --> wscleanDirty --> imgDirty
-
-      %% end
-      %% subgraph img_qa
-      imgMetricsJson[/"fa:fa-file img_metrics.json &nbsp;"/]; class imgMetricsJson file
-      imgQA[[fa:fa-gem imgQA]]; class imgQA proc;
-      imgDirty --> imgQA --> imgMetricsJson
-
-      acaciaImg([fa:fa-box-open acacia]); class acaciaImg out
-      imgMetricsJson & imgDirty --> acaciaImg
-
-      imgGate{"fa:fa-check imgGate &nbsp;&nbsp;"}; class imgGate incompleteDecision;
-      imgMetricsJson -.-> imgGate
-
-      nfConfigCal --"apply args"--> hypApplyMS
-    end
-
-    subgraph "Power Spectrum"
-      chips[[fa:fa-bolt chips]]; class chips proc
-      powerSpectrum[/"fa:fa-file-image power_spectrum "/]; class powerSpectrum file
-      imgGate -.-> chips -.-> powerSpectrum
-    end
-
-    %% subgraph archive
-      %% acacia([fa:fa-box-open acacia]); class acacia out
-      %% calUVFits --> acacia
-      %% calMetricsJson --> acacia
-    %% end
-  %% end
+    obsids>fa:fa-file obsids.csv ]; class obsids in;
+    wsMeta[[fa:fa-download wsMeta ]]; class wsMeta proc;
+    ws([fa:fa-server MWA web services ]); class ws in;
+    wsmetaJson[/fa:fa-file wsmeta.json /]; class wsmetaJson file;
+    %% wsfilesJson[/fa:fa-file files.json /]; class wsfilesJson file;
+    metafits[/fa:fa-file metafits /]; class metafits file;
+    wsGate{fa:fa-check wsGate }; class wsGate decision;
+    nfConfigMeta>fa:fa-file-code nextflow.config ]; class nfConfigMeta in
+    qualityUpdates>fa:fa-file-code quality-updates.csv ]; class qualityUpdates in
+  end
 ```
 
-## Components
+The metadata stage gathers information about each observation from MWA Web Services. This ranges from scheduling information to information about faults that occurred during the observation, as well as information about the files archived for the observation. This information is used to filter observations based on a set of criteria that prevents observations with too many faults from passing through to further stages.
 
-main tasks:
+### Preprocessing
 
-- obsid → **`asvoRaw`** → obsid, metafits, \*gpufits
-  - if obsid raw not stored, schedule ASVO download job to Accacia with
-    [Giant Squid](github.com/mwaTelescope/giant-squid), wait,
-    download with `wget`, untar with `tar`
-  - ASVO wait times can be between a few minutes and a few days, so job will
-    wait with ASVO socket open for an hour, then exponential backoff for $2^a$
-    hours for attempt number $a$, up to 5 attempts
-  - store: `${obsid}/raw`
-  - resources: mem
-- metafits, \*gpufits → **`birliPrep`** → prepUVFits, \*mwaf, birliLog
-  - if prepUVFits for obsid not stored, preprocess and flag with `birli`
-  - store: `${obsid}/prep`
-  - resources: mem, cpu
-- metafits, mwaf → **`flagQA`** → occupancy
-  - get total flag occupancy, and occupancy for each coarse channel
-  - reject obs flag occupancy is above threshold
-- metafits, prepUVFits, dicalArgs → **`hypCalSol`** → \*calSol, \*dicalLog
-  - if calSols not stored, `hyperdrive di-calibrate` with dicalArgs
-  - store: `${obsid}/cal${params.cal_suffix}`
-  - resources: mem, gpu
-- metafits, prepUVFits, calSol, visName, applyArg → **`hypApplyUV`** → calUVFits, applyLog
-  - if calUVFits for (obsid × visName) not stored, `hyperdrive solutions-apply` with applyArg
-  - store: `${obsid}/cal${params.cal_suffix}`
-  - resources: mem, cpu
-- name, metafits, calUVFits → **`wscleanDirty`** → img{XX,YY,V}Dirty
-  - dirty images of stokes XX,YY,V via [wsclean](https://gitlab.com/aroffringa/wsclean)
+```mermaid
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
+graph TD;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
 
-qa tasks:
+  subgraph
+    nfConfig --"spectral, temporal resolution"--> asvoPrep
+    asvoPrep --> asvo --> prepUVFits;
+    prepUVFits & metafits --> flagQA --> occupancyJson --> flagGate;
+    prepUVFits --> prepVisQA --> prepVisJson;
+    nfConfig --"occupancy threshold"-----> flagGate;
+    tileUpdates --"manual flags"-----> tile_flags;
+    prepVisJson --"prep flags"--> tile_flags;
 
-- obsid, metafits → **`metaJson`** → obsid, metafitsJson
-  - get flagged inputs from metafits
-  - size of raw vis for missing hdu fraction
-- obsid, prepUVfits, birliLog → **`prepStats`** → obsid, prepStatsJson
-  - from prep uvfits: count timesteps, channels, baselines
-  - from birli log: collect
-  - store: `${obsid}/prep`
-- obsid, name, metafits, calSol → **`calQA`** (#3) → obsid, calMetricsXJson, calMetricsYJson
-  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
-  - needs a unique name for each calibration
-- obsid, name, metafits, calSol → **`plotSolutions`** → obsid, phasesPng, ampsPng
-  - plot calibration solution gains,phases with `hyperdrive solutions-plot`
+    asvoPrep[[fa:fa-bolt asvoPrep ]]; class asvoPrep proc;
+    asvo([fa:fa-server MWA ASVO ]); class asvo in;
+    prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file;
+    metafits[/fa:fa-file metafits /]; class metafits file;
+    flagQA[[fa:fa-gem flagQA]]; class flagQA proc;
+    occupancyJson[/fa:fa-file-code occupancy.json /]; class occupancyJson file;
+    prepVisQA[[fa:fa-gem prepVisQA ]]; class prepVisQA proc;
+    prepVisJson[/fa:fa-file-code prepVis.json /]; class prepVisJson file;
+    flagGate{fa:fa-flag flagGate }; class flagGate decision;
+    nfConfig>fa:fa-file-code nextflow.config ]; class nfConfig in;
+    tileUpdates>fa:fa-file-code tile-updates.csv ]; class tileUpdates in;
+    tile_flags[/fa:fa-file-code tile_flags.csv /]; class tile_flags file;
+  end
+```
+
+The Preprocessing stage produces and analyses preprocessed uvfits visibilities. If the preprocessed visibilities for an observation are not found in storage, the preprocessing stage schedules a [Birli](https://github.com/MWATelescope/Birli) conversion job on [MWA ASVO](https://asvo.mwatelescope.org/) via [Acacia](https://pawsey.org.au/systems/acacia/) with [Giant Squid](github.com/mwaTelescope/giant-squid). The Birli conversion job includes flagging with [AOFlagger](https://gitlab.com/aroffringa/aoflagger). Further preprocessing parameters can be configured in nextflow,
+
+ASVO wait times can be between a few minutes and a few days, so an exponential backoff is used to wait $2^a$ hours after attempt number $a$ for up to 5 attempts until the conversion job is ready. Finally the archive is downloaded with `wget`, hash-validated, and inflated with `tar`.
+
+The [prep vis qa script](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_prepvisqa.py) is used to determine bad tiles using outlier analysis.
+
+Further bad tiles can be specified manually using a tile updates file
+
+Total flag occupancy of the preprocessed visibilities, as well as the occupancy for each coarse channel is determined by the flagQA step.
+
+Finally, observations whose flag occupancy is above the defined occupancy threshold are rejected.
+
+### Direction Independent Calibration
+
+```mermaid
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
+graph TD;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
+
+  subgraph
+    nfConfig --"dical args"--> hypCalSol --> calSol
+    prepUVFits & metafits --> hypCalSol
+    %% hypCalSol --> dicalLog
+    calSol --> polyFit --> polyCal
+    polyCal & calSol & metafits --> calQA --> calMetricsJson
+    calMetricsJson --> calGate
+    calSol & polyCal & calMetricsJson --> acaciaCal
+    polyCal & calSol & metafits --> plotSolutions --> plotSol
+
+    calSol[/fa:fa-file-excel cal solutions/]; class calSol file
+    hypCalSol[[fa:fa-wrench hypCalSol]]; class hypCalSol proc
+    %% dicalLog[/fa:fa-file dical log /]; class dicalLog file
+    nfConfig>fa:fa-file-code nextflow.config]; class nfConfig in
+    metafits[/fa:fa-file metafits/]; class metafits file
+    prepUVFits[/fa:fa-file prep uvfits/]; class prepUVFits file
+    polyCal[/fa:fa-file-excel poly solutions /]; class polyCal file
+    polyFit[[fa:fa-chart-line polyFit]]; class polyFit proc
+    calQA[[fa:fa-gem calQA]]; class calQA proc;
+    calMetricsJson[/"fa:fa-file cal_metrics.json "/]; class calMetricsJson file
+    calGate{fa:fa-check calGate}; class calGate decision;
+    acaciaCal([fa:fa-box-open acacia]); class acaciaCal out
+    plotSolutions[[fa:fa-gem plotSolutions]]; class plotSolutions proc
+    plotSol[/"fa:fa-file-image plot_{phases,amps}.png "/]; class plotSol file
+  end
+```
+
+[Hyperdrive](github.com/mwaTelescope/mwa_hyperdrive) is used to generate one or more direction independent calibration solutions using the model file and several calibration parameter sets defined in the nextflow config. The statistical properties of the calibration solutions are analysed with the [cal qa](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_calqa.py). If the variance of an observation's calibration solutions is too high, then the observation is rejected.
+
+### Calibrated Visibility Analysis
+
+```mermaid
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
+graph TD;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
+
+  subgraph
+    metafits & prepUVFits --> hypApplyUV --> calUVFits
+    nfConfig --"apply args"--> hypApplyUV
+    calUVFits --> hypSubUV --> subUVFits
+    subUVFits & calUVFits --> psMetrics --> psMetricsDat
+    calUVFits --> visQA --> visMetricsJson
+    visMetricsJson & psMetricsDat --> visGate
+    visMetricsJson & calUVFits & subUVFits --> acaciaUVFits
+
+    nfConfig>fa:fa-file-code nextflow.config ]; class nfConfig in
+    calUVFits[/fa:fa-file cal uvfits /]; class calUVFits file
+    hypApplyUV[[fa:fa-times-circle hypApplyUV ]]; class hypApplyUV proc
+    metafits[/fa:fa-file metafits /]; class metafits file
+    prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file
+    subUVFits[/fa:fa-file sub uvfits /]; class subUVFits file
+    hypSubUV[[fa:fa-minus-circle hypSubUV ]]; class hypSubUV proc
+    psMetricsDat[/fa:fa-file ps_metrics.dat /]; class psMetricsDat file
+    psMetrics[[fa:fa-gem ps_metrics ]]; class psMetrics proc;
+    visMetricsJson[/fa:fa-file vis_metrics.json /]; class visMetricsJson file
+    visQA[[fa:fa-gem visQA ]]; class visQA proc;
+    visGate{fa:fa-check visGate }; class visGate decision;
+    acaciaUVFits([fa:fa-box-open acacia ]); class acaciaUVFits out
+  end
+```
+
 - obsid, name, calUVFits → **`visQA`** → obsid, visMetrics
   - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_visqa.py`
   - needs a unique name for each vis
 - obsid, name, calUVFits → **`psMetrics`** (#1/#2) → obsid, psMetricsDat
   - window/wedge/total power/subtraced power iono proxy via [chips](https://github.com/cathryntrott/chips) `src/ps_power_metrics.c`
+- metafits, prepUVFits, calSol, visName, applyArg → **`hypApplyUV`** → calUVFits, applyLog
+  - if calUVFits for (obsid × visName) not stored, `hyperdrive solutions-apply` with applyArg
+  - store: `${obsid}/cal${params.cal_suffix}`
+  - resources: mem, cpu
+
+### Image Analysis
+
+```mermaid
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
+graph TD;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
+
+  subgraph
+    metafits & prepUVFits --> hypApplyMS --> calMS --> hypSubMS --> subMS
+    calMS & subMS --> wscleanDirty --> imgDirty --> imgQA --> imgMetricsJson
+    imgMetricsJson & imgDirty --> acaciaImg
+    imgMetricsJson -.-> imgGate
+    nfConfig --"apply args"--> hypApplyMS
+
+    nfConfig>fa:fa-file-code nextflow.config ]; class nfConfig in
+    metafits[/fa:fa-file metafits /]; class metafits file
+    prepUVFits[/fa:fa-file prep uvfits /]; class prepUVFits file
+    calMS[/fa:fa-file cal ms /]; class calMS file
+    hypApplyMS[[fa:fa-times-circle hypApplyMS ]]; class hypApplyMS proc
+    subMS[/fa:fa-file sub ms /]; class subMS file
+    hypSubMS[[fa:fa-minus-circle hypSubMS ]]; class hypSubMS proc
+    imgDirty[/"fa:fa-file-image image-{XX,YY,V}-dirty.fits "/]; class imgDirty file
+    wscleanDirty[[fa:fa-image wscleanDirty ]]; class wscleanDirty proc
+    imgMetricsJson[/fa:fa-file img_metrics.json /]; class imgMetricsJson file
+    imgQA[[fa:fa-gem imgQA]]; class imgQA proc;
+    acaciaImg([fa:fa-box-open acacia]); class acaciaImg out
+    imgGate{fa:fa-check imgGate }; class imgGate decision;
+
+  end
+```
+
+- name, metafits, calUVFits → **`wscleanDirty`** → img{XX,YY,V}Dirty
+  - dirty images of stokes XX,YY,V via [wsclean](https://gitlab.com/aroffringa/wsclean)
 - obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** (#4) → imgMetricsJson
   - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
   - flux density ratio of stokes, ratio of corner thermal noise RMS, variance, ratio stokes V/XX V/YY
@@ -265,9 +228,6 @@ qa tasks:
     - `ps_metrics/` - power spectrum metrics dat, log
   - `results/` - aggregate metrics for spreadsheet import
     - `raw_stats.tsv` - info from raw stage: raw/metafits size on disk, raw file count
-    - `metafits_stats.tsv` - info from metafits: raw dimensions, flagged inputs
-    - `prep_stats.tsv` - info from prep stage: prep uvfits dimensions, missing HDUs, uvfits / mwaf size on disk
-    - `occupancy.tsv` - mwaf occupancy: total, by coarse channel
     - `cal_metrics.tsv` - calQA metrics for each di calibration
     - `vis_metrics.tsv` - visQA metrics for each vis
     - `img_metrics.tsv` - imgQA metrics for each image
@@ -478,4 +438,357 @@ open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_
 find /data/curtin_mwaeor/data/ -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv
 # calibrated
 find /data/curtin_mwaeor/data/ -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv
+# imaged
+```
+
+# WIP
+
+### hard link images (easier for carta)
+
+```bash
+find /data/curtin_mwaeor/data -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
+```
+
+## copy all metafits to hopper
+
+```bash
+cd /data/curtin_mwaeor/data
+find . -regextype posix-extended  -regex './[0-9]{10}/raw/[0-9]{10}.metafits.json' | while read -r p; do cp $p /data/curtin_mwaeor/FRB_hopper/; done
+```
+
+```bash
+for obsid in 1060539904 1060540152 1060540272 1061319352 1061320080 1061320328 1061320448 1061320568 1065196248 1065196368 1065196856 1065196976 1065197344 1185484472 1259411080 1259411320 1259411560 1259412160 1259412280 1322135592 1322135712 1322135832 1322307760 1322307880 1322308000 1322308240 1322480408 1322480528 1322654736 1322826184 1322826424 1322826664 1322826784; do
+  echo $'\n'$obsid
+  ls /data/curtin_mwaeor/data/${obsid}/cal_qa/*src4k_{X,Y}.json
+done
+```
+
+## show the script of last few runs
+
+`head -n -1` only if a pipeline is currently running
+
+```bash
+while read run; do
+  echo $run
+  nextflow log $run \
+    -f workdir,exit,status,process,duration,script \
+    -filter 'process == "wscleanDirty" && exit == 0'
+done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
+```
+
+```bash
+while read run; do
+  echo $run
+  nextflow log $run \
+    -f tag,exit,status,process,realtime \
+    -filter 'process == "cal:hypCalSol"'
+  # nextflow log $run \
+  #   -f workdir,exit,status,process,duration,script \
+  #   -filter 'process == "wscleanDirty" && exit == 0'
+done < <(nextflow log -q | tail -n 50 | head -n 1) | tee runs.txt
+cat runs.txt | grep -E $'(-name|work)' | tee runs_clean.txt
+```
+
+## dump img_qa
+
+```bash
+find /data/curtin_mwaeor/data -type f -path '*/img_qa/*MFS.json' \
+  | gawk 'match()
+```
+
+## dump flags
+
+```bash
+module load python/3.9.7
+export obsid=1059505936
+for i in {01..12}; do \
+  python /data/curtin_mwaeor/src/Birli/tests/data/dump_mwaf.py \
+    /data/curtin_mwaeor/data/${obsid}/prep/${obsid}_${i}.mwaf --summary
+done
+```
+
+## clear blank logs
+
+```bash
+find /data/curtin_mwaeor/data/ -name '*.log' -size 0 -delete
+```
+
+## cleanup folders
+
+```
+cd /data/curtin_mwaeor/data
+for obsid in ...; do
+  [ -d /data/curtin_mwaeor/data/$obsid ] && rm -rf /data/curtin_mwaeor/data/$obsid
+done
+```
+
+## cleanup files
+
+```bash
+cd /data/curtin_mwaeor/data
+for obsid in $(ls); do
+  # export path=${obsid}/raw/${obsid}.metafits.json
+  # export path=${obsid}/prep/${obsid}_prep_stats.json
+  # export path=${obsid}/{vis_qa,img_qa,cal_qa}/*.json
+  # export path=${obsid}/vis_qa/*.json
+  export path=${obsid}/img_qa/*.json
+  # export path=${obsid}/cal_qa/*.json
+  for path in $path; do
+    [ -f "$path" ] && echo "$path" && rm -rf "$path"
+  done
+done
+find /data/curtin_mwaeor/data -path '*/*_qa/*.json' # -delete
+find /data/curtin_mwaeor/data -path '*/cal/*.ms' -exec sh -c 'echo rm -rf {}' \;
+```
+
+```
+ls /data/curtin_mwaeor/data/*/img/*.fits | cut -d / -f 5 | sort | uniq | tee obsids-with-img.csv | tee /dev/stderr | wc -l
+```
+
+```bash
+for obsid in \
+  1259412400\
+  1259412280\
+  1259412160\
+  1259412040\
+  1259411920\
+  1259411800\
+  1259411680\
+  1259411560\
+  1259411440\
+  1259411320\
+  1259411200\
+  1259411080\
+  1065197464\
+  1065197344\
+  1065197224\
+  1065197096\
+  1065196976\
+  1065196856\
+  1065196736\
+  1065196608\
+  1065196488\
+  1065196368\
+  1065196248\
+  1065196120\
+  1065196000\
+; do
+  echo $obsid
+  # find /data/curtin_mwaeor/data/$obsid -type f -path './img_qa/*.png' #-delete
+  rm -f /data/curtin_mwaeor/data/${obsid}/img_qa/*.png
+done
+```
+
+## don't delete:
+
+1090008640
+1094490328
+
+### dump metafits
+
+not needed any more, just look in `${obsid}.metafits.json`
+
+```bash
+module load python/3.9.7
+for obsid in ... ; do \
+  python /data/curtin_mwaeor/src/Birli/tests/data/dump_metafits.py \
+    /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits \
+    | tee /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits.txt
+done
+```
+
+## add prefix to existing file stage
+
+```bash
+bash -c 'unset PATH; /bin/find /data/curtin_mwaeor/data -type d -name img_qa -execdir sh -c "pwd && mv {} img_qa-dci1000" \;'
+```
+
+## ipython via conda
+
+create env
+
+```bash
+conda create --prefix /data/curtin_mwaeor/sw/conda/dev astropy ipython scipy 'numpy<1.23.0' scipy matplotlib pandas seaborn six ipykernel
+```
+
+add new modules
+
+```bash
+conda install --prefix /data/curtin_mwaeor/sw/conda/dev astropy ipython scipy 'numpy<1.23.0' scipy matplotlib pandas seaborn six ipykernel
+```
+
+```bash
+module load miniconda/4.10.3
+conda activate /data/curtin_mwaeor/sw/conda/dev
+ipython
+```
+
+```python
+from astropy.io import fits
+hdus=fits.open('/data/curtin_mwaeor/data/1060539904/raw/1060539904.metafits')
+hdus=fits.open('/data/curtin_mwaeor/data/test/1343457784/raw/1343457784.metafits')
+hdus=fits.open('/data/curtin_mwaeor/data/1322827024/raw/1322827024.metafits')
+print('\n'.join(map(lambda row: ','.join(map(str, row)), hdus['TILEDATA'].data['Delays'].tolist())))
+hdus=fits.open('/data/curtin_mwaeor/data/1060539904/cal/hyp_soln_1060539904_30l_src4k.fits')
+hdus=fits.open('/data/curtin_mwaeor/data/1322827024/cal/hyp_soln_1322827024_30l_src4k.fits')
+hdus=fits.open('/data/curtin_mwaeor/data/1090094680/cal/hyp_soln_1090094680_30l_src4k.fits')
+print('\n'.join(map(lambda row: ','.join(map(str, row)), hdus['TILES'].data['DipoleGains'].tolist())))
+
+hdus=fits.open('/data/curtin_mwaeor/data/1060540392/prep/birli_1060540392.uvfits')
+```
+
+### mwa_qa debugging
+
+```python
+import sys
+from astropy.io import fits
+sys.path.insert(0, '/data/curtin_mwaeor/src/mwa_qa')
+from mwa_qa.read_uvfits import UVfits
+# hdus=fits.open('/data/curtin_mwaeor/data/1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
+uvf = UVfits('/data/curtin_mwaeor/data/1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
+```
+
+### run json query on metrics
+
+```bash
+find /data/curtin_mwaeor/data/ -type f -path '*/cal_qa/*X.json' -print -exec jq -r '(.CONVERGENCE//[])[0]|length' {} \; | tee has_convergence.txt
+```
+
+### rendering image
+
+```python
+import matplotlib.pyplot as plt
+from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch, ImageNormalize, MinMaxInterval
+from mpl_toolkits.axes_grid1.axes_rgb import RGBAxes
+from astropy.wcs import WCS
+from astropy.io import fits
+import numpy as np
+
+prefix = '/data/curtin_mwaeor/data/1259412400/img-dci1000/wsclean_hyp_1259412400_poly_30l_src4k_8s_80kHz-MFS-'
+plt.style.use(astropy_mpl_style)
+
+with fits.open(f'{prefix}XX-dirty.fits') as hdus:
+  header = hdus[0].header
+wcs = WCS(header)
+
+img_data_xx = fits.getdata(f'{prefix}XX-dirty.fits', ext=0)[0,0,:,:]
+img_data_yy = fits.getdata(f'{prefix}YY-dirty.fits', ext=0)[0,0,:,:]
+img_data_v = fits.getdata(f'{prefix}V-dirty.fits', ext=0)[0,0,:,:]
+# normalize to 0-1 using 95th percentile
+i_percentile = np.percentile(np.stack((img_data_xx, img_data_yy)), 95)
+img_data_xx /= i_percentile
+img_data_yy /= i_percentile
+v_percentile = np.percentile(img_data_v, 95)
+img_data_v /= v_percentile
+fig = plt.gcf()
+fig.set_size_inches(20, 20)
+plt.subplot(projection=wcs, slices=('x', 'y', 0, 0))
+plt.imshow(make_lupton_rgb(img_data_xx, img_data_v, img_data_yy, Q=1))
+plt.savefig('wsclean_hyp_1259412400_poly_30l_src4k_8s_80kHz-MFS-polarimetry-dirty.png')
+# plt.imshow(hdu.data, vmin=-2.e-5, vmax=2.e-4, origin='lower')
+# ny, nx = img_data_xx.shape
+# ax=RGBAxes(plt.figure(), [0.1, 0.1, 0.8, 0.8], pad=0.0)
+# ax.imshow(img_data_xx, img_data_v, img_data_yy)
+# rgb = np.zeros((ny, nx, 3))
+# rgb[:,:,0] = img_data_xx
+# rgb[:,:,1] = img_data_v
+# rgb[:,:,2] = img_data_yy
+# plt.imshow(img_data_xx, cmap='Reds', extent=extent)
+# plt.imshow(img_data_yy, cmap='Blues', extent=extent)
+```
+
+### tap stuff
+
+```python
+import pyvo as vo
+tap = vo.dal.TAPService("http://vo.mwatelescope.org/mwa_asvo/tap")
+results = tap.search("select obs_id, gpubox_files_archived, gpubox_files_total, total_archived_data_bytes \
+  from mwa.observation \
+  where obs_id IN (1087250776)")
+```
+
+### render movies
+
+#### prepvisqa
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/prep/prepvis_metrics_??????????_rms.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/prepvis_metrics_rms.mp4"
+```
+
+#### polcomps
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l sub_30l poly_30l sub_poly_30l; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/img_qa/??????????_'$name'_*.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/polcomp_${name}.mp4"
+done
+for name in 30l sub_30l; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/12????????/img_qa/??????????_'$name'_*.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/polcomp_12_${name}.mp4"
+done
+```
+
+#### calQA
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l_src4k_dlyspectrum poly_30l_src4k_dlyspectrum 30l_src4k_fft poly_30l_src4k_fft 30l_src4k_variance poly_30l_src4k_variance; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/calmetrics_${name}.mp4"
+done
+```
+
+#### plot solutions
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l_src4k_phases poly_30l_src4k_phases 30l_src4k_amps poly_30l_src4k_amps; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/hyp_soln_${name}.mp4"
+done
+for name in 30l_src4k_phases 30l_src4k_amps; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/12????????/cal_qa/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/hyp_soln_12_${name}.mp4"
+done
+```
+
+#### redo imagqa from acacia
+
+```bash
+export name="sub_30l_src4k_8s_80kHz"
+while read -r obsid; do rclone copy mwaeor:high0.imgqa/wsclean_hyp_${obsid}_${name}.json .; jq -r '['${obsid}',"'${name}'",.XX.RMS_ALL,.XX.RMS_BOX,.XX.PKS0023_026?.PEAK_FLUX,.XX.PKS0023_026?.INT_FLUX,.YY.RMS_ALL,.YY.RMS_BOX,.YY.PKS0023_026.PEAK_FLUX,.YY.PKS0023_026.INT_FLUX,.V.RMS_ALL,.V.RMS_BOX,.V.PKS0023_026?.PEAK_FLUX,.V.PKS0023_026?.INT_FLUX,.V_XX.RMS_RATIO,.V_XX.RMS_RATIO_BOX]|@csv' wsclean_hyp_${obsid}_${name}.json; done < obsids-stage2imgqa.csv | tee img_metrics.csv
+```
+
+#### Fast flagged vs unflagged
+
+```bash
+for name in 30l_src4_fast_amps 30l_src4_fast_phases; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-unflagged.mp4"
+done
+for name in 30l_src4_fast_variance 30l_src4_fast_fft 30l_src4_fast_dlyspectrum; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
+done
+```
+
+### Hollow out measurement sets
+
+```bash
+find /data/curtin_mwaeor/data/ -type d -path '*/cal/*.ms' -exec rm -rf {}/* \;
+```
+
+### (Dev) Upload flags
+
+```bash
+find . -name '*.mwaf' -exec sh -c 'rclone copyto {} "dev:eor0high.mwaf/$(basename -- {})"' \;
+```
+
+### (Dev) exfil ms
+
+```bash
+export obsid=1092338912
+tar -czvg hyp_${obsid}_30l_src4k_2s_80kHz.ms.tar.gz -C /data/curtin_mwaeor/FRB_hopper hyp_${obsid}_30l_src4k_2s_80kHz.ms
+rclone copy hyp_${obsid}_30l_src4k_2s_80kHz.ms.tar.gz "dev:eor0high.ms"
 ```
