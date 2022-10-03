@@ -47,7 +47,7 @@ process asvoPrep {
     input:
     val obsid
     output:
-    tuple val(obsid), path("birli_${obsid}.uvfits")
+    tuple val(obsid), path("birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits")
 
     storeDir "${params.outdir}/$obsid/prep"
     // tag to identify job in squeue and nf logs
@@ -125,7 +125,7 @@ process asvoPrep {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
-        mv ${obsid}.uvfits birli_${obsid}.uvfits
+        mv ${obsid}.uvfits birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits
         exit 0 # success
     fi
     echo "no ready jobs"
