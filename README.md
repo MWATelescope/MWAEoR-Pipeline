@@ -15,9 +15,9 @@ graph TD;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
 
-  subgraph
+  subgraph " "
     obsids --> wsMeta --> ws --> wsmetaJson;
-    ws ---> metafits
+    ws --> metafits
     qualityUpdates --"quality updates"-----> wsGate;
     wsmetaJson --"pointing, tile, dipole, quality"--> wsGate;
     nfConfigMeta --"filters"-----> wsGate;
@@ -47,7 +47,7 @@ graph TD;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
 
-  subgraph
+  subgraph " "
     nfConfig --"spectral, temporal resolution"--> asvoPrep
     asvoPrep --> asvo --> prepUVFits;
     prepUVFits & metafits --> flagQA --> occupancyJson --> flagGate;
@@ -94,7 +94,7 @@ graph TD;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
 
-  subgraph
+  subgraph " "
     nfConfig --"dical args"--> hypCalSol --> calSol
     prepUVFits & metafits --> hypCalSol
     %% hypCalSol --> dicalLog
@@ -134,7 +134,7 @@ graph TD;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
 
-  subgraph
+  subgraph " "
     metafits & prepUVFits --> hypApplyUV --> calUVFits
     nfConfig --"apply args"--> hypApplyUV
     calUVFits --> hypSubUV --> subUVFits
@@ -159,15 +159,7 @@ graph TD;
   end
 ```
 
-- obsid, name, calUVFits → **`visQA`** → obsid, visMetrics
-  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_visqa.py`
-  - needs a unique name for each vis
-- obsid, name, calUVFits → **`psMetrics`** (#1/#2) → obsid, psMetricsDat
-  - window/wedge/total power/subtraced power iono proxy via [chips](https://github.com/cathryntrott/chips) `src/ps_power_metrics.c`
-- metafits, prepUVFits, calSol, visName, applyArg → **`hypApplyUV`** → calUVFits, applyLog
-  - if calUVFits for (obsid × visName) not stored, `hyperdrive solutions-apply` with applyArg
-  - store: `${obsid}/cal${params.cal_suffix}`
-  - resources: mem, cpu
+calibration solutions are applied to preprocessed visibilities to get calibrated uvfits visibilities. These are analysed using [visqa](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_visqa.py) and psMetrics [chips](https://github.com/cathryntrott/chips) to get the power spectrum window / wedge power
 
 ### Image Analysis
 
@@ -180,7 +172,7 @@ graph TD;
   classDef proc fill:#b58900;
   classDef decision fill:#cb4b16;
 
-  subgraph
+  subgraph " "
     metafits & prepUVFits --> hypApplyMS --> calMS --> hypSubMS --> subMS
     calMS & subMS --> wscleanDirty --> imgDirty --> imgQA --> imgMetricsJson
     imgMetricsJson & imgDirty --> acaciaImg
@@ -204,12 +196,9 @@ graph TD;
   end
 ```
 
-- name, metafits, calUVFits → **`wscleanDirty`** → img{XX,YY,V}Dirty
-  - dirty images of stokes XX,YY,V via [wsclean](https://gitlab.com/aroffringa/wsclean)
-- obsid, name, imgXXDirty, imgYYDirty, imgVDirty → **`imgQA`** (#4) → imgMetricsJson
-  - [mwa_qa](https://github.com/Chuneeta/mwa_qa) `scripts/run_valqa.py`
-  - flux density ratio of stokes, ratio of corner thermal noise RMS, variance, ratio stokes V/XX V/YY
-  - needs a unique name for each image
+calibration solutions are applied to preprocessed visibilities to get calibrated measurement set visibilities. Then [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty images of stokes XX,YY and V. 
+
+These images are analysed with imgQA to get the flux density ratio of stokes polarizations, and thermal noise RMS.
 
 ## Output Directory Structure:
 
