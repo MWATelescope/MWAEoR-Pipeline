@@ -144,12 +144,11 @@ process flagQA {
 
     tag "${obsid}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
-    #!${params.astro_conda}/bin/python
+    #!/usr/bin/env python
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -261,8 +260,7 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "gpu"
-
-    module "cuda/11.3.1:gcc-rt/9.2.0"
+    label "cuda"
 
     afterScript "ls ${task.storeDir}"
 
@@ -330,8 +328,7 @@ process polyFit {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     name = "poly_${dical_name}"
@@ -357,8 +354,6 @@ process hypApplyUV {
 
     tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
-
-    module "gcc-rt/9.2.0"
 
     script:
     vis_name = "${cal_name}_${apply_name}"
@@ -391,8 +386,6 @@ process hypApplyMS {
     tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
 
-    module "gcc-rt/9.2.0"
-
     script:
     vis_name = "${cal_name}_${apply_name}"
     """
@@ -421,8 +414,7 @@ process hypSubUV {
 
     tag "${obsid}.${name}"
     label "gpu"
-
-    module "gcc-rt/9.2.0"
+    label "cuda"
 
     script:
     sub_name = "sub_${name}"
@@ -453,8 +445,7 @@ process hypSubMS {
 
     tag "${obsid}.${name}"
     label "gpu"
-
-    module "gcc-rt/9.2.0"
+    label "cuda"
 
     script:
     sub_name = "sub_${name}"
@@ -481,9 +472,7 @@ process prepVisQA {
     tag "${obsid}"
 
     label 'cpu'
-
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -505,9 +494,7 @@ process visQA {
     tag "${obsid}.${name}"
 
     label 'cpu'
-
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -528,8 +515,7 @@ process calQA {
 
     tag "${obsid}.${name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -549,12 +535,11 @@ process solJson {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
-    #!${params.astro_conda}/bin/python
+    #!/usr/bin/env python
 
     from astropy.io import fits
     from json import dump as json_dump
@@ -586,8 +571,7 @@ process plotPrepVisQA {
 
     tag "${obsid}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -626,8 +610,7 @@ process plotCalQA {
 
     tag "${obsid}.${name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -647,8 +630,7 @@ process plotVisQA {
 
     tag "${obsid}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -670,7 +652,7 @@ process plotVisQA {
 
 //     tag "${obsid}"
 
-//     module "miniconda/4.8.3"
+//     label 'conda'
 //     conda "${params.astro_conda}"
 
 //     script:
@@ -722,7 +704,7 @@ process psMetrics {
 
     tag "${obsid}.${name}"
 
-    module "cfitsio/3.470:gcc-rt/9.2.0"
+    label "cfitsio"
 
     script:
     band = 0
@@ -748,8 +730,7 @@ process imgQA {
 
     tag "${obsid}.${name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
@@ -770,12 +751,11 @@ process polComp {
 
     tag "${obsid}.${name}"
 
-    module "miniconda/4.8.3"
-    conda "${params.astro_conda}"
+    label 'conda'
 
     script:
     """
-    #!${params.astro_conda}/bin/python
+    #!/usr/bin/env python
 
     from astropy.io import fits
     from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch
@@ -926,7 +906,7 @@ process archive {
     tag "$x"
     storeDir "${params.outdir}/.fakebuckets/${bucket}"
 
-    module "rclone"
+    label "rclone"
     stageInMode "symlink"
 
     script:
