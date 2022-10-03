@@ -1314,14 +1314,18 @@ workflow cal {
         hypCalSol.out
             .transpose()
             .map { obsid, soln, diCalLog ->
-                def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
-                def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
-                def convergedTime = logDateFmt.parse(convergedMatch[1])
-                def convergedNumerator = convergedMatch[2] as int
-                def convergedDenominator = convergedMatch[3] as int
-                def convergedDurationSec = (convergedTime.time - startTime.time) / 1000
-
                 def name = soln.getBaseName().split('_')[3..-1].join('_')
+                def (convergedDurationSec, convergedNumerator, convergedDenominator) = ['', '', '']
+                if (!diCalLog.isEmpty()) {
+                    def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
+                    def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
+                    if (startTime && convergedMatch) {
+                        def convergedTime = logDateFmt.parse(convergedMatch[1])
+                        convergedNumerator = convergedMatch[2] as int
+                        convergedDenominator = convergedMatch[3] as int
+                        convergedDurationSec = (convergedTime.time - startTime.time) / 1000
+                    }
+                }
 
                 [obsid, name, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
             }
