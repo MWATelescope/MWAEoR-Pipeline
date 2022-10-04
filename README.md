@@ -243,10 +243,10 @@ if you discover several obsids are of poor quality, but you haven't yet updated 
 
 ### tile updates path
 
-if you discover tiles that need to be flagged manually over a range of obsids, you can populate `tile-updates.csv` with `startgps,endgps,tiles,comment` to manually flag these tiles during calibration. `tiles` are pipe separated, e.g.
+if you discover tiles that need to be flagged manually over a range of obsids, you can populate `tile-updates.csv` with `startgps,endgps,tiles,comment` to manually flag these tiles during calibration. `tiles` are pipe separated tile indices as used in the TILE_DATA metafits HDU, and Hyperdrive calibraiton solution plots (tile61 == tile id #40 != tile id #61), e.g.
 
 ```txt
-1125766160,1125767872,40|41|42|43|44|45|46|47,chaotic fringes in high channels on recv04
+1125766160,1125767872,40|41|42|43|44|45|46|47,chaotic fringes in high channels on recv06
 1126921360,1126923520,55,Tile98 fringes
 1321443064,1321448344,4,Tile15 fringes
 ```
