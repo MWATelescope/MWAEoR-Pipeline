@@ -196,7 +196,7 @@ graph TD;
   end
 ```
 
-calibration solutions are applied to preprocessed visibilities to get calibrated measurement set visibilities. Then [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty images of stokes XX,YY and V. 
+calibration solutions are applied to preprocessed visibilities to get calibrated measurement set visibilities. Then [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty images of stokes XX,YY and V.
 
 These images are analysed with imgQA to get the flux density ratio of stokes polarizations, and thermal noise RMS.
 
@@ -224,26 +224,54 @@ These images are analysed with imgQA to get the flux density ratio of stokes pol
 
 ## Configuration
 
-populate `obsids.csv`:
+### obsids
+
+populate `obsids.csv` with each obsid to be processed, one per line
 
 ```
 obsid1
 obsid2
 ```
 
-populate `dical_args.csv` as `dical_name,dical_args`, e.g. :
+### filters
+
+these can be filtered by `params.filter_pointings`, `params.filter_bad_tile_frac`, `params.filter_dead_dipole_frac` and `params.filter_quality` in `nextflow.config`
+
+### quality updates
+
+if you discover several obsids are of poor quality, but you haven't yet updated the data quality number in the mwa metadata database, you can populate `quality-updates.csv` with `obsid,dataquality,dataqualitycomment` to filter these obsids
+
+### tile updates path
+
+if you discover tiles that need to be flagged manually over a range of obsids, you can populate `tile-updates.csv` with `startgps,endgps,tiles,comment` to manually flag these tiles during calibration. `tiles` are pipe separated, e.g.
+
+```txt
+1125766160,1125767872,40|41|42|43|44|45|46|47,chaotic fringes in high channels on recv04
+1126921360,1126923520,55,Tile98 fringes
+1321443064,1321448344,4,Tile15 fringes
+```
+
+### di-cal args
+
+multiple hyperdrive calibrations per obsid can be obtained by populating `params.dical_args` as a map of `[dical_name:dical_args]` in `nextflow.config`, where `dical_args` are passed to `hyperdrive di-cal`, e.g.
 
 ```
-30l_src4k,--uvw-min 30l -n 4000
-50l_src4k,--uvw-min 50l -n 4000
+dical_args = [
+  "30l_src4k": "--uvw-min 30l -n 4000",
+  "50l_src1k": "--uvw-min 50l -n 1000",
+]
 ```
 
-populate `apply_args.csv` as `dical_name,apply_name,apply_args`:
+### apply args
+
+each calibration name can be associated with different apply arguments, by specifying a map of `[cal_name:[apply_name,apply_args]` in  `params.apply_args`, where cal_name can include a `poly_` prefix when using polyfit e.g. :
 
 ```
-30l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
-50l_src4k,8s_80kHz,--time-average 8s --freq-average 80kHz
-30l_src4k,4s_80kHz,--time-average 4s --freq-average 80kHz
+apply_args = [
+  "poly_30l_src4k": ["8s_80kHz", "--time-average 8s --freq-average 80kHz"],
+  "30l_src4k": ["8s_80kHz", "--time-average 8s --freq-average 80kHz"],
+  "50l_src1k": ["4s_80kHz", "--time-average 4s --freq-average 80kHz"],
+]
 ```
 
 all other config is in `nextflow.config`. See: <https://www.nextflow.io/docs/latest/config.html>
@@ -252,91 +280,52 @@ parameters can also be specified in the newflow command line for each run too. e
 
 ## usage
 
-load modules - conflicts with singularity for dumb Java reasons.
+- Ensure a profile has been set up in `nextflow.config` for your cluster or local machine (see: `profiles.dug`, `profiles.garrawarla`).
+- Ensure `nextflow` version 21 is available (more on this later).
+- Ensure the `export MWA_ASVO_API_KEY=...` environment is set.
+- Tip: You'll want to run this inside of `tmux` or `screen`, otherwise all your jobs will be cancelled when your ssh connection is interrupted. `nohup` doesn't seem to work.
+
+```bash
+nextflow run main.nf -profile <profile> -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY
+```
+
+if you would like to run run only a subset of obsids, you can specify them in a file, e.g. `obsids-test.csv`
+
+```bash
+nextflow run main.nf --obsids_path=obsids-test.csv
+```
+
+you can also modify any of the params in `nextflow.config` from the command line, e.g.
+
+```bash
+nextflow run main.nf --img_suffix='-briggs+0.5' --img_weight='briggs +0.5'
+```
+
+### garrawarla quirks
+
+- it doesn't seem to work inside `nohup`.
+- This pipeline requires nextflow 21, but as of writing only nextflow/20 is available on Garrawarla. You can check with `module avail nextflow`
+- if nextflow 21 is not yet available, you get around this with the silly hack below
+
+putting this all together we get this:
+
+```bash
+module load nextflow/20.07.1
+/pawsey/sles12sp3/tools/binary/nextflow/21.04.3/nextflow run main.nf -profile garrawarla
+tail -f nohup.out
+```
+
+### dug quirks
+
+nextflow module conflicts with singularity for dumb Java reasons.
 
 ```
 module unload singularity
 module load nextflow
+nextflow run main.nf -profile dug
 ```
 
-run everything (use `obsids.csv` by default)
-
-```
-nextflow run main.nf -profile dug -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY
-```
-
-run only a subset of obsids:
-
-```
-nextflow run main.nf -profile dug -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY \
-  --obsids_path=obsids-1090X.csv
-```
-
-## Handy DuG commands
-
-### get an interactive session with gpus
-
-```bash
-salloc --partition=curtin_mwaeor --constraint=v100 --time=1:00:00
-srun --pty bash
-```
-
-### run hyperdrive di-cal
-
-needs GPU, see above
-
-```bash
-module load cuda/11.3.1
-module load gcc-rt/9.2.0
-export HYPERDRIVE_CUDA_COMPUTE=... # 80 for a100s, 70 for v100s
-export MWA_BEAM_FILE="/data/curtin_mwaeor/data/mwa_full_embedded_element_pattern.h5"
-export CUDA_VISIBLE_DEVICES=... # optional, restrict CUDA devices.
-export obsid=...
-export cal_name=... # optional, e.g. "30l_src4k", "50l_src4k"
-export apply_args=... # optional, e.g. "--uvw-min 30l -n 4000", "-v"
-export sourcelist="/data/curtin_mwaeor/data/srclist_pumav3_EoR0LoBESv2_fixedEoR1pietro+ForA_phase1+2.yaml"
-cd /data/curtin_mwaeor/data/${obsid}/
-/usr/bin/time /data/curtin_mwaeor/sw/bin/hyperdrive di-calibrate ${cal_args} \
-  --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
-  --beam "${MWA_BEAM_FILE}" \
-  --source-list "${sourcelist}" \
-  --outputs "hyp_soln_${obsid}_${cal_name}.fits" \
-  | tee hyp_di-cal_${obsid}_${cal_name}_test.log
-```
-
-### run hyperdrive apply solutions
-
-```bash
-module load gcc-rt/9.2.0
-export obsid=...
-export cal_name=... # either "30l_src4k" or "50l_src4k"
-export apply_args=... # optional, e.g. "--time-average 16s --freq-average 160kHz", "-v"
-cd /data/curtin_mwaeor/data/${obsid}/
-/usr/bin/time /data/curtin_mwaeor/sw/bin/hyperdrive solutions-apply ${apply_args} \
-  --data "raw/${obsid}.metafits" "prep/birli_${obsid}.uvfits" \
-  --solutions "cal/hyp_soln_${obsid}_${cal_name}.fits" \
-  --outputs "hyp_${obsid}_${cal_name}_test.uvfits" | tee "hyp_${obsid}_${cal_name}_test.log"
-```
-
-### run wsclean
-
-```bash
-# salloc --partition=curtin_mwaeor --constraint='knl&nogpu' --time=1:00:00
-# srun --pty bash
-module use /data/curtin_mwaeor/sw/modules
-module load wsclean/3.1-knl-gcc
-export obsid=...
-cd /data/curtin_mwaeor/data/${obsid}
-OMP_NUM_THREADS=60 /data/curtin_mwaeor/sw/wsclean/3.1-knl-gcc/bin/wsclean -j 60 \
-    -weight briggs -1.0 \
-    -name wsclean_hyp_${obsid}_sub_30l_src4k_8s_80kHz \
-    -size 2048 2048 \
-    -scale 40asec \
-    -pol xx,yy,v \
-    -channels-out 24 \
-    -niter 0 \
-    cal/hyp_${obsid}_30l_src4k_4s_80kHz.ms
-```
+## handy Nextflow commands
 
 ### get times of jobs for a run
 
@@ -357,20 +346,20 @@ nextflow log -after $first_run -F 'process=="'${process}'"&&exit==0' -t template
 
 ### Updating singularity images
 
-e.g. Birli or mwa_qa
+- `cd` into singularity directory, e.g. `/data/curtin_mwaeor/sw/singularity/` or `/pawsey/mwa/singularity/`
+- select container to update, e.g. `export container="mwa_qa"`
 
 ```bash
 module load singularity
-# export container="birli"
-export container="mwa_qa"
 # export url="docker://mwatelescope/${container}:latest"
 export url="docker://d3vnull0/${container}:latest"
-cd /data/curtin_mwaeor/sw/singularity/
 if [ ! -d $container ]; then mkdir $container; fi
 singularity pull --force --dir $container "$url"
 ```
 
-optional: update `profiles.dug.params.birli` in `nextflow.config`
+optional: update `profiles.<profile>.params.<container>_sif` in `nextflow.config` if things have changed
+
+## Handy slurm commands
 
 ### Cancel all failed jobs
 
@@ -378,65 +367,59 @@ optional: update `profiles.dug.params.birli` in `nextflow.config`
 squeue --states SE --format %A -h | sort | xargs scancel
 ```
 
-### get disk usage
+## handy storage commands
+
+### get disk usage of each stage
 
 ```bash
+export outdir="/data/curtin_mwaeor/data"
+# export outdir="/astro/mwaeor/dev/nfdata"
 for stage in cal cal_qa flag_qa img img_qa prep ps_metrics raw vis_qa; do
-  find /data/curtin_mwaeor/data -type d -name "${stage}" | xargs du -csh | tee "du_${stage}.tsv"
+  find $outdir -type d -name "${stage}" | xargs du -csh | tee "du_${stage}.tsv"
 done
 ```
 
-### dump gpufits
-
-for legacy: `corr_type="MWA_ORD"`
-for mwax: `corr_type="MWAX"`
+## make csv file of all obsids at various stages
 
 ```bash
-module load python/3.9.7
-export obsid=...;
-export corr_type=...;
-cd /data/curtin_mwaeor/data/${obsid}/raw/;
-for gpufits in $(ls *.fits); do \
-  python /data/curtin_mwaeor/src/Birli/tests/data/dump_gpufits.py \
-    ${gpufits} \
-    --corr-type $corr_type --timestep-limit 7 \
-    | tee ${gpufits}.txt
-done
+export outdir="/data/curtin_mwaeor/data"
+# export outdir="/astro/mwaeor/dev/nfdata"
+# downloaded, preprocessed.
+find $outdir -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv
+# calibrated
+find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv
+# imaged
 ```
 
-### Carta
+## Misc handy commands
+
+### Carta on dug
+
+```bash
+export carta_sif=
+```
 
 no config
 
 ```bash
-singularity exec --bind /data/curtin_mwaeor/data:/images --contain /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_user_config --no_system_config --no_browser /images
+singularity exec --bind $outdir:/images --contain /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_user_config --no_system_config --no_browser /images
 ```
 
 user config
 
 ```bash
-singularity exec --bind /data/curtin_mwaeor/data:/images /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_system_config --debug_no_auth /images
+singularity exec --bind $outdir:/images /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_system_config --debug_no_auth /images
 ```
 
 open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_80kHz-MFS-XX-dirty.fits`
-
-## make csv file of all obsids at various stages
-
-```bash
-# downloaded, preprocessed.
-find /data/curtin_mwaeor/data/ -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv
-# calibrated
-find /data/curtin_mwaeor/data/ -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv
-# imaged
-```
-
-# WIP
 
 ### hard link images (easier for carta)
 
 ```bash
 find /data/curtin_mwaeor/data -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
 ```
+
+# WIP
 
 ## copy all metafits to hopper
 

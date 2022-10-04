@@ -144,7 +144,7 @@ process flagQA {
 
     tag "${obsid}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -259,8 +259,7 @@ process hypCalSol {
     tag "${obsid}"
 
     // label jobs that need a bigger gpu allocation
-    label "gpu"
-    label "cuda"
+    label "hyperdrive"
 
     afterScript "ls ${task.storeDir}"
 
@@ -328,7 +327,7 @@ process polyFit {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     name = "poly_${dical_name}"
@@ -354,6 +353,7 @@ process hypApplyUV {
 
     tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
+    label "hyperdrive"
 
     script:
     vis_name = "${cal_name}_${apply_name}"
@@ -385,6 +385,7 @@ process hypApplyMS {
 
     tag "${obsid}.${cal_name}_${apply_name}"
     label "cpu"
+    label "hyperdrive"
 
     script:
     vis_name = "${cal_name}_${apply_name}"
@@ -413,8 +414,7 @@ process hypSubUV {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}.${name}"
-    label "gpu"
-    label "cuda"
+    label "hyperdrive"
 
     script:
     sub_name = "sub_${name}"
@@ -444,8 +444,7 @@ process hypSubMS {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}.${name}"
-    label "gpu"
-    label "cuda"
+    label "hyperdrive"
 
     script:
     sub_name = "sub_${name}"
@@ -472,7 +471,7 @@ process prepVisQA {
     tag "${obsid}"
 
     label 'cpu'
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -494,7 +493,7 @@ process visQA {
     tag "${obsid}.${name}"
 
     label 'cpu'
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -515,7 +514,7 @@ process calQA {
 
     tag "${obsid}.${name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -535,7 +534,7 @@ process solJson {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -571,7 +570,7 @@ process plotPrepVisQA {
 
     tag "${obsid}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -590,6 +589,8 @@ process plotSols {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
     tag "${obsid}.${name}"
+
+    label "hyperdrive"
 
     script:
     """
@@ -610,7 +611,7 @@ process plotCalQA {
 
     tag "${obsid}.${name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -630,7 +631,7 @@ process plotVisQA {
 
     tag "${obsid}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -652,7 +653,7 @@ process plotVisQA {
 
 //     tag "${obsid}"
 
-//     label 'conda'
+//     label 'python'
 //     conda "${params.astro_conda}"
 
 //     script:
@@ -673,14 +674,14 @@ process wscleanDirty {
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
 
     tag "${obsid}.${name}"
-    label "img"
+    label "wsclean"
 
     script:
     """
     set -eux
     # imaging
     ${params.wsclean} \
-        -weight briggs -1.0 \
+        -weight ${params.img_weight} \
         -name wsclean_hyp_${obsid}_${name} \
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
@@ -730,7 +731,7 @@ process imgQA {
 
     tag "${obsid}.${name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -751,7 +752,7 @@ process polComp {
 
     tag "${obsid}.${name}"
 
-    label 'conda'
+    label 'python'
 
     script:
     """
@@ -825,7 +826,6 @@ process polComp {
             ],
             subplot_kw={"projection": wcs, "slices": ('x', 'y', 0, 0)},
             gridspec_kw={ "width_ratios": [3, 1], },
-            sharex=True, sharey=True
         )
 
         for ax in axd.values():
@@ -1236,7 +1236,7 @@ workflow prep {
             .map { obsid, json ->
                 def stats = jslurp.parse(json)
                 def flagged_sky_chans = stats.flagged_sky_chans?:[]
-                def chan_occupancy = sky_chans.collect { ch -> (stats.channels?[ch]?.non_preflagged_bl_occupancy)?:'' }
+                def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.non_preflagged_bl_occupancy?:'' }
                 ([
                     obsid,
                     stats.num_chans?:'',
@@ -1479,9 +1479,7 @@ workflow uvfits {
     take:
         obsNameUvfits
     main:
-        // vis QA and ps_metrics
-        obsNameUvfits | psMetrics
-        // TODO: tap?
+        // vis QA
         obsNameUvfits
             .filter { _, name, __ -> !name.toString().startsWith("sub_") }
             | visQA
@@ -1548,34 +1546,39 @@ workflow uvfits {
 
         visQA.out | plotVisQA
 
-        // collect psMetrics as a .dat
-        psMetrics.out
-            // read the content of each ps_metrics file including the trailing newline
-            .map { obsid, vis_name, dat, _ -> dat.getText() }
-            .collectFile(
-                name: "ps_metrics.dat",
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
+        // ps_metrics
+        if (!params.nopsmetrics) {
+            obsNameUvfits | psMetrics
 
-        // collect psMetrics as a .tsv
-        psMetrics.out
-            // form each row of tsv
-            .map { obsid, vis_name, dat, _ ->
-                def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
-                ([obsid, vis_name] + dat_values).join("\t")
-            }
-            .collectFile(
-                name: "ps_metrics.tsv", newLine: true, sort: true,
-                seed: [
-                    "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
-                    "P_ALL", "D3"
-                ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
+            // collect psMetrics as a .dat
+            psMetrics.out
+                // read the content of each ps_metrics file including the trailing newline
+                .map { obsid, vis_name, dat, _ -> dat.getText() }
+                .collectFile(
+                    name: "ps_metrics.dat",
+                    storeDir: "${params.outdir}/results${params.result_suffix}/"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+
+            // collect psMetrics as a .tsv
+            psMetrics.out
+                // form each row of tsv
+                .map { obsid, vis_name, dat, _ ->
+                    def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
+                    ([obsid, vis_name] + dat_values).join("\t")
+                }
+                .collectFile(
+                    name: "ps_metrics.tsv", newLine: true, sort: true,
+                    seed: [
+                        "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
+                        "P_ALL", "D3"
+                    ].join("\t"),
+                    storeDir: "${params.outdir}/results${params.result_suffix}/"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+        }
 
     emit:
         // channel of files to archive, and their buckets
