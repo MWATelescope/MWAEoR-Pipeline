@@ -681,6 +681,7 @@ process wscleanDirty {
     set -eux
     # imaging
     ${params.wsclean} \
+        ${params.wsclean_args} \
         -weight ${params.img_weight} \
         -name wsclean_hyp_${obsid}_${name} \
         -size ${params.img_size} ${params.img_size} \
