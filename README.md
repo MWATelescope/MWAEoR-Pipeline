@@ -34,7 +34,7 @@ graph TD;
   end
 ```
 
-The metadata stage gathers information about each observation from MWA Web Services. This ranges from scheduling information to information about faults that occurred during the observation, as well as information about the files archived for the observation. This information is used to filter observations based on a set of criteria that prevents observations with too many faults from passing through to further stages.
+The metadata stage gathers information about each observation from MWA Web Services. This ranges from scheduling information to information about faults that occurred during the observation, as well as the status the files archived for the observation. This is used to filter observations based on a set of criteria that prevents observations with too many faults from passing through to further stages.
 
 ### Preprocessing
 
@@ -53,7 +53,7 @@ graph TD;
     prepUVFits & metafits --> flagQA --> occupancyJson --> flagGate;
     prepUVFits --> prepVisQA --> prepVisJson;
     nfConfig --"occupancy threshold"-----> flagGate;
-    tileUpdates --"manual flags"-----> tile_flags;
+    tileUpdates --"manual flags"-------> tile_flags;
     prepVisJson --"prep flags"--> tile_flags;
 
     asvoPrep[[fa:fa-bolt asvoPrep ]]; class asvoPrep proc;
@@ -71,17 +71,11 @@ graph TD;
   end
 ```
 
-The Preprocessing stage produces and analyses preprocessed uvfits visibilities. If the preprocessed visibilities for an observation are not found in storage, the preprocessing stage schedules a [Birli](https://github.com/MWATelescope/Birli) conversion job on [MWA ASVO](https://asvo.mwatelescope.org/) via [Acacia](https://pawsey.org.au/systems/acacia/) with [Giant Squid](github.com/mwaTelescope/giant-squid). The Birli conversion job includes flagging with [AOFlagger](https://gitlab.com/aroffringa/aoflagger). Further preprocessing parameters can be configured in nextflow,
+The Preprocessing stage produces and analyses uvfits visibilities that have been preprocessed, flagged and averaged by [Birli](https://github.com/MWATelescope/Birli) via [MWA ASVO](https://asvo.mwatelescope.org/). The flag occupancy of the uvfits files are analysed by `flagQA` for the presence of RFI over each coarse channel, and the RMS amplitude of the autocorrelations are measured across frequency and antenna by [`prepVisQA`](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_prepvisqa.py). These measures are used to produce a list of outlier antennas, which should be flagged in later stages.
 
-ASVO wait times can be between a few minutes and a few days, so an exponential backoff is used to wait $2^a$ hours after attempt number $a$ for up to 5 attempts until the conversion job is ready. Finally the archive is downloaded with `wget`, hash-validated, and inflated with `tar`.
+If the preprocessed files are not present, the `asvoPrep` process schedules a conversion job on ASVO using [Giant Squid](github.com/mwaTelescope/giant-squid). An exponential backoff is used to wait until the conversion job is ready to download from [Acacia](https://pawsey.org.au/systems/acacia/), then the archive is downloaded with `wget`, and hash-validated as it is inflated with `tar`.
 
-The [prep vis qa script](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_prepvisqa.py) is used to determine bad tiles using outlier analysis.
-
-Further bad tiles can be specified manually using a tile updates file
-
-Total flag occupancy of the preprocessed visibilities, as well as the occupancy for each coarse channel is determined by the flagQA step.
-
-Finally, observations whose flag occupancy is above the defined occupancy threshold are rejected.
+Finally, observations whose flag occupancy is above the configured threshold threshold are rejected.
 
 ### Direction Independent Calibration
 
@@ -121,7 +115,7 @@ graph TD;
   end
 ```
 
-[Hyperdrive](github.com/mwaTelescope/mwa_hyperdrive) is used to generate one or more direction independent calibration solutions using the model file and several calibration parameter sets defined in the nextflow config. The statistical properties of the calibration solutions are analysed with the [cal qa](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_calqa.py). If the variance of an observation's calibration solutions is too high, then the observation is rejected.
+[Hyperdrive](github.com/mwaTelescope/mwa_hyperdrive) is used to generate one or more direction independent calibration solutions using the model file and several calibration parameter sets defined in the nextflow config. The statistical properties of the calibration solutions are analysed with [`calQA`](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_calqa.py). If the variance of an observation's calibration solutions is too high, then the observation is rejected.
 
 ### Calibrated Visibility Analysis
 
@@ -159,7 +153,7 @@ graph TD;
   end
 ```
 
-calibration solutions are applied to preprocessed visibilities to get calibrated uvfits visibilities. These are analysed using [visqa](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_visqa.py) and psMetrics [chips](https://github.com/cathryntrott/chips) to get the power spectrum window / wedge power
+Calibrated UVFits visibilities are obtained by applying calibration solutions to the preprocessed visibilities. The similarity between redundant baseline are measured using [`visQA`](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_visqa.py), and an analysis of the power spectrum is measured by [`ps_metrics`](https://github.com/cathryntrott/chips). The same power spectrum analysis is also performed on the residual visibilities, obtained by subtracting the model from the calibrated visibilities.
 
 ### Image Analysis
 
@@ -196,9 +190,9 @@ graph TD;
   end
 ```
 
-calibration solutions are applied to preprocessed visibilities to get calibrated measurement set visibilities. Then [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty images of stokes XX,YY and V.
+The same calibrated and residual visibilities are analysed again in measurement set format. [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty (non-deconvolved) images of Stokes XX,YY and V polarizations.
 
-These images are analysed with imgQA to get the flux density ratio of stokes polarizations, and thermal noise RMS.
+These images are analysed with imgQA to obtain polarimetric power measurements.
 
 ## Output Directory Structure:
 
@@ -284,6 +278,7 @@ parameters can also be specified in the newflow command line for each run too. e
 - Ensure `nextflow` version 21 is available (more on this later).
 - Ensure the `export MWA_ASVO_API_KEY=...` environment is set.
 - Tip: You'll want to run this inside of `tmux` or `screen`, otherwise all your jobs will be cancelled when your ssh connection is interrupted. `nohup` doesn't seem to work.
+- Tip: I like to work out of a vscode remote ssh session on hpc-data, since the head node is much slower. just bear in mind you need to `ssh garrawarla` to run the pipeline or see `squeue`.
 
 ```bash
 nextflow run main.nf -profile <profile> -with-timeline -with-report -with-dag --asvo_api_key=$MWA_ASVO_API_KEY
@@ -303,17 +298,17 @@ nextflow run main.nf --img_suffix='-briggs+0.5' --img_weight='briggs +0.5'
 
 ### garrawarla quirks
 
-- it doesn't seem to work inside `nohup`.
-- This pipeline requires nextflow 21, but as of writing only nextflow/20 is available on Garrawarla. You can check with `module avail nextflow`
-- if nextflow 21 is not yet available, you get around this with the silly hack below
-
-putting this all together we get this:
+This pipeline requires Nextflow 21, but as of writing only nextflow/20 is available on Garrawarla. You can check with `module avail nextflow`. if Nextflow 21 is not yet available, you get around this with the silly hack below
 
 ```bash
 module load nextflow/20.07.1
 /pawsey/sles12sp3/tools/binary/nextflow/21.04.3/nextflow run main.nf -profile garrawarla
-tail -f nohup.out
 ```
+
+architecture reference:
+- garra workq & gpuq: `Intel(R) Xeon(R) Gold 6230` (cascade lake)
+- garra head: `Intel(R) Xeon(R) Silver 4215` - (cascade lake)
+- hpc-data head: `AMD EPYC 7351`
 
 ### dug quirks
 
@@ -327,33 +322,51 @@ nextflow run main.nf -profile dug
 
 ## handy Nextflow commands
 
-### get times of jobs for a run
+### get times of jobs of the last run
 
 ```bash
-export run="elegant_euclid"
-nextflow log $run -F 'process=="calQA"' -f workdir,exit,status,process,duration
+export run_name="$(nextflow log -q | tail -n 1)"
+export process="hypCalSol"
+nextflow log "${run_name}" -F 'process=="'${process}'"' -f "workdir,exit,status,process,duration,realtime"
 ```
 
 ### get all lines matching pattern from all scripts executed recently
 
 ```bash
-export process="metaJson"
+export process="hypCalSol"
 export first_run="$(nextflow log -q | head -n 1)"
-export first_run="scruffy_bhaskara"
 echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md
 nextflow log -after $first_run -F 'process=="'${process}'"&&exit==0' -t template.md
 ```
 
-### Updating singularity images
+### show the script of last few runs
 
-- `cd` into singularity directory, e.g. `/data/curtin_mwaeor/sw/singularity/` or `/pawsey/mwa/singularity/`
-- select container to update, e.g. `export container="mwa_qa"`
+`head -n -1` only if a pipeline is currently running
+
+```bash
+while read run; do
+  echo $run
+  nextflow log $run \
+    -f workdir,exit,status,process,duration,script \
+    -filter 'process == "wscleanDirty" && exit == 0'
+done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
+```
+
+## Handy Singularity commands
+
+### Updating singularity images
 
 ```bash
 module load singularity
-# export url="docker://mwatelescope/${container}:latest"
-export url="docker://d3vnull0/${container}:latest"
-if [ ! -d $container ]; then mkdir $container; fi
+# - specify the container to update:
+export container="mwa_qa" # or "birli"
+# - specify the url of the docker image
+export url="docker://d3vnull0/${container}:latest" # or "docker://mwatelescope/${container}:latest"
+# - cd into singularity directory
+cd /pawsey/mwa/singularity/ # or /data/curtin_mwaeor/sw/singularity/
+# - make a directory for the container if it doesn't exist
+[ -d $container ] || mkdir $container
+# - create the singularity image
 singularity pull --force --dir $container "$url"
 ```
 
@@ -369,6 +382,12 @@ squeue --states SE --format %A -h | sort | xargs scancel
 
 ## handy storage commands
 
+### get obsids that are ready to download
+
+```bash
+giant-squid list --states=Ready -j | jq -r '.[]|[.obsid]|@csv' | tee obsids-ready.csv | tee /dev/stderr | wc -l
+```
+
 ### get disk usage of each stage
 
 ```bash
@@ -379,30 +398,91 @@ for stage in cal cal_qa flag_qa img img_qa prep ps_metrics raw vis_qa; do
 done
 ```
 
-## make csv file of all obsids at various stages
+### make csv file of all obsids at various stages
 
 ```bash
 export outdir="/data/curtin_mwaeor/data"
 # export outdir="/astro/mwaeor/dev/nfdata"
 # downloaded, preprocessed.
-find $outdir -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv
+find $outdir -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv | tee /dev/stderr | wc -l
 # calibrated
-find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv
-# imaged
+find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv | tee /dev/stderr | wc -l
+# images
+ls $outdir/*/img/*.fits | cut -d / -f 5 | sort | uniq | tee obsids-imgd.csv | tee /dev/stderr | wc -l
+```
+
+### clear blank logs
+
+```bash
+find $outdir -name '*.log' -size 0 -delete
+```
+
+### add suffix to existing file stage
+
+```bash
+bash -c 'unset PATH; /bin/find ${outdir} -type d -name img_qa -execdir sh -c "pwd && mv {} {}-dci1000" \;'
+```
+
+### cleanup folders
+
+```
+cd ${outdir}
+for obsid in ...; do
+  [ -d ${outdir}/$obsid ] && rm -rf ${outdir}/$obsid
+done
+```
+
+### cleanup files
+
+```bash
+cd ${outdir}
+for obsid in $(ls); do
+  # export path=${obsid}/raw/${obsid}.metafits.json
+  # export path=${obsid}/prep/${obsid}_prep_stats.json
+  # export path=${obsid}/{vis_qa,img_qa,cal_qa}/*.json
+  # export path=${obsid}/vis_qa/*.json
+  export path=${obsid}/img_qa/*.json
+  # export path=${obsid}/cal_qa/*.json
+  for path in $path; do
+    [ -f "$path" ] && echo "$path" && rm -rf "$path"
+  done
+done
+find ${outdir} -path '*/*_qa/*.json' # -delete
+find ${outdir} -path '*/cal/*.ms' -exec sh -c 'echo rm -rf {}' \;
+```
+
+```bash
+for obsid in ...; do
+  echo $obsid
+  # find ${outdir}/$obsid -type f -path './img_qa/*.png' #-delete
+  rm -f ${outdir}/${obsid}/img_qa/*.png
+done
+```
+
+### download calibration solutions
+
+```bash
+module load rclone
+cd $outdir
+while read -r obsid; do
+  mkdir -p ${obsid}/cal-noflag
+  rclone copy mwaeor:high0.soln/hyp_soln_${obsid}_30l_src4k.fits ${obsid}/cal-noflag/
+  touch ${obsid}/cal-noflag/hyp_di-cal_${obsid}_30l_src4k_8s_80kHz.log
+done < obsids.csv
 ```
 
 ## Misc handy commands
 
-### Carta on dug
+### Carta
 
 ```bash
-export carta_sif=
+export carta_sif=/data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif
 ```
 
 no config
 
 ```bash
-singularity exec --bind $outdir:/images --contain /data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif carta --no_user_config --no_system_config --no_browser /images
+singularity exec --bind $outdir:/images --contain $carta_sif carta --no_user_config --no_system_config --no_browser /images
 ```
 
 user config
@@ -416,166 +496,16 @@ open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_
 ### hard link images (easier for carta)
 
 ```bash
-find /data/curtin_mwaeor/data -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
+find ${outdir} -path '*/img/wsclean*.fits' -exec sh -c 'ln {} all_imgs/$(basename {})' \;
 ```
 
-# WIP
-
-## copy all metafits to hopper
+### copy all metafits to hopper
 
 ```bash
-cd /data/curtin_mwaeor/data
-find . -regextype posix-extended  -regex './[0-9]{10}/raw/[0-9]{10}.metafits.json' | while read -r p; do cp $p /data/curtin_mwaeor/FRB_hopper/; done
+find ${outdir} -regextype posix-extended  -regex './[0-9]{10}/raw/[0-9]{10}.metafits.json' | while read -r p; do cp $p /data/curtin_mwaeor/FRB_hopper/; done
 ```
 
-```bash
-for obsid in 1060539904 1060540152 1060540272 1061319352 1061320080 1061320328 1061320448 1061320568 1065196248 1065196368 1065196856 1065196976 1065197344 1185484472 1259411080 1259411320 1259411560 1259412160 1259412280 1322135592 1322135712 1322135832 1322307760 1322307880 1322308000 1322308240 1322480408 1322480528 1322654736 1322826184 1322826424 1322826664 1322826784; do
-  echo $'\n'$obsid
-  ls /data/curtin_mwaeor/data/${obsid}/cal_qa/*src4k_{X,Y}.json
-done
-```
-
-## show the script of last few runs
-
-`head -n -1` only if a pipeline is currently running
-
-```bash
-while read run; do
-  echo $run
-  nextflow log $run \
-    -f workdir,exit,status,process,duration,script \
-    -filter 'process == "wscleanDirty" && exit == 0'
-done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
-```
-
-```bash
-while read run; do
-  echo $run
-  nextflow log $run \
-    -f tag,exit,status,process,realtime \
-    -filter 'process == "cal:hypCalSol"'
-  # nextflow log $run \
-  #   -f workdir,exit,status,process,duration,script \
-  #   -filter 'process == "wscleanDirty" && exit == 0'
-done < <(nextflow log -q | tail -n 50 | head -n 1) | tee runs.txt
-cat runs.txt | grep -E $'(-name|work)' | tee runs_clean.txt
-```
-
-## dump img_qa
-
-```bash
-find /data/curtin_mwaeor/data -type f -path '*/img_qa/*MFS.json' \
-  | gawk 'match()
-```
-
-## dump flags
-
-```bash
-module load python/3.9.7
-export obsid=1059505936
-for i in {01..12}; do \
-  python /data/curtin_mwaeor/src/Birli/tests/data/dump_mwaf.py \
-    /data/curtin_mwaeor/data/${obsid}/prep/${obsid}_${i}.mwaf --summary
-done
-```
-
-## clear blank logs
-
-```bash
-find /data/curtin_mwaeor/data/ -name '*.log' -size 0 -delete
-```
-
-## cleanup folders
-
-```
-cd /data/curtin_mwaeor/data
-for obsid in ...; do
-  [ -d /data/curtin_mwaeor/data/$obsid ] && rm -rf /data/curtin_mwaeor/data/$obsid
-done
-```
-
-## cleanup files
-
-```bash
-cd /data/curtin_mwaeor/data
-for obsid in $(ls); do
-  # export path=${obsid}/raw/${obsid}.metafits.json
-  # export path=${obsid}/prep/${obsid}_prep_stats.json
-  # export path=${obsid}/{vis_qa,img_qa,cal_qa}/*.json
-  # export path=${obsid}/vis_qa/*.json
-  export path=${obsid}/img_qa/*.json
-  # export path=${obsid}/cal_qa/*.json
-  for path in $path; do
-    [ -f "$path" ] && echo "$path" && rm -rf "$path"
-  done
-done
-find /data/curtin_mwaeor/data -path '*/*_qa/*.json' # -delete
-find /data/curtin_mwaeor/data -path '*/cal/*.ms' -exec sh -c 'echo rm -rf {}' \;
-```
-
-```
-ls /data/curtin_mwaeor/data/*/img/*.fits | cut -d / -f 5 | sort | uniq | tee obsids-with-img.csv | tee /dev/stderr | wc -l
-```
-
-```bash
-for obsid in \
-  1259412400\
-  1259412280\
-  1259412160\
-  1259412040\
-  1259411920\
-  1259411800\
-  1259411680\
-  1259411560\
-  1259411440\
-  1259411320\
-  1259411200\
-  1259411080\
-  1065197464\
-  1065197344\
-  1065197224\
-  1065197096\
-  1065196976\
-  1065196856\
-  1065196736\
-  1065196608\
-  1065196488\
-  1065196368\
-  1065196248\
-  1065196120\
-  1065196000\
-; do
-  echo $obsid
-  # find /data/curtin_mwaeor/data/$obsid -type f -path './img_qa/*.png' #-delete
-  rm -f /data/curtin_mwaeor/data/${obsid}/img_qa/*.png
-done
-```
-
-## don't delete:
-
-1090008640
-1094490328
-
-### dump metafits
-
-not needed any more, just look in `${obsid}.metafits.json`
-
-```bash
-module load python/3.9.7
-for obsid in ... ; do \
-  python /data/curtin_mwaeor/src/Birli/tests/data/dump_metafits.py \
-    /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits \
-    | tee /data/curtin_mwaeor/data/${obsid}/raw/${obsid}.metafits.txt
-done
-```
-
-## add prefix to existing file stage
-
-```bash
-bash -c 'unset PATH; /bin/find /data/curtin_mwaeor/data -type d -name img_qa -execdir sh -c "pwd && mv {} img_qa-dci1000" \;'
-```
-
-## ipython via conda
+### ipython via conda
 
 create env
 
@@ -614,10 +544,11 @@ hdus=fits.open('/data/curtin_mwaeor/data/1060540392/prep/birli_1060540392.uvfits
 ```python
 import sys
 from astropy.io import fits
-sys.path.insert(0, '/data/curtin_mwaeor/src/mwa_qa')
 from mwa_qa.read_uvfits import UVfits
-# hdus=fits.open('/data/curtin_mwaeor/data/1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
-uvf = UVfits('/data/curtin_mwaeor/data/1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
+from mwa_qa.read_calfits import CalFits
+# hdus=fits.open('1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
+uvf = UVfits('1061319840/cal/hyp_1061319840_sub_30l_src4k_8s_80kHz.uvfits')
+cf = CalFits('1251908712/cal/hyp_soln_1251908712_30l_src4k.fits')
 ```
 
 ### run json query on metrics
@@ -626,48 +557,6 @@ uvf = UVfits('/data/curtin_mwaeor/data/1061319840/cal/hyp_1061319840_sub_30l_src
 find /data/curtin_mwaeor/data/ -type f -path '*/cal_qa/*X.json' -print -exec jq -r '(.CONVERGENCE//[])[0]|length' {} \; | tee has_convergence.txt
 ```
 
-### rendering image
-
-```python
-import matplotlib.pyplot as plt
-from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch, ImageNormalize, MinMaxInterval
-from mpl_toolkits.axes_grid1.axes_rgb import RGBAxes
-from astropy.wcs import WCS
-from astropy.io import fits
-import numpy as np
-
-prefix = '/data/curtin_mwaeor/data/1259412400/img-dci1000/wsclean_hyp_1259412400_poly_30l_src4k_8s_80kHz-MFS-'
-plt.style.use(astropy_mpl_style)
-
-with fits.open(f'{prefix}XX-dirty.fits') as hdus:
-  header = hdus[0].header
-wcs = WCS(header)
-
-img_data_xx = fits.getdata(f'{prefix}XX-dirty.fits', ext=0)[0,0,:,:]
-img_data_yy = fits.getdata(f'{prefix}YY-dirty.fits', ext=0)[0,0,:,:]
-img_data_v = fits.getdata(f'{prefix}V-dirty.fits', ext=0)[0,0,:,:]
-# normalize to 0-1 using 95th percentile
-i_percentile = np.percentile(np.stack((img_data_xx, img_data_yy)), 95)
-img_data_xx /= i_percentile
-img_data_yy /= i_percentile
-v_percentile = np.percentile(img_data_v, 95)
-img_data_v /= v_percentile
-fig = plt.gcf()
-fig.set_size_inches(20, 20)
-plt.subplot(projection=wcs, slices=('x', 'y', 0, 0))
-plt.imshow(make_lupton_rgb(img_data_xx, img_data_v, img_data_yy, Q=1))
-plt.savefig('wsclean_hyp_1259412400_poly_30l_src4k_8s_80kHz-MFS-polarimetry-dirty.png')
-# plt.imshow(hdu.data, vmin=-2.e-5, vmax=2.e-4, origin='lower')
-# ny, nx = img_data_xx.shape
-# ax=RGBAxes(plt.figure(), [0.1, 0.1, 0.8, 0.8], pad=0.0)
-# ax.imshow(img_data_xx, img_data_v, img_data_yy)
-# rgb = np.zeros((ny, nx, 3))
-# rgb[:,:,0] = img_data_xx
-# rgb[:,:,1] = img_data_v
-# rgb[:,:,2] = img_data_yy
-# plt.imshow(img_data_xx, cmap='Reds', extent=extent)
-# plt.imshow(img_data_yy, cmap='Blues', extent=extent)
-```
 
 ### tap stuff
 
@@ -686,7 +575,11 @@ results = tap.search("select obs_id, gpubox_files_archived, gpubox_files_total, 
 ```bash
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
-ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/prep/prepvis_metrics_??????????_rms.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/prepvis_metrics_rms.mp4"
+ffmpeg -y -framerate 5 -pattern_type glob \
+ -i "${outdir}/??????????/prep/prepvis_metrics_??????????_rms.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/prepvis_metrics_rms.mp4"
 ```
 
 #### polcomps
@@ -695,10 +588,17 @@ ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/?????????
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
 for name in 30l sub_30l poly_30l sub_poly_30l; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/img_qa/??????????_'$name'_*.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/polcomp_${name}.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/img_qa/??????????_${name}_*.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p \
+  "${outdir}/results/polcomp_${name}.mp4"
 done
 for name in 30l sub_30l; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/12????????/img_qa/??????????_'$name'_*.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/polcomp_12_${name}.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/12????????/img_qa-briggs+0.5/??????????_${name}_*.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/polcomp_12_${name}_briggs+0.5.mp4"
 done
 ```
 
@@ -708,7 +608,11 @@ done
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
 for name in 30l_src4k_dlyspectrum poly_30l_src4k_dlyspectrum 30l_src4k_fft poly_30l_src4k_fft 30l_src4k_variance poly_30l_src4k_variance; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/calmetrics_${name}.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/cal_qa/calmetrics_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/calmetrics_${name}.mp4"
 done
 ```
 
@@ -718,10 +622,18 @@ done
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
 for name in 30l_src4k_phases poly_30l_src4k_phases 30l_src4k_amps poly_30l_src4k_amps; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/hyp_soln_${name}.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/cal_qa/hyp_soln_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/hyp_soln_${name}.mp4"
 done
 for name in 30l_src4k_phases 30l_src4k_amps; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/12????????/cal_qa/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results/hyp_soln_12_${name}.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/12????????/cal_qa/hyp_soln_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/hyp_soln_12_${name}.mp4"
 done
 ```
 
@@ -736,31 +648,46 @@ while read -r obsid; do rclone copy mwaeor:high0.imgqa/wsclean_hyp_${obsid}_${na
 
 ```bash
 for name in 30l_src4_fast_amps 30l_src4_fast_phases; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-flagged.mp4"
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/hyp_soln_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-unflagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-unflagged.mp4"
 done
 for name in 30l_src4_fast_variance 30l_src4_fast_fft 30l_src4_fast_dlyspectrum; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -c:v libx264 -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
 done
 ```
 
-### Hollow out measurement sets
+### ionpeel?
 
 ```bash
-find /data/curtin_mwaeor/data/ -type d -path '*/cal/*.ms' -exec rm -rf {}/* \;
-```
+module use /pawsey/mwa/software/python3/modulefiles
+module load hyperdrive
+module load singularity
+export obsid=1254670880
+cd ${outdir}
+mkdir -p "${obsid}/iono"
+hyperdrive srclist-by-beam --metafits "${obsid}/raw/${obsid}.metafits" \
+  -n 400 -o ao \
+  /astro/mwaeor/dev/calibration/srclist_pumav3_EoR0LoBESv2_fixedEoR1pietro+ForA_phase1+2_edit.txt \
+  "${obsid}/iono/ionpeel_model_400.txt"
+singularity exec \
+  -B /pawsey/mwa:/usr/lib/python3/dist-packages/mwapy/data \
+  /pawsey/mwa/singularity/mwa-reduce/mwa-reduce.img \
+  cluster \
+    "${obsid}/iono/ionpeel_model_400.txt" \
+    "${obsid}/iono/ionpeel_clustered_model_400_50.txt" \
+    50
+singularity exec \
+  -B /pawsey/mwa:/usr/lib/python3/dist-packages/mwapy/data \
+  /pawsey/mwa/singularity/mwa-reduce/mwa-reduce.img \
+  ionpeel \
+  "${obsid}/cal/hyp_${obsid}_30l_src4k_8s_80kHz.ms" \
+  "${obsid}/iono/ionpeel_clustered_model_400_50.txt" \
+  "${obsid}/iono/ionpeel_clustered_soln_400_50.bin"
 
-### (Dev) Upload flags
-
-```bash
-find . -name '*.mwaf' -exec sh -c 'rclone copyto {} "dev:eor0high.mwaf/$(basename -- {})"' \;
-```
-
-### (Dev) exfil ms
-
-```bash
-export obsid=1092338912
-tar -czvg hyp_${obsid}_30l_src4k_2s_80kHz.ms.tar.gz -C /data/curtin_mwaeor/FRB_hopper hyp_${obsid}_30l_src4k_2s_80kHz.ms
-rclone copy hyp_${obsid}_30l_src4k_2s_80kHz.ms.tar.gz "dev:eor0high.ms"
+# applyion wsclean-image.fits ioncorrected.fits clustered-model.txt ionsolutions.bin
+singularity exec \
+  -B /pawsey/mwa:/usr/lib/python3/dist-packages/mwapy/data \
+  /pawsey/mwa/singularity/mwa-reduce/mwa-reduce.img \
+  applyion
 ```
