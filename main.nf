@@ -705,7 +705,7 @@ process psMetrics {
 
     tag "${obsid}.${name}"
 
-    label "cfitsio"
+    label "chips"
 
     script:
     band = 0
