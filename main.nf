@@ -49,7 +49,7 @@ process asvoPrep {
     output:
     tuple val(obsid), path("birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits")
 
-    storeDir "${params.outdir}/$obsid/prep"
+    storeDir "${params.outdir}/${obsid}/prep"
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
@@ -1545,7 +1545,8 @@ workflow uvfits {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        visQA.out | plotVisQA
+        // TODO: plotVisQA isn't working
+        // visQA.out | plotVisQA
 
         // ps_metrics
         if (!params.nopsmetrics) {
@@ -1646,6 +1647,20 @@ workflow img {
             .transpose()
             .map { _, __, img, ___ -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
+}
+
+// separate entrypoint for moving unfiltered preprocessed uvfits from asvo accacia to mwaeor accacia
+workflow archivePrep {
+    obsids = channel.fromPath(params.obsids_path)
+        .splitCsv()
+        .flatten()
+        .filter { line -> !line.startsWith('#') }
+
+    obsids | asvoPrep
+
+    if (params.archive) {
+        asvoPrep.out.map { _, vis -> ["prep", vis] } | archive
+    }
 }
 
 workflow {

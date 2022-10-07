@@ -379,14 +379,23 @@ optional: update `profiles.<profile>.params.<container>_sif` in `nextflow.config
 ```bash
 squeue --states SE --format %A -h | sort | xargs scancel
 ```
-
-## handy storage commands
+## Handy Giant Squid Commands
 
 ### get obsids that are ready to download
 
 ```bash
 giant-squid list --states=Ready -j | jq -r '.[]|[.obsid]|@csv' | tee obsids-ready.csv | tee /dev/stderr | wc -l
 ```
+
+### reschedule conversion jobs where some failed.
+
+```bash
+giant-squid list --states=Error -j | jq -r '.[]|[.obsid]|@csv' \
+  | while read -r obsid; do giant-squid submit-conv \
+    -p timeres=2,freqres=40,conversion=uvfits,preprocessor=birli $obsid; done
+```
+
+## handy storage commands
 
 ### get disk usage of each stage
 
