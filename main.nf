@@ -1699,34 +1699,44 @@ workflow {
         | view { [it, it.readLines().size()] }
 
     // calibrate each obs that passes flag gate unless nocal is set:
-    if (params.nocal) { println("params.nocal set, exiting before cal."); return }
-    prep.out.obsMetaVis.join(
-        prep.out.obsFlags
-            // .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, []]}
-            .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
-    ) | cal
+    if (params.nocal) {
+        channel.from([]) | cal
+    } else {
+        prep.out.obsMetaVis.join(
+            prep.out.obsFlags
+                // .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, []]}
+                .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
+        ) | cal
+    }
 
-    if (params.noapply) { println("params.noapply set, exiting before apply."); return }
     // channel of arguments for hypApply{UV,MS}
     // - take tuple(obsid, cal_name, soln) from obsNameSoln
     // - lookup [apply_name, apply_args] from params.apply_args on cal_name
     // - match with tuple(obsid, metafits, prepUVFits) by obsid
-    allApply = prep.out.obsMetaVis
-        .cross(
-            cal.out.passCal
-                .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
-                .map { obsid, cal_name, soln ->
-                    def (apply_name, apply_args) = params.apply_args[cal_name]
-                    [obsid, soln, cal_name, apply_name, apply_args]
-                }
-        )
-        .map {
-            def (obsid, metafits, prepUVFits) = it[0]
-            def (_, soln, cal_name, apply_name, apply_args) = it[1]
-            [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
-        }
+    if (params.noapply) {
+        allApply = channel.from([])
+    } else {
+        allApply = prep.out.obsMetaVis
+            .cross(
+                cal.out.passCal
+                    .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
+                    .map { obsid, cal_name, soln ->
+                        def (apply_name, apply_args) = params.apply_args[cal_name]
+                        [obsid, soln, cal_name, apply_name, apply_args]
+                    }
+            )
+            .map {
+                def (obsid, metafits, prepUVFits) = it[0]
+                def (_, soln, cal_name, apply_name, apply_args) = it[1]
+                [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
+            }
+    }
 
-    allApply | hypApplyUV
+    if (params.nouv) {
+        channel.from([]) | hypApplyUV
+    } else {
+        allApply | hypApplyUV
+    }
 
     // channel of calibrated (or subtracted) uvfits: tuple(obsid, name, uvfits)
     if (params.nosub) {
@@ -1754,7 +1764,7 @@ workflow {
     if (params.noms) {
         channel.from([]) | hypApplyMS
     } else {
-    allApply | hypApplyMS
+        allApply | hypApplyMS
     }
 
     // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
@@ -1777,15 +1787,20 @@ workflow {
             .map { obsid, name, vis, _ -> [obsid, name, vis] }
     }
 
-    // image and qa measurementsets
-    obsNameMS | img
+    // image and qa measurementsets unless noimage is set
+    if (params.noimg) {
+        channel.from([]) | img
+    } else {
+        obsNameMS | img
+    }
 
     if (params.archive) {
-        cal.out.passCal.map { _, __, soln -> ["soln", soln] }
+        prep.out.obsMetaVis.map { _, __, vis -> ["prep", vis] }
+            .mix(cal.out.passCal.map { _, __, soln -> ["soln", soln] })
             .mix(obsNameUvfits.map { _, __, vis -> ["uvfits", vis]})
             .mix(cal.out.archive)
             .mix(uvfits.out.archive)
             .mix(img.out.archive)
             | archive
     }
-    }
+}
