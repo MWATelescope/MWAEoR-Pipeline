@@ -1005,6 +1005,16 @@ workflow ws {
         wsSummary = wsMeta.out.map { obsid, json, filesJson ->
                 // parse json
                 def stats = parseJson(json)
+
+                def ra_phase_center = stats.ra_phase_center;
+                if (ra_phase_center == null) {
+                    ra_phase_center = stats.metadata.ra_pointing
+                }
+                def dec_phase_center = stats.dec_phase_center;
+                if (dec_phase_center == null) {
+                    dec_phase_center = stats.metadata.dec_pointing
+                }
+
                 def pointing = stats.metadata.gridpoint_number
                 def nscans = ((stats.stoptime?:0) - (stats.starttime?:0)) / (stats.int_time?:1)
                 def delays = (stats.alldelays?:[:]).values().flatten()
@@ -1045,8 +1055,8 @@ workflow ws {
                     nscans: nscans,
                     ra_pointing: stats.metadata.ra_pointing,
                     dec_pointing: stats.metadata.dec_pointing,
-                    ra_phase_center: stats.ra_phase_center?:stats.metadata.ra_pointing,
-                    dec_phase_center: stats.dec_phase_center?:stats.metadata.dec_pointing,
+                    ra_phase_center: ra_phase_center,
+                    dec_phase_center: dec_phase_center,
                     pointing: pointing,
                     lst: stats.metadata.local_sidereal_time_deg,
                     freq_res: stats.freq_res,
