@@ -1,7 +1,11 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
-def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.result_suffix}/"
+def obsids_file = file(params.obsids_path)
+if (params.obsids_suffix) {
+    obsids_file = file("${obsids_file.getParent()}/${obsids_file.getSimpleName()}${params.obsids_suffix}.${obsids_file.getExtension()}")
+}
+def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.obsids_suffix}${params.result_suffix}/"
 
 // download observation metadata from webservices in json format
 process wsMeta {
@@ -17,7 +21,7 @@ process wsMeta {
 
     script:
     """
-    #!/bin/bash
+    #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
     wget -O ${obsid}_wsmeta.json "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
     wget -O ${obsid}_files.json "http://ws.mwatelescope.org/metadata/data_ready?obs_id=${obsid}"
@@ -38,9 +42,28 @@ process wsMetafits {
 
     script:
     """
-    #!/bin/bash
+    #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
     wget -O ${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
+    """
+}
+
+process wsSkyMap {
+    input:
+    val(obsid)
+    output:
+    tuple val(obsid), path("${obsid}_skymap.png")
+
+    // persist results in outdir, process will be skipped if files already present.
+    storeDir "${params.outdir}/${obsid}/meta"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    script:
+    """
+    #!/bin/bash -eux
+    ${params.proxy_prelude} # ensure proxy is set if needed
+    wget -O ${obsid}_skymap.png "http://ws.mwatelescope.org/observation/skymap/?obs_id=${obsid}"
     """
 }
 
@@ -334,8 +357,7 @@ process polyFit {
     script:
     name = "poly_${dical_name}"
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     run_polyfit.py \
         hyp_soln_${obsid}_${dical_name}.fits \
         --outfile "hyp_soln_${obsid}_${name}.fits" \
@@ -477,8 +499,7 @@ process prepVisQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     run_prepvisqa.py birli_${obsid}.uvfits --out "birli_${obsid}_prepvis_metrics.json"
     """
 }
@@ -499,8 +520,7 @@ process visQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     run_visqa.py *.uvfits --out "hyp_${obsid}_${name}_vis_metrics.json"
     """
 }
@@ -520,8 +540,7 @@ process calQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     run_calqa.py soln.fits ${obsid}.metafits --pol X --out "hyp_soln_${obsid}_${name}_X.json"
     """
 }
@@ -576,8 +595,7 @@ process plotPrepVisQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     plot_prepvisqa.py "birli_${obsid}_prepvis_metrics.json" --out "prepvis_metrics_${obsid}_rms.png" --save
     """
 }
@@ -586,7 +604,7 @@ process plotSols {
     input:
     tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_soln_${obsid}_${name}.fits")
     output:
-    tuple val(obsid), path("hyp_soln_${obsid}*_${name}_{phases,amps}.png")
+    tuple val(obsid), val(name), path("hyp_soln_${obsid}*_${name}_{phases,amps}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -604,10 +622,7 @@ process plotCalQA {
     input:
     tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.json")
     output:
-    tuple val(obsid), val(name), \
-        path("calmetrics_${obsid}_${name}_fft.png"), \
-        path("calmetrics_${obsid}_${name}_variance.png"), \
-        path("calmetrics_${obsid}_${name}_dlyspectrum.png")
+    tuple val(obsid), val(name), path("calmetrics_${obsid}_${name}_{fft,variance,dlyspectrum}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -617,8 +632,7 @@ process plotCalQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     plot_calqa.py "hyp_soln_${obsid}_${name}.json" --out "calmetrics_${obsid}_${name}.png" --save
     """
 }
@@ -637,8 +651,7 @@ process plotVisQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     plot_visqa.py "hyp_${obsid}_${name}_vis_metrics.json" --out "hyp_${obsid}_${name}_vis_metrics_rms.png" --save
     """
 }
@@ -692,7 +705,6 @@ process wscleanDirty {
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
         vis.ms | tee wsclean_${name}.log
-    # no need for `-abs-mem ${params.img_mem}` on DuG, we have the node to ourself
     """
 }
 
@@ -738,8 +750,7 @@ process imgQA {
 
     script:
     """
-    #!/bin/bash
-    set -ex
+    #!/bin/bash -eux
     run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
     """
 }
@@ -750,6 +761,7 @@ process polComp {
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
     output:
     tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
+        // , path("${obsid}_${name}_{XX,YY,V}.png")
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -907,13 +919,40 @@ process plotCalJsons {
         path("cal_qa_{convergence,fft,rms,unused}.png")
 
     storeDir "${results_dir}"
+    stageInMode "symlink"
 
     label 'python'
 
     script:
     """
-    #!/bin/bash
+    #!/bin/bash -eux
     plot_caljsons.py ${jsons.join(' ')} --save
+    """
+}
+
+process ffmpeg {
+    input:
+        tuple val(name), path("??????????.png")
+
+    output:
+        path("${name}.mp4")
+
+    storeDir "${results_dir}"
+    stageInMode "symlink"
+
+    tag "${name}"
+
+    label 'ffmpeg'
+
+    script:
+    """
+    #!/bin/bash -eux
+    ffmpeg -y -framerate 5 \
+        -pattern_type glob -i "??????????.png" \
+        -vcodec libx264 \
+        -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+        -pix_fmt yuv420p \
+        "${name}.mp4"
     """
 }
 
@@ -1210,11 +1249,16 @@ workflow ws {
             .filter { _, summary -> summary.fail_reasons == [] }
             .map { obsid, _ -> obsid }
 
-        pass | wsMetafits
+        pass | wsMetafits & wsSkyMap
 
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
         obsMetafits = wsMetafits.out
+
+        // channel of video name and frames to convert
+        frame = wsSkyMap.out
+            .map { _, png -> ["skymap", png] }
+            .groupTuple()
 }
 
 // ensure preprocessed uvfits are downloaded
@@ -1365,6 +1409,10 @@ workflow prep {
                     (prepAntennas + manualAntennas - flagAntennas) as int[]
                 ]
             }
+        // channel of video name and frames to convert
+        frame = plotPrepVisQA.out
+            .map { _, png -> ["prepvisqa_rms", png] }
+            .groupTuple()
 }
 
 workflow cal {
@@ -1547,6 +1595,15 @@ workflow cal {
             .join(obsidNamePass, by: [0,1] )
         // channel of files to archive, and their buckets
         archive = calQA.out.map { _, __, json -> ["calqa", json]}
+        // channel of video name and frames to convert
+        frame = plotCalQA.out.mix(plotSols.out)
+            .flatMap { _, name, pngs ->
+                pngs.collect { png ->
+                    def png_name = png.getSimpleName().split('_')[-1]
+                    ["calqa_${name}_${png_name}", png]
+                }
+            }
+            .groupTuple()
 }
 
 // process uvfits visibilities
@@ -1620,7 +1677,8 @@ workflow uvfits {
             | view { [it, it.readLines().size()] }
 
         // TODO: plotVisQA isn't working
-        // visQA.out | plotVisQA
+        // channel.from([]) | plotVisQA
+        visQA.out | plotVisQA
 
         // ps_metrics
         if (!params.nopsmetrics) {
@@ -1659,6 +1717,10 @@ workflow uvfits {
     emit:
         // channel of files to archive, and their buckets
         archive = visQA.out.map { _, __, json -> ["visqa", json]}
+        // channel of video name and frames to convert
+        frame = plotVisQA.out
+            .map { _, name, png -> ["visqa_${name}_rms", png] }
+            .groupTuple()
 }
 
 // image measurement sets and QA images
@@ -1702,30 +1764,21 @@ workflow img {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        polComp.out.map { obsid, name, png ->
-                [obsid, name, png].join("\t")
-            }
-            .collectFile(
-                name: "pol_comp.tsv", newLine: true, sort: true,
-                seed: [
-                    "OBS", "IMG NAME", "PNG"
-                ].join("\t"),
-                storeDir: "${results_dir}"
-            )
-            // display output path and number of lines
-            | view { [it, it.readLines().size()] }
-
     emit:
         // channel of files to archive, and their buckets
         archive = wscleanDirty.out
             .transpose()
             .map { _, __, img, ___ -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
+        // channel of video name and frames to convert
+        frame = polComp.out
+            .map { _, name, png -> ["imgqa_${name}_polcomp", png] }
+            .groupTuple()
 }
 
 // separate entrypoint for moving unfiltered preprocessed uvfits from asvo accacia to mwaeor accacia
 workflow archivePrep {
-    obsids = channel.fromPath(params.obsids_path)
+    obsids = channel.of(obsids_file)
         .splitCsv()
         .flatten()
         .filter { line -> !line.startsWith('#') }
@@ -1739,7 +1792,7 @@ workflow archivePrep {
 
 workflow {
     // get obsids from csv
-    obsids = channel.fromPath(params.obsids_path)
+    obsids = channel.of(obsids_file)
         .splitCsv()
         .flatten()
         .filter { line -> !line.startsWith('#') }
@@ -1907,4 +1960,14 @@ workflow {
             .mix(img.out.archive)
             | archive
     }
+
+    // make videos
+    ws.out.frame
+        .mix(prep.out.frame)
+        .mix(cal.out.frame)
+        .mix(uvfits.out.frame)
+        .mix(img.out.frame)
+        .map { name, frames -> [name, frames.sort()] }
+        | ffmpeg
+        | view { [it, it.size()] }
 }
