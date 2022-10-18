@@ -1,6 +1,8 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
+def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.result_suffix}/"
+
 // download observation metadata from webservices in json format
 process wsMeta {
     input:
@@ -488,7 +490,7 @@ process visQA {
     output:
     tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics.json")
 
-    storeDir "${params.outdir}/${obsid}/vis_qa"
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -627,7 +629,7 @@ process plotVisQA {
     output:
     tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics_rms.png")
 
-    storeDir "${params.outdir}/${obsid}/vis_qa"
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
     tag "${obsid}"
 
@@ -671,7 +673,7 @@ process wscleanDirty {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
 
-    storeDir "${params.outdir}/${obsid}/img${params.img_suffix}"
+    storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
     tag "${obsid}.${name}"
     label "wsclean"
@@ -702,7 +704,7 @@ process psMetrics {
     tuple val(obsid), val(name), path("output_metrics_hyp_${obsid}_${name}.dat"), \
         path("hyp_${obsid}_${name}.log")
 
-    storeDir "${params.outdir}/${obsid}/ps_metrics"
+    storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -728,7 +730,7 @@ process imgQA {
     output:
     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
 
-    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -749,7 +751,7 @@ process polComp {
     output:
     tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
 
-    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}"
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
     tag "${obsid}.${name}"
 
@@ -898,6 +900,23 @@ process polComp {
     """
 }
 
+process plotCalJsons {
+    input:
+        val jsons
+    output:
+        path("cal_qa_{convergence,fft,rms,unused}.png")
+
+    storeDir "${results_dir}"
+
+    label 'python'
+
+    script:
+    """
+    #!/bin/bash
+    plot_caljsons.py ${jsons.join(' ')} --save
+    """
+}
+
 process archive {
     input:
         tuple val(bucket_suffix), path(x)
@@ -919,6 +938,45 @@ process archive {
     rclone mkdir "${bucket}"
     rclone copyto --copy-links "$x" "${bucket}/$x"
     """
+}
+
+// collect ao quality metrics
+process aoQuality {
+    input:
+    tuple val(obsid), val(name), path("vis.ms")
+
+    output:
+    tuple val(obsid), val(name), path("${obsid}_${name}_aoquality_{sum,rfi,b,t,f,q}.tsv")
+
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+    stageInMode "symlink"
+    script:
+    """
+    #!/bin/bash -eux
+    ${params.aoquality} collect vis.ms
+    ${params.aoquality} summarize vis.ms | tee ${obsid}_${name}_aoquality_sum.tsv
+    ${params.aoquality} summarizerfi vis.ms | tee ${obsid}_${name}_aoquality_rfi.tsv
+    for q in b t f q; do
+        ${params.aoquality} liststats \
+        | while read -r stat; do
+            result=\$(${params.aoquality} query_\$q \$stat vis.ms) \
+                && echo \$stat \$result \
+                | tail -a ${obsid}_${name}_aoquality_\${q}.tsv;
+        done
+    done
+    """
+
+    // ${aoquality} collect vis.ms
+    // ${aoquality} summarize vis.ms | tee ${obsid}_${name}_aoquality_sum.tsv
+    // ${aoquality} summarizerfi vis.ms | tee ${obsid}_${name}_aoquality_rfi.tsv
+    // for q in b t f q; do
+    //     ${aoquality} liststats \
+    //     | while read -r stat; do
+    //         result=$(${aoquality} query_$q $stat vis.ms) \
+    //             && echo $stat $result \
+    //             | tee -a ${obsid}_${name}_aoquality_${q}.tsv;
+    //     done
+    // done
 }
 
 import groovy.json.JsonSlurper
@@ -1143,7 +1201,7 @@ workflow ws {
                     "IONO MAG", "IONO PCA", "IONO QA",
                     "STATE FAULTS", "POINTING FAULTS", "FREQ FAULTS", "GAIN FAULTS", "BEAM FAULTS", "FAULT STR"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/",
+                storeDir: "${results_dir}",
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1228,7 +1286,7 @@ workflow prep {
                     "YY NPOOR_ANTENNAS",
                     "YY POOR_ANTENNAS",
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1270,7 +1328,7 @@ workflow prep {
                     "N TIME","N BL", "FLAGGED TIMESTEPS", "FLAGGED ANTS",
                     "TOTAL OCCUPANCY", "NON PREFLAGGED"
                 ] + sky_chans).join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1345,7 +1403,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
 
         // channel of solutions for each obsid: tuple(obsid, solutions)
@@ -1393,7 +1451,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1410,8 +1468,14 @@ workflow cal {
             }
             | (plotSols & calQA)
 
-        // plot calQA results
+        // plot each calQA result
         calQA.out | plotCalQA
+
+        // plot aggregate calQA results
+        calQA.out
+            .map { _, __, json -> json }
+            .collect(sort: true)
+            | plotCalJsons
 
         // collect calQA results as .tsv
         calQA.out
@@ -1462,7 +1526,7 @@ workflow cal {
                     "YY RECEIVER CHISQVAR",
                     "FAILURE_REASON"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1550,7 +1614,7 @@ workflow uvfits {
                     "R:YY NPOOR_BLS",
                     "R:YY POOR_BLS",
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1568,7 +1632,7 @@ workflow uvfits {
                 .map { obsid, vis_name, dat, _ -> dat.getText() }
                 .collectFile(
                     name: "ps_metrics.dat",
-                    storeDir: "${params.outdir}/results${params.result_suffix}/"
+                    storeDir: "${results_dir}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -1586,7 +1650,7 @@ workflow uvfits {
                         "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
-                    storeDir: "${params.outdir}/results${params.result_suffix}/"
+                    storeDir: "${results_dir}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -1633,7 +1697,7 @@ workflow img {
                     "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
                     "V:XX RMS RATIO", "V:XX RMS RATIO BOX"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1646,7 +1710,7 @@ workflow img {
                 seed: [
                     "OBS", "IMG NAME", "PNG"
                 ].join("\t"),
-                storeDir: "${params.outdir}/results${params.result_suffix}/"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1687,7 +1751,7 @@ workflow {
         .map { obsid, _ -> obsid }
         .collectFile(
             name: "filtered_obsids.csv", newLine: true, sort: true,
-            storeDir: "${params.outdir}/results${params.result_suffix}/"
+            storeDir: "${results_dir}"
         )
         | view { [it, it.readLines().size()] }
 
@@ -1700,7 +1764,7 @@ workflow {
         .map { obsid, _, __ -> obsid }
         .collectFile(
             name: "unflagged_obsids.csv", newLine: true, sort: true,
-            storeDir: "${params.outdir}/results${params.result_suffix}/"
+            storeDir: "${results_dir}"
         )
         | view { [it, it.readLines().size()] }
 
@@ -1718,7 +1782,7 @@ workflow {
         .collectFile(
             name: "tile_flags.tsv", newLine: true, sort: true,
             seed: ([ "OBS", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
-            storeDir: "${params.outdir}/results${params.result_suffix}/"
+            storeDir: "${results_dir}"
         )
         // display output path and number of lines
         | view { [it, it.readLines().size()] }
@@ -1819,10 +1883,25 @@ workflow {
         obsNameMS | img
     }
 
+    // obsNameMS | aoQuality
+
+    // aoQuality.out.view {it}
+    //     .map { obsid, name,  -> [obsid, name, ms] } | img
+    // }
+
     if (params.archive) {
-        prep.out.obsMetaVis.map { _, __, vis -> ["prep", vis] }
+        if (params.archive_prep) {
+            prep_archive = prep.out.obsMetaVis.map { _, __, vis -> ["prep", vis] }
+        } else {
+            prep_archive = channel.from([])
+        }
+        if (params.archive_uvfits) {
+            vis_archive = obsNameUvfits.map { _, __, vis -> ["uvfits", vis]}
+        } else {
+            vis_archive = channel.from([])
+        }
+        prep_archive.mix(vis_archive)
             .mix(cal.out.passCal.map { _, __, soln -> ["soln", soln] })
-            .mix(obsNameUvfits.map { _, __, vis -> ["uvfits", vis]})
             .mix(cal.out.archive)
             .mix(uvfits.out.archive)
             .mix(img.out.archive)
