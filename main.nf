@@ -793,6 +793,15 @@ process imgQA {
     """
 }
 
+// process uvPlot {
+//     input:
+//     tuple val(obsid), val(name), path("vis.uvfits")
+//     output:
+//     tuple val(obsid), val(name), path("${obsid}_${name}_uvplot.png")
+
+//     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+// }
+
 // polarimetry composite raster
 process polComp {
     input:
@@ -871,13 +880,21 @@ process polComp {
         img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
 
         subplot_kw = {"projection": wcs, "slices": ('x', 'y', 0, 0)}
+        ax = img_fig.add_subplot(1, 1, 1, **subplot_kw)
+        ax.set_ylabel("", visible=False)
+        ax.set_xlabel("", visible=False)
+        ax.set_label("")
+        ax.tick_params(axis="y", direction="in", pad=-30, horizontalalighment="left")
+        ax.tick_params(axis="x", direction="in", pad=-20, verticalalignment="bottom")
 
         for key, vmax in [
             ['XX', i_percentile],
             ['YY', i_percentile],
             ['V', v_percentile]
         ]:
-            ax = img_fig.add_subplot(1, 1, 1, **subplot_kw)
+            for coord in ax.coords:
+                coord.set_ticklabel_visible(True)
+            ax.set_title(f"${obsid} - ${name} - {key}", y=0.95, fontdict={'verticalalignment':'top'})
             cmap = LinearSegmentedColormap.from_list(f'blue-bl-red', ['blue', 'black', 'red'], gamma=1)
             norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
             ax.imshow(data[key], cmap=cmap, norm=norm)
@@ -1865,7 +1882,14 @@ workflow img {
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out
-            .map { _, name, png, __ -> ["imgqa_${name}_polcomp", png] }
+            .flatMap { _, name, png, pols ->
+                [
+                    ["imgqa_${name}_polcomp", png],
+                ] + pols.collect { polFile ->
+                    def pol = polFile.simpleName.split('_')[-1]
+                    ["imgqa_${name}_pol${pol}", polFile]
+                }
+            }
             .groupTuple()
 }
 
