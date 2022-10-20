@@ -78,7 +78,7 @@ process asvoPrep {
     input:
     val obsid
     output:
-    tuple val(obsid), path("birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits")
+    tuple val(obsid), path("birli_${obsid}_${prep_suffix}.uvfits")
 
     storeDir "${params.outdir}/${obsid}/prep"
     // tag to identify job in squeue and nf logs
@@ -110,6 +110,7 @@ process asvoPrep {
     }
 
     script:
+    prep_suffix = "${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz"
     """
     #!/bin/bash -eux
 
@@ -158,7 +159,7 @@ process asvoPrep {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
-        mv ${obsid}.uvfits birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits
+        mv ${obsid}.uvfits birli_${obsid}_${prep_suffix}.uvfits
         exit 0 # success
     fi
     echo "no ready jobs"
@@ -704,8 +705,7 @@ process wscleanDirty {
     multiSuffix = multiplier > 1 ? "_x${multiplier}" : ""
     mfsSuffix = params.img_channels_out > 1 ? "-MFS" : ""
     """
-    set -eux
-    # imaging
+    #!/bin/bash -eux
     ${params.wsclean} \
         ${params.wsclean_args} \
         -weight ${params.img_weight} \
@@ -738,7 +738,7 @@ process psMetrics {
     nchan = 384
     uv_base = "hyp_${obsid}_${name}"
     """
-    set -eux
+    #!/bin/bash -eux
     export DATADIR="\$PWD"
     export OUTPUTDIR="\$PWD/"
     ${params.ps_metrics} "${uv_base}" "${band}" "${nchan}" "${uv_base}" 2>&1 \
@@ -1295,7 +1295,13 @@ workflow prep {
         obsMetafits
             .map { obsid, _ -> obsid }
             | asvoPrep
-            | prepVisQA
+
+        if (params.noprepqa) {
+            channel.from([]) | prepVisQA
+        } else {
+            asvoPrep.out | prepVisQA
+        }
+
         // uncomment this to skip prep and flag QA
         // emit:
         //     obsMetaVis = obsMetafits.join(asvoPrep.out)
@@ -1363,11 +1369,15 @@ workflow prep {
         prepVisQA.out | plotPrepVisQA
 
         // analyse flag occupancy
-        obsMetafits.join(asvoPrep.out) | flagQA
+        if (params.noprepqa) {
+            channel.from([]) | flagQA
+        } else {
+            obsMetafits.join(asvoPrep.out) | flagQA
+        }
 
         // collect flagQA results
         // TODO: collect sky_chans from flagQA
-        def sky_chans = (131..154).collect { ch -> "$ch".toString() }
+        def sky_chans = (params.sky_chans).collect { ch -> "$ch".toString() }
         flagQA.out
             // form row of tsv from json fields we care about
             .map { obsid, json ->
@@ -1403,43 +1413,51 @@ workflow prep {
 
     emit:
         // channel of obsids which pass the flag gate: tuple(obsid, metafits, uvfits)
-        obsMetaVis = flagQA.out
-            .filter { obsid, json ->
-                jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
-            }
-            .map { obsid, _ -> obsid }
-            .join(obsMetafits)
-            .join(asvoPrep.out)
+        obsMetaVis = (params.noprepqa ? \
+            // no filter unless prepqa
+            obsMetafits.join(asvoPrep.out) : \
+            // filter
+            flagQA.out
+                .filter { obsid, json ->
+                    jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
+                }
+                .map { obsid, _ -> obsid }
+                .join(obsMetafits)
+                .join(asvoPrep.out))
         // channel of extra flags for each obsid
-        obsFlags = prepVisQA.out
-            .join(flagQA.out)
-            .map { obsid, prepJson, flagJson ->
-                def flagStats = parseJson(flagJson);
-                def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
-                def prepStats = parseJson(prepJson);
-                def prepAntennas = ((prepStats.XX?.POOR_ANTENNAS?:[]) + (prepStats.YY?.POOR_ANTENNAS?:[])) as Set
-                def manualAntennas = ([]) as Set
-                tileUpdates.each {
-                    def (firstObsid, lastObsid, tileIdxs, comment) = it
-                    if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
-                        manualAntennas.addAll(tileIdxs)
+        obsFlags = (params.noprepqa ? \
+            // flags empty unless prepqa
+            asvoPrep.out.map { obsid, _ -> [obsid, [], [], [], []] } : \
+            // calculate extra flags if prepqa
+            prepVisQA.out
+                .join(flagQA.out)
+                .map { obsid, prepJson, flagJson ->
+                    def flagStats = parseJson(flagJson);
+                    def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
+                    def prepStats = parseJson(prepJson);
+                    def prepAntennas = ((prepStats.XX?.POOR_ANTENNAS?:[]) + (prepStats.YY?.POOR_ANTENNAS?:[])) as Set
+                    def manualAntennas = ([]) as Set
+                    tileUpdates.each {
+                        def (firstObsid, lastObsid, tileIdxs, comment) = it
+                        if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
+                            manualAntennas.addAll(tileIdxs)
+                        }
                     }
-                }
-                def newAntennas = ([]) as Set
-                if (!params.noPrepFlags) {
-                    newAntennas.addAll(prepAntennas)
-                }
-                if (!params.noManualFlags) {
-                    newAntennas.addAll(manualAntennas)
-                }
-                [
-                    obsid,
-                    flagAntennas as int[],
-                    prepAntennas as int[],
-                    manualAntennas as int[],
-                    (newAntennas - flagAntennas) as int[]
-                ]
-            }
+                    def newAntennas = ([]) as Set
+                    if (!params.noPrepFlags) {
+                        newAntennas.addAll(prepAntennas)
+                    }
+                    if (!params.noManualFlags) {
+                        newAntennas.addAll(manualAntennas)
+                    }
+                    [
+                        obsid,
+                        flagAntennas as int[],
+                        prepAntennas as int[],
+                        manualAntennas as int[],
+                        (newAntennas - flagAntennas) as int[]
+                    ]
+                })
         // channel of video name and frames to convert
         frame = plotPrepVisQA.out
             .map { _, png -> ["prepvisqa_rms", png] }
@@ -1840,8 +1858,11 @@ workflow {
         | view { [it, it.readLines().size()] }
 
     // download preprocessed, unless noprep is set
-    if (params.noprep) { println("params.noprep set, exiting before prep."); return }
-    ws.out.obsMetafits | prep
+    if (params.noprep) {
+        channel.from([]) | prep
+    } else {
+        ws.out.obsMetafits | prep
+    }
 
     // channel of obsids that pass the flag gate
     prep.out.obsMetaVis
@@ -1972,6 +1993,7 @@ workflow {
                 ["g${group}_p${point}", "g_${name}", ms]
             }
             .groupTuple(by: [0, 1])
+            .map { group, name, mss -> [group, name, mss.unique()] }
             .filter { _, __, mss -> mss.size() > 1 }
             .view {it}
         obsNameMS.mix( imgGroups ) | img
