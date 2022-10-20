@@ -294,17 +294,19 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
-
-    afterScript "ls ${task.storeDir}"
+    if (params.pullCalSol) {
+        label "rclone"
+    }
 
     script:
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
     flag_args = tile_flags.size() > 0 ? "--tile-flags ${tile_flags.join(' ')}" : ""
+
     """
-    set -eux
-    ${para ? "export CUDA_VISIBLE_DEVICES=0" : ""}
+    #!/bin/bash -eux
+    """ + (para ? "export CUDA_VISIBLE_DEVICES=0" : "") + """
     export num_gpus="\$(nvidia-smi -L | wc -l)"
     if [ \$num_gpus -eq 0 ]; then
         echo "no gpus found"
@@ -313,7 +315,7 @@ process hypCalSol {
     if [ \$num_gpus -ne ${params.num_gpus} ]; then
         echo "warning: expected \$num_gpus to be ${params.num_gpus}"
     fi
-    ${groovy2bashAssocArray(dical_args, "dical_args")}
+    """ + groovy2bashAssocArray(dical_args, "dical_args") + """
     if [ \${#dical_args[@]} -eq 0 ]; then
         echo "no dical args"
         exit 0
@@ -322,6 +324,17 @@ process hypCalSol {
         echo "warning: more dical args than gpus";
     fi
     for name in \${!dical_args[@]}; do
+        export soln_name="hyp_soln_${obsid}_\${name}.fits"
+        export log_name="hyp_di-cal_${obsid}_\${name}.log"
+    """ + (params.pullCalSol ? """
+        # download if available in accacia
+        rclone copy "${params.bucket_prefix}.soln/\${soln_name}" "\${soln_name}"
+        if [ -f "\${soln_name}" ]; then
+            touch \${log_name}
+            continue
+        fi
+    """ : "") + """
+
         args=\${dical_args[\$name]}
         # hyperdrive di-cal backgrounded in a subshell
         (
@@ -329,13 +342,13 @@ process hypCalSol {
                 --data "${obsid}.metafits" "${obsid}.uvfits" \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
-                --outputs "hyp_soln_${obsid}_\${name}.fits" \
+                --outputs \$soln_name \
                 ${flag_args} \
-                > "hyp_di-cal_${obsid}_\${name}.log"
+                > \$log_name
         ) &
         # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
         # increment the target device mod num_gpus
-        ${para ? "CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))" : ""}
+        """ + (para ? "CUDA_VISIBLE_DEVICES=\$(( CUDA_VISIBLE_DEVICES+1 % \${num_gpus} ))" : "") + """
     done
 
     # wait for all the background jobs to finish
@@ -344,7 +357,7 @@ process hypCalSol {
 
     # print out important info from log
     if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
-        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
+        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log || echo no warnings
     fi
 
     exit \$result
@@ -373,6 +386,20 @@ process polyFit {
         | tee polyfit_${obsid}_${name}.log
     """
 }
+
+// why this can't be a single process:
+// - if nouv or noms changes, then this whole thing need to be re-run
+// process hypApply {
+//     input:
+//     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
+//         path("hyp_soln_${obsid}_${cal_name}.fits"), \
+//         val(cal_name), val(apply_name), val(apply_args)
+//     output:
+//     tuple val(obsid), val(vis_name), \
+//         path(params.nouv ? ".fakeuv" : "hyp_${obsid}_${vis_name}.uvfits"), \
+//         path(params.noms ? ".fakems" : "hyp_${obsid}_${vis_name}.ms"), \
+//         path("hyp_apply_${vis_name}.log")
+// }
 
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyUV {
