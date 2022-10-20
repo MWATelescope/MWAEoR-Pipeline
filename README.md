@@ -331,7 +331,7 @@ nextflow run main.nf -profile dug
 ```bash
 export run_name="$(nextflow log -q | tail -n 1)"
 export process="hypCalSol"
-nextflow log "${run_name}" -F 'process=="'${process}'"' -f "workdir,exit,status,process,duration,realtime"
+nextflow log "${run_name}" -F 'process=="'${process}'"' -f "workdir,exit,status,process,tag,duration,realtime"
 ```
 
 ### get all lines matching pattern from all scripts executed recently
@@ -339,7 +339,7 @@ nextflow log "${run_name}" -F 'process=="'${process}'"' -f "workdir,exit,status,
 ```bash
 export process="hypCalSol"
 export first_run="$(nextflow log -q | head -n 1)"
-echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*out.*/}[0]}' | tee template.md
+echo -n $'${start} ${workdir} ${script.split(\'\\n\').findAll {it =~ /.*wsclean.*/}[0]}' | tee template.md
 nextflow log -after $first_run -F 'process=="'${process}'"&&exit==0' -t template.md
 ```
 
@@ -356,6 +356,13 @@ while read run; do
 done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
 ```
 
+### suffixes
+
+```
+# this will put results in $outdir/test/results-a-b-c-d
+nextflow run main.nf -profile garrawarla --outdir=$outdir/test/ --img_suffix=-a --cal_suffix=-b --obsids_suffix=-c --results_suffix=-d
+```
+
 ## Handy Singularity commands
 
 ### Updating singularity images
@@ -365,7 +372,7 @@ module load singularity
 # - specify the container to update:
 export container="mwa_qa" # or "birli"
 # - specify the url of the docker image
-export url="docker://d3vnull0/${container}:latest" # or "docker://mwatelescope/${container}:latest"
+export url="docker://mwatelescope/${container}:latest" # or "docker://d3vnull0/${container}:latest"
 # - cd into singularity directory
 cd /pawsey/mwa/singularity/ # or /data/curtin_mwaeor/sw/singularity/
 # - make a directory for the container if it doesn't exist
@@ -436,6 +443,28 @@ find $outdir -name '*.log' -size 0 -delete
 bash -c 'unset PATH; /bin/find ${outdir} -type d -name img_qa -execdir sh -c "pwd && mv {} {}-dci1000" \;'
 ```
 
+add suffix but keep original cal
+
+```bash
+export suffix="-oldhyp"
+for dir in ??????????/{cal_qa,vis_qa,img_qa,img-briggs+0.5_4096px,img_qa-briggs+0.5_4096px}; do
+  [ -d "${dir}" ] && mv "${dir}" "${dir}${suffix}";
+done
+for dir in ??????????/cal; do
+  [ -d "${dir}" ] && mv "${dir}" "${dir}-kill";
+done
+for dir in ??????????/cal-kill; do
+  mkdir -p "${dir/-kill/}";
+  for file in ${dir}/hyp_*.fits ${dir}/hyp_di-cal*.log; do
+    [ -f "${file}" ] && mv "${file}" "${file/-kill/}";
+  done
+  rm -rf "${dir}";
+done
+for dir in ??????????/*-oldhyp; do
+  rm -rf "${dir}";
+done
+```
+
 ### cleanup folders
 
 ```
@@ -490,12 +519,13 @@ done < obsids.csv
 
 ```bash
 export carta_sif=/data/curtin_mwaeor/sw/singularity/carta/carta_latest.sif
+export carta_sif=/pawsey/mwa/singularity/carta/carta_latest.sif
 ```
 
 no config
 
 ```bash
-singularity exec --bind $outdir:/images --contain $carta_sif carta --no_user_config --no_system_config --no_browser /images
+singularity exec --bind $PWD:/images --contain $carta_sif carta --no_user_config --no_system_config --no_browser /images
 ```
 
 user config
@@ -505,6 +535,22 @@ singularity exec --bind $outdir:/images /data/curtin_mwaeor/sw/singularity/carta
 ```
 
 open `all_imgs`, sort by name, unix search `wsclean_hyp_*_sub_poly_30l_src4k_8s_80kHz-MFS-XX-dirty.fits`
+
+### export image snippet
+
+enable code snippets in carta first
+
+```js
+for (const frame of app.frames) {
+  frame.setTitleCustomText(frame.filename);
+  await app.setRasterScalingMatchingEnabled(frame, true);
+  await app.setActiveFrame(frame);
+  await new Promise(r => setTimeout(r, 1000));
+  console.log(app.activeFrame.filename);
+  await app.exportImage(1);
+  await new Promise(r => setTimeout(r, 1000));
+};
+```
 
 ### hard link images (easier for carta)
 
@@ -581,9 +627,9 @@ results = tap.search("select obs_id, gpubox_files_archived, gpubox_files_total, 
   where obs_id IN (1087250776)")
 ```
 
-### render movies
+### manually render movies
 
-#### prepvisqa
+#### render prepvisqa
 
 ```bash
 module load ffmpeg
@@ -595,27 +641,41 @@ ffmpeg -y -framerate 5 -pattern_type glob \
   "${outdir}/results/prepvis_metrics_rms.mp4"
 ```
 
-#### polcomps
+#### render polcomps
 
 ```bash
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
-for name in 30l sub_30l poly_30l sub_poly_30l; do
+for name in 30l sub_30l; do
   ffmpeg -y -framerate 5 -pattern_type glob\
   -i "${outdir}/??????????/img_qa/??????????_${name}_*.png" \
   -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p \
   "${outdir}/results/polcomp_${name}.mp4"
 done
-for name in 30l sub_30l; do
-  ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/12????????/img_qa-briggs+0.5/??????????_${name}_*.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/polcomp_12_${name}_briggs+0.5.mp4"
+for range in 122 125 132; do
+  for name in 30l sub_30l; do
+    ffmpeg -y -framerate 5 -pattern_type glob\
+    -i "${outdir}/${range}???????/img_qa-briggs+0.5_4096px/??????????_${name}_*.png" \
+    -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+    -pix_fmt yuv420p \
+    "${outdir}/results/polcomp_${range}_${name}_briggs+0.5_4096px.mp4"
+  done
 done
 ```
 
-#### calQA
+#### render visQA
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/vis_qa/hyp_??????????_30l_src4k_8s_80kHz_vis_metrics_rms.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/vis_metrics_rms.mp4"
+```
+
+#### render calQA
 
 ```bash
 module load ffmpeg
@@ -648,6 +708,30 @@ for name in 30l_src4k_phases 30l_src4k_amps; do
   -pix_fmt yuv420p \
   "${outdir}/results/hyp_soln_12_${name}.mp4"
 done
+```
+
+#### kickstart obsid from acacia
+
+```bash
+export obsid=...
+cd $outdir
+mkdir $obsid
+cd $obsid
+mkdir -p raw
+wget -O raw/${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
+mkdir -p prep
+rclone copy mwaeor:high0.prep/birli_${obsid}_2s_40kHz.uvfits prep/
+mkdir -p cal
+touch cal/hyp_di-cal_${obsid}_30l_src4k.log
+rclone copy mwaeor:high0.soln/hyp_soln_${obsid}_30l_src4k.fits cal/
+touch cal/hyp_apply_30l_src4k_8s_80kHz.log
+rclone copy mwaeor:high0.uvfits/hyp_${obsid}_30l_src4k_8s_80kHz.uvfits cal/
+touch cal/hyp_vis-sub_30l_src4k_8s_80kHz_uv.log
+rclone copy mwaeor:high0.uvfits/hyp_${obsid}_sub_30l_src4k_8s_80kHz.uvfits cal/
+mkdir -p img
+touch img/wsclean_30l_src4k_8s_80kHz.log
+rclone copy mwaeor:high0.img/wsclean_hyp_${obsid}_30l_src4k_8s_80kHz-MFS-$'{XX,YY,V}'-dirty.fits img/
+touch img/wsclean_sub_30l_src4k_8s_80kHz.log
 ```
 
 #### redo imagqa from acacia
@@ -703,4 +787,21 @@ singularity exec \
   -B /pawsey/mwa:/usr/lib/python3/dist-packages/mwapy/data \
   /pawsey/mwa/singularity/mwa-reduce/mwa-reduce.img \
   applyion
+```
+
+```bash
+module load wsclean
+export range=125
+mkdir -p "${outdir}/${range}XXXXXXX/img_qa-briggs+0.5_4096px"
+cd "${outdir}/${range}XXXXXXX/img_qa-briggs+0.5_4096px"
+wsclean \
+  -weight briggs +0.5 \
+  -name wsclean_hyp_${range}XXXXXXX_sub_30l_src4k_8s_80kHz \
+  -size 4096 4096 \
+  -scale 40asec \
+  -pol xx,yy,v \
+  -channels-out 68 \
+  -niter 0 \
+  -parallel-reordering 8 \
+  ../../${range}???????/cal/hyp_${range}???????_sub_30l_src4k_8s_80kHz.ms
 ```
