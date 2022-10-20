@@ -690,29 +690,32 @@ process plotVisQA {
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
     input:
-    tuple val(obsid), val(name), path("vis.ms")
+    tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
+    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}${multiSuffix}${mfsSuffix}-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${name}${multiSuffix}"
     label "wsclean"
 
     script:
+    multiplier = vis.collect().size()
+    multiSuffix = multiplier > 1 ? "_x${multiplier}" : ""
+    mfsSuffix = params.img_channels_out > 1 ? "-MFS" : ""
     """
     set -eux
     # imaging
     ${params.wsclean} \
         ${params.wsclean_args} \
         -weight ${params.img_weight} \
-        -name wsclean_hyp_${obsid}_${name} \
+        -name wsclean_hyp_${obsid}_${name}${multiSuffix} \
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
         -pol xx,yy,v \
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
-        vis.ms | tee wsclean_${name}.log
+        ${vis.collect().join(' ')} | tee wsclean_${name}.log
     """
 }
 
@@ -1111,6 +1114,9 @@ workflow ws {
                 // parse json
                 def stats = parseJson(json)
 
+                def obs_name = stats.obsname;
+                def groupid = stats.groupid;
+
                 def ra_phase_center = stats.ra_phase_center;
                 if (ra_phase_center == null) {
                     ra_phase_center = stats.metadata.ra_pointing
@@ -1157,6 +1163,8 @@ workflow ws {
                 def summary = [
                     fail_reasons: fail_reasons,
                     // obs metadata
+                    obs_name: obs_name,
+                    groupid: groupid,
                     nscans: nscans,
                     ra_pointing: stats.metadata.ra_pointing,
                     dec_pointing: stats.metadata.dec_pointing,
@@ -1202,12 +1210,15 @@ workflow ws {
                 [
                     obsid,
                     summary.fail_reasons.join('|'),
+
+                    summary.groupid,
                     summary.ra_pointing,
                     summary.dec_pointing,
                     summary.ra_phase_center,
                     summary.dec_phase_center,
                     summary.pointing,
                     summary.lst,
+                    summary.obs_name,
 
                     summary.freq_res,
                     summary.int_time,
@@ -1240,7 +1251,7 @@ workflow ws {
             .collectFile(
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "FAIL REASON", "RA POINT", "DEC POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG",
+                    "OBS", "FAIL REASON", "GROUP ID", "RA POINT", "DEC POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME",
                     "FREQ RES", "TIME RES","N SCANS",
                     "N FILES", "N ARCHIVED",
                     "QUALITY", "QUALITY COMMENT",
@@ -1267,6 +1278,11 @@ workflow ws {
         frame = wsSkyMap.out
             .map { _, png -> ["skymap", png] }
             .groupTuple()
+
+        // channel of (obsid, groupid, pointing)
+        obsGroupPoint = wsSummary.map { obsid, summary ->
+            [obsid, summary.groupid, summary.pointing]
+        }
 }
 
 // ensure preprocessed uvfits are downloaded
@@ -1941,7 +1957,17 @@ workflow {
     if (params.noimg) {
         channel.from([]) | img
     } else {
-        obsNameMS | img
+        // group obsids by groupid and pointing for imaging
+        imgGroups = ws.out.obsGroupPoint.cross(obsNameMS)
+            .map {
+                def (obsid, group, point) = it[0];
+                def (_, name, ms) = it[1];
+                ["g${group}_p${point}", "g_${name}", ms]
+            }
+            .groupTuple(by: [0, 1])
+            .filter { _, __, mss -> mss.size() > 1 }
+            .view {it}
+        obsNameMS.mix( imgGroups ) | img
     }
 
     // obsNameMS | aoQuality
