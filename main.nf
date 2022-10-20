@@ -798,8 +798,8 @@ process polComp {
     input:
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
-        // , path("${obsid}_${name}_{XX,YY,V}.png")
+    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png"), \
+        path("${obsid}_${name}_{XX,YY,V}.png")
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -812,7 +812,7 @@ process polComp {
     #!/usr/bin/env python
 
     from astropy.io import fits
-    from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch
+    from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch, imshow_norm
     from astropy.visualization import ImageNormalize, PowerDistStretch, SinhStretch, LogStretch, AsinhStretch
     from astropy.visualization.lupton_rgb import AsinhMapping, LinearMapping
     from astropy.visualization.wcsaxes import WCSAxesSubplot, WCSAxes
@@ -868,8 +868,25 @@ process polComp {
 
     dpi = 100
     with plt.style.context('dark_background'):
-        # axis setup
         img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
+
+        subplot_kw = {"projection": wcs, "slices": ('x', 'y', 0, 0)}
+
+        for key, vmax in [
+            ['XX', i_percentile],
+            ['YY', i_percentile],
+            ['V', v_percentile]
+        ]:
+            ax = img_fig.add_subplot(1, 1, 1, **subplot_kw)
+            cmap = LinearSegmentedColormap.from_list(f'blue-bl-red', ['blue', 'black', 'red'], gamma=1)
+            norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
+            ax.imshow(data[key], cmap=cmap, norm=norm)
+            plt.savefig(f"${obsid}_${name}_{key}.png", bbox_inches='tight', dpi=dpi)
+            plt.cla()
+        plt.clf()
+
+        img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
+        # axis setup
 
         axd = img_fig.subplot_mosaic(
             [
@@ -877,7 +894,7 @@ process polComp {
                 ["Comp", "YY"],
                 ["Comp", "V"],
             ],
-            subplot_kw={"projection": wcs, "slices": ('x', 'y', 0, 0)},
+            subplot_kw=subplot_kw,
             gridspec_kw={ "width_ratios": [3, 1], },
         )
 
@@ -1848,7 +1865,7 @@ workflow img {
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out
-            .map { _, name, png -> ["imgqa_${name}_polcomp", png] }
+            .map { _, name, png, __ -> ["imgqa_${name}_polcomp", png] }
             .groupTuple()
 }
 
