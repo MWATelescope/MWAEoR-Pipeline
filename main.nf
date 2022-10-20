@@ -793,14 +793,74 @@ process imgQA {
     """
 }
 
-// process uvPlot {
-//     input:
-//     tuple val(obsid), val(name), path("vis.uvfits")
-//     output:
-//     tuple val(obsid), val(name), path("${obsid}_${name}_uvplot.png")
+process uvPlot {
+    input:
+    tuple val(obsid), val(name), path("vis.uvfits")
+    output:
+    tuple val(obsid), val(name), path("${obsid}_${name}_uvplot_{XX,YY,XY,YX}.png")
 
-//     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
-// }
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+
+    label 'python'
+
+    errorStrategy 'terminate'
+
+    script:
+    """
+    #!/usr/bin/env python
+
+    from astropy.io import fits
+    from astropy.visualization import astropy_mpl_style
+    from mpl_toolkits import mplot3d
+    import matplotlib.pyplot as plt
+    from mwa_qa.read_uvfits import UVfits
+    import numpy as np
+
+    uv = UVfits('vis.uvfits')
+
+    Npairs = len([(ap[0], ap[1]) for ap in uv.antpairs if ap[0] != ap[1]])
+    blt_idxs = np.where(
+        uv.ant_1_array - uv.ant_2_array != 0,
+    )[0]
+
+    pols = [ "XX", "YY", "XY", "YX" ]
+
+    plt.style.use(astropy_mpl_style)
+
+    dpi = 100
+    fig = plt.figure(dpi=dpi)
+
+    with fits.open(uv.uvfits_path) as hdus:
+        vis_hdu = hdus['PRIMARY']
+
+        for pol_idx, pol in enumerate(pols):
+            plt.clf()
+            ax = plt.axes(projection='3d')
+            reals = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 0].reshape(
+                (uv.Ntimes, Npairs, uv.Nfreqs))
+            imags = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 1].reshape(
+                (uv.Ntimes, Npairs, uv.Nfreqs))
+            xs = vis_hdu.data['UU'][blt_idxs].reshape(uv.Ntimes, Npairs)
+            xs = np.nanmean(xs, axis=(0,))
+            ys = vis_hdu.data['VV'][blt_idxs].reshape(uv.Ntimes, Npairs)
+            ys = np.nanmean(ys, axis=(0,))
+
+            means = np.nanmean(reals + 1j * imags, axis=(0,2))
+            print(f"{pol} shapes. xs={xs.shape} ys={ys.shape} reals={reals.shape} means={means.shape}")
+
+            zs = np.abs(means)
+            cs = np.angle(means)
+
+            ax.scatter3D(xs, ys, zs, c=cs, cmap='rainbow', s=1)
+            ax.set_xlabel("u", visible=True)
+            ax.set_ylabel("v", visible=True)
+            ax.set_zlabel("Amplitude", visible=True)
+            ax.set_title(f"${obsid} - ${name} - {pol}")
+            plt.savefig(f"${obsid}_${name}_uvplot_{pol}.png", bbox_inches='tight', dpi=dpi)
+    """
+}
 
 // polarimetry composite raster
 process polComp {
@@ -1724,7 +1784,7 @@ workflow uvfits {
         // vis QA
         obsNameUvfits
             .filter { _, name, __ -> !name.toString().startsWith("sub_") }
-            | visQA
+            | (visQA & uvPlot)
 
         // collect visQA results as .tsv
         visQA.out
@@ -1830,6 +1890,10 @@ workflow uvfits {
         // channel of video name and frames to convert
         frame = plotVisQA.out
             .map { _, name, png -> ["visqa_${name}_rms", png] }
+            .mix(uvPlot.out.flatMap {_, name, pngs -> pngs.collect { png ->
+                def pol = png.simpleName.split('_')[-2..-1].join('_')
+                ["visqa_${name}_${pol}", png]
+            }})
             .groupTuple()
 }
 
