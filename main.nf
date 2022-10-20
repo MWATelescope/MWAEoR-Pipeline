@@ -14,6 +14,8 @@ process wsMeta {
     output:
     tuple val(obsid), path("${obsid}_wsmeta.json"), path("${obsid}_files.json")
 
+    maxForks 5
+
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
     // tag to identify job in squeue and nf logs
@@ -35,6 +37,8 @@ process wsMetafits {
     output:
     tuple val(obsid), path("${obsid}.metafits")
 
+    maxForks 5
+
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/raw"
     // tag to identify job in squeue and nf logs
@@ -53,6 +57,8 @@ process wsSkyMap {
     val(obsid)
     output:
     tuple val(obsid), path("${obsid}_skymap.png")
+
+    maxForks 1
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/meta"
@@ -77,6 +83,8 @@ process asvoPrep {
     storeDir "${params.outdir}/${obsid}/prep"
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
+
+    maxForks 10
 
     // allow multiple retries
     maxRetries 5
