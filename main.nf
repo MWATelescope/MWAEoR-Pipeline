@@ -1425,12 +1425,19 @@ workflow prep {
                         manualAntennas.addAll(tileIdxs)
                     }
                 }
+                def newAntennas = ([]) as Set
+                if (!params.noPrepFlags) {
+                    newAntennas.addAll(prepAntennas)
+                }
+                if (!params.noManualFlags) {
+                    newAntennas.addAll(manualAntennas)
+                }
                 [
                     obsid,
                     flagAntennas as int[],
                     prepAntennas as int[],
                     manualAntennas as int[],
-                    (prepAntennas + manualAntennas - flagAntennas) as int[]
+                    (newAntennas - flagAntennas) as int[]
                 ]
             }
         // channel of video name and frames to convert
