@@ -14,7 +14,7 @@ process wsMeta {
     output:
     tuple val(obsid), path("${obsid}_wsmeta.json"), path("${obsid}_files.json")
 
-    maxForks 5
+    maxForks 1
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
@@ -37,7 +37,7 @@ process wsMetafits {
     output:
     tuple val(obsid), path("${obsid}.metafits")
 
-    maxForks 5
+    maxForks 1
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/raw"
