@@ -14,7 +14,7 @@ process wsMeta {
     output:
     tuple val(obsid), path("${obsid}_wsmeta.json"), path("${obsid}_files.json")
 
-    maxForks 1
+    maxForks 5
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
@@ -37,7 +37,7 @@ process wsMetafits {
     output:
     tuple val(obsid), path("${obsid}.metafits")
 
-    maxForks 1
+    maxForks 5
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/raw"
@@ -328,7 +328,7 @@ process hypCalSol {
         export log_name="hyp_di-cal_${obsid}_\${name}.log"
     """ + (params.pullCalSol ? """
         # download if available in accacia
-        rclone copy "${params.bucket_prefix}.soln/\${soln_name}" "\${soln_name}"
+        rclone copy "${params.bucket_prefix}.soln/\${soln_name}" .
         if [ -f "\${soln_name}" ]; then
             touch \${log_name}
             continue
