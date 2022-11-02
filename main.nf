@@ -165,7 +165,7 @@ process asvoPrep {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
-        mv ${uvfits} birli_${obsid}_${prep_suffix}.uvfits
+        mv "${obsid}.uvfits" "${uvfits}"
         exit 0 # success
     fi
     echo "no ready jobs"
@@ -1661,12 +1661,16 @@ workflow cal {
                 def name = soln.getBaseName().split('_')[3..-1].join('_')
                 def (convergedDurationSec, convergedNumerator, convergedDenominator) = ['', '', '']
                 if (!diCalLog.isEmpty()) {
-                    def startTime = logDateFmt.parse((diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/)[0][1])
-                    def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)[0]
+                    def startMatch = diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/
+                    def startTime = null
+                    if (startMatch) {
+                        startTime = logDateFmt.parse(startMatch[0][1])
+                    }
+                    def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)
                     if (startTime && convergedMatch) {
-                        def convergedTime = logDateFmt.parse(convergedMatch[1])
-                        convergedNumerator = convergedMatch[2] as int
-                        convergedDenominator = convergedMatch[3] as int
+                        def convergedTime = logDateFmt.parse(convergedMatch[0][1])
+                        convergedNumerator = convergedMatch[0][2] as int
+                        convergedDenominator = convergedMatch[0][3] as int
                         convergedDurationSec = (convergedTime.time - startTime.time) / 1000
                     }
                 }
