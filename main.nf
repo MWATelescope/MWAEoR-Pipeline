@@ -6,13 +6,15 @@ if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.getParent()}/${obsids_file.getSimpleName()}${params.obsids_suffix}.${obsids_file.getExtension()}")
 }
 def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.obsids_suffix}${params.result_suffix}/"
+// name of calibration scheme
+def cal_prog = "hyp"
 
 // download observation metadata from webservices in json format
 process wsMeta {
     input:
     val(obsid)
     output:
-    tuple val(obsid), path("${obsid}_wsmeta.json"), path("${obsid}_files.json")
+    tuple val(obsid), path(wsmeta), path(wsfiles)
 
     maxForks 1
 
@@ -22,11 +24,13 @@ process wsMeta {
     tag "${obsid}"
 
     script:
+    wsmeta = "${obsid}_wsmeta.json"
+    wsfiles = "${obsid}_files.json"
     """
     #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
-    wget -O ${obsid}_wsmeta.json "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
-    wget -O ${obsid}_files.json "http://ws.mwatelescope.org/metadata/data_ready?obs_id=${obsid}"
+    wget -O "${wsmeta}" "http://ws.mwatelescope.org/metadata/obs?obs_id=${obsid}&extended=1&dict=1"
+    wget -O "${wsfiles}" "http://ws.mwatelescope.org/metadata/data_ready?obs_id=${obsid}"
     """
 }
 
@@ -35,7 +39,7 @@ process wsMetafits {
     input:
     val(obsid)
     output:
-    tuple val(obsid), path("${obsid}.metafits")
+    tuple val(obsid), path(metafits)
 
     maxForks 1
 
@@ -45,10 +49,11 @@ process wsMetafits {
     tag "${obsid}"
 
     script:
+    metafits = "${obsid}.metafits"
     """
     #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
-    wget -O ${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
+    wget -O "${metafits}" "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
     """
 }
 
@@ -56,7 +61,7 @@ process wsSkyMap {
     input:
     val(obsid)
     output:
-    tuple val(obsid), path("${obsid}_skymap.png")
+    tuple val(obsid), path(skymap)
 
     maxForks 1
 
@@ -66,10 +71,11 @@ process wsSkyMap {
     tag "${obsid}"
 
     script:
+    skymap = "${obsid}_skymap.png"
     """
     #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
-    wget -O ${obsid}_skymap.png "http://ws.mwatelescope.org/observation/skymap/?obs_id=${obsid}"
+    wget -O "${skymap}" "http://ws.mwatelescope.org/observation/skymap/?obs_id=${obsid}"
     """
 }
 
@@ -78,7 +84,7 @@ process asvoPrep {
     input:
     val obsid
     output:
-    tuple val(obsid), path("birli_${obsid}_${prep_suffix}.uvfits")
+    tuple val(obsid), path(uvfits)
 
     storeDir "${params.outdir}/${obsid}/prep"
     // tag to identify job in squeue and nf logs
@@ -110,7 +116,7 @@ process asvoPrep {
     }
 
     script:
-    prep_suffix = "${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz"
+    uvfits = "birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits"
     """
     #!/bin/bash -eux
 
@@ -159,7 +165,7 @@ process asvoPrep {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
-        mv ${obsid}.uvfits birli_${obsid}_${prep_suffix}.uvfits
+        mv ${uvfits} birli_${obsid}_${prep_suffix}.uvfits
         exit 0 # success
     fi
     echo "no ready jobs"
@@ -170,9 +176,9 @@ process asvoPrep {
 // QA tasks for flags.
 process flagQA {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits")
+    tuple val(obsid), path(metafits), path(uvfits)
     output:
-    tuple val(obsid), path("${obsid}_occupancy.json")
+    tuple val(obsid), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/prep"
 
@@ -181,6 +187,7 @@ process flagQA {
     label 'python'
 
     script:
+    metrics = "${obsid}_occupancy.json"
     """
     #!/usr/bin/env python
 
@@ -196,9 +203,9 @@ process flagQA {
     num_cchans = 0
     num_unflagged_cchans = 0
     with \
-        open('${obsid}_occupancy.json', 'w') as out, \
-        fits.open("${obsid}.metafits") as meta, \
-        fits.open("${obsid}.uvfits") as uv \
+        open('${metrics}', 'w') as out, \
+        fits.open("${metafits}") as meta, \
+        fits.open("${uvfits}") as uv \
     :
         data = {'obsid': ${obsid}, 'channels': {}}
         td = meta['TILEDATA'].data
@@ -279,11 +286,48 @@ def groovy2bashAssocArray(map, name) {
     "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
 }
 
+// calibrate with mwa reduce
+process rexCalSol {
+    input:
+    tuple val(obsid), val(dical_args), path(metafits), path(uvfits), val(tile_flags)
+    output:
+    tuple val(obsid), path("rex_soln_${obsid}_${name_glob}.bin"), path("rex_di-cal_${obsid}_${name_glob}.log")
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}"
+
+    script:
+    dical_names = dical_args.keySet().collect()
+    para = dical_names.size() > 1
+    name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
+    flag_args = tile_flags.size() > 0 ? "--tile-flags ${tile_flags.join(' ')}" : ""
+    """
+    #!/bin/bash -eux
+    """ + groovy2bashAssocArray(dical_args, "dical_args") + """
+    ${params.casa} -c "importuvfits('${uvfits}', '${obsid}.ms')"
+    // singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home
+    singularity exec ${params.cotter_sif} fixmwams vis.ms ${metafits}
+
+    for name in \${!dical_args[@]}; do
+        export soln_name="rex_soln_${obsid}_\${name}.bin"
+        export log_name="rex_di-cal_${obsid}_\${name}.log"
+        export args=\${dical_args[\$name]}
+        ${params.mwa_reduce} calibrate \${args} \
+            -applybeam -mwa-path /astro/mwaeor/jline/software \
+            -m "${params.sourcelist}" \
+            -i 50 \
+            -a 1e-4 1e-8 \
+            vis.ms \
+            \${soln_name} | tee \${log_name}
+    """
+}
+
 // ensure calibration solutions are present, or calibrate prep with hyperdrive
 // do multiple calibration solutions for each obs, depending on dical_args
 process hypCalSol {
     input:
-    tuple val(obsid), val(dical_args), path("${obsid}.metafits"), path("${obsid}.uvfits"), val(tile_flags)
+    tuple val(obsid), val(dical_args), path(metafits), path(uvfits), val(tile_flags)
     output:
     tuple val(obsid), path("hyp_soln_${obsid}_${name_glob}.fits"), path("hyp_di-cal_${obsid}_${name_glob}.log")
     // todo: model subtract: path("hyp_model_${obsid}_${name_glob}.uvfits")
@@ -339,7 +383,7 @@ process hypCalSol {
         # hyperdrive di-cal backgrounded in a subshell
         (
             ${params.hyperdrive} di-calibrate \${args} \
-                --data "${obsid}.metafits" "${obsid}.uvfits" \
+                --data "${metafits}" "${uvfits}" \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
                 --outputs \$soln_name \
@@ -367,9 +411,9 @@ process hypCalSol {
 // fit polynomial to calibration solution
 process polyFit {
     input:
-    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
+    tuple val(obsid), val(dical_name), path(soln)
     output:
-    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.fits"), path("polyfit_${obsid}_${name}.log")
+    tuple val(obsid), val(name), path(poly_soln), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
@@ -378,12 +422,11 @@ process polyFit {
 
     script:
     name = "poly_${dical_name}"
+    poly_soln = "${cal_prog}_soln_${obsid}_${name}.fits"
+    logs = "polyfit_${obsid}_${name}.log"
     """
     #!/bin/bash -eux
-    run_polyfit.py \
-        hyp_soln_${obsid}_${dical_name}.fits \
-        --outfile "hyp_soln_${obsid}_${name}.fits" \
-        | tee polyfit_${obsid}_${name}.log
+    run_polyfit.py "${soln}" --outfile "${poly_soln}" | tee "${logs}"
     """
 }
 
@@ -391,39 +434,40 @@ process polyFit {
 // - if nouv or noms changes, then this whole thing need to be re-run
 // process hypApply {
 //     input:
-//     tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), \
-//         path("hyp_soln_${obsid}_${cal_name}.fits"), \
+//     tuple val(obsid), path(metafits), path(uvfits), \
+//         path("hyp_soln_${obsid}_${cal_prog}.fits"), \
 //         val(cal_name), val(apply_name), val(apply_args)
 //     output:
-//     tuple val(obsid), val(vis_name), \
-//         path(params.nouv ? ".fakeuv" : "hyp_${obsid}_${vis_name}.uvfits"), \
-//         path(params.noms ? ".fakems" : "hyp_${obsid}_${vis_name}.ms"), \
-//         path("hyp_apply_${vis_name}.log")
+//     tuple val(obsid), val(name), \
+//         path(params.nouv ? ".fakeuv" : "hyp_${obsid}_${name}.uvfits"), \
+//         path(params.noms ? ".fakems" : "hyp_${obsid}_${name}.ms"), \
+//         path("hyp_apply_${name}.log")
 // }
 
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyUV {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("hyp_soln_${obsid}_${cal_name}.fits"), \
-        val(cal_name), val(apply_name), val(apply_args)
+    tuple val(obsid), path(metafits), path(vis), path(soln), val(dical_name), val(apply_name), val(apply_args)
     output:
-    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.uvfits"), path("hyp_apply_${vis_name}.log")
+    tuple val(obsid), val(name), path(cal_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${cal_name}_${apply_name}"
+    tag "${obsid}.${dical_name}_${apply_name}"
     label "cpu"
     label "hyperdrive"
 
     script:
-    vis_name = "${cal_name}_${apply_name}"
+    name = "${dical_name}_${apply_name}"
+    cal_vis = "hyp_${obsid}_${name}.uvfits"
+    logs = "hyp_apply_${name}.log"
     """
     # hyperdrive solutions apply uvfits
     ${params.hyperdrive} solutions-apply ${apply_args} \
-        --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
-        --outputs "hyp_${obsid}_${vis_name}.uvfits" \
-        | tee hyp_apply_${vis_name}.log
+        --data "${metafits}" "${vis}" \
+        --solutions "${soln}" \
+        --outputs "${cal_vis}" \
+        | tee "${logs}"
 
     # print out important info from log
     if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
@@ -435,27 +479,28 @@ process hypApplyUV {
 // ensure calibrated ms are present, or apply calsols to prep uvfits with hyperdrive
 process hypApplyMS {
     input:
-    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}.uvfits"), path("hyp_soln_${obsid}_${cal_name}.fits"), \
-        val(cal_name), val(apply_name), val(apply_args)
+    tuple val(obsid), path(metafits), path(vis), path(soln), val(dical_name), val(apply_name), val(apply_args)
     output:
-    tuple val(obsid), val(vis_name), path("hyp_${obsid}_${vis_name}.ms"), path("hyp_apply_${vis_name}_ms.log")
+    tuple val(obsid), val(name), path(cal_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
-    tag "${obsid}.${cal_name}_${apply_name}"
+    tag "${obsid}.${dical_name}_${apply_name}"
     label "cpu"
     label "hyperdrive"
 
     script:
-    vis_name = "${cal_name}_${apply_name}"
+    name = "${dical_name}_${apply_name}"
+    cal_vis = "hyp_${obsid}_${name}.ms"
+    logs = "hyp_apply_${name}_ms.log"
     """
     # hyperdrive solutions apply ms
     ${params.hyperdrive} solutions-apply ${apply_args} \
-        --data "${obsid}.metafits" "${obsid}.uvfits" \
-        --solutions "hyp_soln_${obsid}_${cal_name}.fits" \
-        --outputs "hyp_${obsid}_${vis_name}.ms" \
-        | tee hyp_apply_${vis_name}_ms.log
+        --data "${metafits}" "${vis}" \
+        --solutions "${soln}" \
+        --outputs "${cal_vis}" \
+        | tee "${logs}"
 
     # print out important info from log
     if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
@@ -466,10 +511,9 @@ process hypApplyMS {
 
 process hypSubUV {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.uvfits")
+    tuple val(obsid), val(name), path(metafits), path(vis)
     output:
-    tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.uvfits"), \
-        path("hyp_vis-sub_${name}_uv.log")
+    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -478,14 +522,16 @@ process hypSubUV {
 
     script:
     sub_name = "sub_${name}"
+    sub_vis = "hyp_${obsid}_${sub_name}.uvfits"
+    logs = "hyp_vis-${sub_name}_uv.log"
     """
     ${params.hyperdrive} vis-sub \
-        --data "${obsid}.metafits" "hyp_${obsid}_${name}.uvfits" \
+        --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
         --invert --num-sources 4000 \
-        --outputs "hyp_${obsid}_${sub_name}.uvfits" \
-        | tee hyp_vis-sub_${name}_uv.log
+        --outputs "${sub_vis}" \
+        | tee "${logs}"
     # TODO: ^ num sources is hardcoded twice, would be better to re-use model from cal
 
     # print out important info from log
@@ -496,10 +542,9 @@ process hypSubUV {
 }
 process hypSubMS {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_${obsid}_${name}.ms")
+    tuple val(obsid), val(name), path(metafits), path(vis)
     output:
-    tuple val(obsid), val(sub_name), path("hyp_${obsid}_${sub_name}.ms"), \
-        path("hyp_vis-sub_${name}_ms.log")
+    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -508,23 +553,25 @@ process hypSubMS {
 
     script:
     sub_name = "sub_${name}"
+    sub_vis = "hyp_${obsid}_${sub_name}.ms"
+    logs = "hyp_vis-${sub_name}_ms.log"
     """
     ${params.hyperdrive} vis-sub \
-        --data "${obsid}.metafits" "hyp_${obsid}_${name}.ms" \
+        --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
         --invert --num-sources 4000 \
-        --outputs "hyp_${obsid}_${sub_name}.ms" \
-        | tee hyp_vis-sub_${name}_ms.log
+        --outputs "${sub_vis}" \
+        | tee "${logs}"
     """
 }
 
 // QA tasks that can be run on preprocessed visibility files.
 process prepVisQA {
     input:
-    tuple val(obsid), path("birli_${obsid}.uvfits")
+    tuple val(obsid), path(uvfits)
     output:
-    tuple val(obsid), path("birli_${obsid}_prepvis_metrics.json")
+    tuple val(obsid), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/vis_qa"
 
@@ -534,18 +581,19 @@ process prepVisQA {
     label 'python'
 
     script:
+    metrics = "birli_${obsid}_prepvis_metrics.json"
     """
     #!/bin/bash -eux
-    run_prepvisqa.py birli_${obsid}.uvfits --out "birli_${obsid}_prepvis_metrics.json"
+    run_prepvisqa.py "${uvfits}" --out "${metrics}"
     """
 }
 
 // QA tasks that can be run on calibrated visibility files.
 process visQA {
     input:
-    tuple val(obsid), val(name), path("hyp_${obsid}_${name}.uvfits")
+    tuple val(obsid), val(name), path(uvfits)
     output:
-    tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics.json")
+    tuple val(obsid), val(name), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
@@ -555,18 +603,19 @@ process visQA {
     label 'python'
 
     script:
+    metrics = "${cal_prog}_${obsid}_${name}_vis_metrics.json"
     """
     #!/bin/bash -eux
-    run_visqa.py *.uvfits --out "hyp_${obsid}_${name}_vis_metrics.json"
+    run_visqa.py "${uvfits}" --out "${metrics}"
     """
 }
 
 // QA tasks that can be run on each calibration parameter set
 process calQA {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("soln.fits")
+    tuple val(obsid), val(name), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}_X.json")
+    tuple val(obsid), val(name), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -575,18 +624,19 @@ process calQA {
     label 'python'
 
     script:
+    metrics = "${cal_prog}_soln_${obsid}_${name}_X.json"
     """
     #!/bin/bash -eux
-    run_calqa.py soln.fits ${obsid}.metafits --pol X --out "hyp_soln_${obsid}_${name}_X.json"
+    run_calqa.py "${soln}" "${metafits}" --pol X --out "${metrics}"
     """
 }
 
 // write info from solutions to json
 process solJson {
     input:
-    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits")
+    tuple val(obsid), val(dical_name), path(soln)
     output:
-    tuple val(obsid), val(dical_name), path("hyp_soln_${obsid}_${dical_name}.fits.json")
+    tuple val(obsid), val(dical_name), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${dical_name}"
@@ -594,6 +644,7 @@ process solJson {
     label 'python'
 
     script:
+    metrics = "${cal_prog}_soln_${obsid}_${dical_name}.fits.json"
     """
     #!/usr/bin/env python
 
@@ -603,8 +654,8 @@ process solJson {
     import numpy as np
 
     with \
-        open('hyp_soln_${obsid}_${dical_name}.fits.json', 'w') as out, \
-        fits.open("hyp_soln_${obsid}_${dical_name}.fits") as hdus \
+        open('${metrics}', 'w') as out, \
+        fits.open("${soln}") as hdus \
     :
         data = OrderedDict()
         # Reads hyperdrive results from fits file into json
@@ -619,9 +670,9 @@ process solJson {
 
 process plotPrepVisQA {
     input:
-    tuple val(obsid), path("birli_${obsid}_prepvis_metrics.json")
+    tuple val(obsid), path(metrics)
     output:
-    tuple val(obsid), path("prepvis_metrics_${obsid}_rms.png")
+    tuple val(obsid), path(img)
 
     storeDir "${params.outdir}/${obsid}/prep"
 
@@ -630,17 +681,18 @@ process plotPrepVisQA {
     label 'python'
 
     script:
+    img = "prepvis_metrics_${obsid}_rms.png"
     """
     #!/bin/bash -eux
-    plot_prepvisqa.py "birli_${obsid}_prepvis_metrics.json" --out "prepvis_metrics_${obsid}_rms.png" --save
+    plot_prepvisqa.py "${metrics}" --out "${img}" --save
     """
 }
 
 process plotSols {
     input:
-    tuple val(obsid), val(name), path("${obsid}.metafits"), path("hyp_soln_${obsid}_${name}.fits")
+    tuple val(obsid), val(name), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(name), path("hyp_soln_${obsid}*_${name}_{phases,amps}.png")
+    tuple val(obsid), val(name), path("${cal_prog}_soln_${obsid}*_${name}_{phases,amps}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -650,13 +702,13 @@ process plotSols {
 
     script:
     """
-    hyperdrive solutions-plot -m "${obsid}.metafits" *.fits
+    hyperdrive solutions-plot -m "${metafits}" ${soln}
     """
 }
 
 process plotCalQA {
     input:
-    tuple val(obsid), val(name), path("hyp_soln_${obsid}_${name}.json")
+    tuple val(obsid), val(name), path(metrics)
     output:
     tuple val(obsid), val(name), path("calmetrics_${obsid}_${name}_{fft,variance,dlyspectrum}.png")
 
@@ -669,15 +721,15 @@ process plotCalQA {
     script:
     """
     #!/bin/bash -eux
-    plot_calqa.py "hyp_soln_${obsid}_${name}.json" --out "calmetrics_${obsid}_${name}.png" --save
+    plot_calqa.py "${metrics}" --out "calmetrics_${obsid}_${name}.png" --save
     """
 }
 
 process plotVisQA {
     input:
-    tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics.json")
+    tuple val(obsid), val(name), path(metrics)
     output:
-    tuple val(obsid), val(name), path("hyp_${obsid}_${name}_vis_metrics_rms.png")
+    tuple val(obsid), val(name), path("${cal_prog}_${obsid}_${name}_vis_metrics_rms.png")
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
@@ -688,7 +740,7 @@ process plotVisQA {
     script:
     """
     #!/bin/bash -eux
-    plot_visqa.py "hyp_${obsid}_${name}_vis_metrics.json" --out "hyp_${obsid}_${name}_vis_metrics_rms.png" --save
+    plot_visqa.py "${metrics}" --out "${cal_prog}_${obsid}_${name}_vis_metrics_rms.png" --save
     """
 }
 
@@ -720,12 +772,17 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}${multiSuffix}${mfsSuffix}-{XX,YY,V}-dirty.fits"), path("wsclean_${name}.log")
+    tuple val(obsid), val(name), \
+        path("wsclean_${cal_prog}_${obsid}_${name}${multiSuffix}${mfsSuffix}-{XX,YY,XY,YX,Q,U,V}-dirty.fits"), \
+        path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
     tag "${obsid}.${name}${multiSuffix}"
     label "wsclean"
+
+    time { 1.hour + 1.hour * multiplier / 10 }
+    memory { 100.GB + 3.GB * multiplier }
 
     script:
     multiplier = vis.collect().size()
@@ -736,10 +793,10 @@ process wscleanDirty {
     ${params.wsclean} \
         ${params.wsclean_args} \
         -weight ${params.img_weight} \
-        -name wsclean_hyp_${obsid}_${name}${multiSuffix} \
+        -name wsclean_${cal_prog}_${obsid}_${name}${multiSuffix} \
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
-        -pol xx,yy,v \
+        -pol xx,yy,xy,yx,q,u,v \
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
         ${vis.collect().join(' ')} | tee wsclean_${name}.log
@@ -749,10 +806,10 @@ process wscleanDirty {
 // power spectrum metrics via chips
 process psMetrics {
     input:
-    tuple val(obsid), val(name), path("hyp_${obsid}_${name}.uvfits")
+    tuple val(obsid), val(name), path("vis.uvfits")
     output:
-    tuple val(obsid), val(name), path("output_metrics_hyp_${obsid}_${name}.dat"), \
-        path("hyp_${obsid}_${name}.log")
+    tuple val(obsid), val(name), path("output_metrics_${cal_prog}_${obsid}_${name}.dat"), \
+        path("${cal_prog}_${obsid}_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}"
 
@@ -763,7 +820,7 @@ process psMetrics {
     script:
     band = 0
     nchan = 384
-    uv_base = "hyp_${obsid}_${name}"
+    uv_base = "vis"
     """
     #!/bin/bash -eux
     export DATADIR="\$PWD"
@@ -789,13 +846,13 @@ process imgQA {
     script:
     """
     #!/bin/bash -eux
-    run_imgqa.py *.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
+    run_imgqa.py *-{XX,YY,V}-dirty.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
     """
 }
 
 process uvPlot {
     input:
-    tuple val(obsid), val(name), path("vis.uvfits")
+    tuple val(obsid), val(name), path(vis)
     output:
     tuple val(obsid), val(name), path("${obsid}_${name}_uvplot_{XX,YY,XY,YX}.png")
 
@@ -818,7 +875,7 @@ process uvPlot {
     from mwa_qa.read_uvfits import UVfits
     import numpy as np
 
-    uv = UVfits('vis.uvfits')
+    uv = UVfits('${vis}')
 
     Npairs = len([(ap[0], ap[1]) for ap in uv.antpairs if ap[0] != ap[1]])
     blt_idxs = np.where(
