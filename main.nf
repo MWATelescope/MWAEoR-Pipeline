@@ -773,27 +773,30 @@ process wscleanDirty {
     tuple val(obsid), val(name), path(vis)
     output:
     tuple val(obsid), val(name), \
-        path("wsclean_${cal_prog}_${obsid}_${name}${multiSuffix}${mfsSuffix}-{XX,YY,XY,YX,Q,U,V}-dirty.fits"), \
+        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,YX,Q,U,V}-dirty.fits"), \
         path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}${multiSuffix}"
+    tag "${obsid}.${name}${mult_suffix}"
     label "wsclean"
 
-    time { 1.hour + 1.hour * multiplier / 10 }
-    memory { 100.GB + 3.GB * multiplier }
+    time { 1.hour + 1.hour * multiplier / 5 }
+    memory { 100.GB + 5.GB * multiplier }
+
+    beforeScript = 'pwd; hostname; df -h .'
 
     script:
     multiplier = vis.collect().size()
-    multiSuffix = multiplier > 1 ? "_x${multiplier}" : ""
-    mfsSuffix = params.img_channels_out > 1 ? "-MFS" : ""
+    mult_suffix = multiplier > 1 ? "_x${multiplier}" : ""
+    mfs_suffix = params.img_channels_out > 1 ? "-MFS" : ""
+    img_name = "${cal_prog}_${obsid}_${name}${mult_suffix}"
     """
     #!/bin/bash -eux
     ${params.wsclean} \
         ${params.wsclean_args} \
         -weight ${params.img_weight} \
-        -name wsclean_${cal_prog}_${obsid}_${name}${multiSuffix} \
+        -name wsclean_${img_name} \
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
         -pol xx,yy,xy,yx,q,u,v \
@@ -931,7 +934,7 @@ process polComp {
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
     output:
     tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png"), \
-        path("${obsid}_${name}_{XX,YY,V}.png")
+        path("${obsid}_${name}_{XX,YY,XY,YX,Q,U,V}.png")
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -956,19 +959,24 @@ process polComp {
     from mpl_toolkits.axes_grid1.axes_rgb import make_rgb_axes
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
     import numpy as np
-    from os.path import basename
+    from os.path import basename, exists
     from glob import glob
 
     plt.style.use(astropy_mpl_style)
 
     header = None
     data = {}
-    for key in ["XX", "YY", "V"]:
-        path = glob(f"*${obsid}*${name}*{key}*.fits")[0]
-        with fits.open(path) as hdus:
+    for pol in ["XX", "YY", "YX", "XY", "I", "Q", "U", "V"]:
+        paths = glob(f"*${obsid}*${name}*{pol}*.fits")
+        if not paths:
+            continue
+        with fits.open(paths[0]) as hdus:
             if not header:
                 header = hdus[0].header
-            data[key] = hdus[0].data[0,0,:,:]
+            data[pol] = hdus[0].data[0,0,:,:]
+
+    if not data:
+        raise Exception("No data found")
 
     wcs = WCS(header)
     img_size = header['NAXIS1'], header['NAXIS2']
@@ -978,25 +986,8 @@ process polComp {
 
     # normalize 0-percentile to 0-1, use same percentile for XX and YY
     i_percentile = np.percentile(np.stack((data["XX"], data["YY"])), 99.5)
-    v_percentile = np.percentile(data["V"], 99.5)
-    norm = {
-        "XX": data["XX"] / i_percentile,
-        "YY": data["YY"] / i_percentile,
-        "V": data["V"] / v_percentile,
-    }
-
-    rgbMap = AsinhMapping(0., stretch=3., Q=5.)
-    rgb = rgbMap.make_rgb_image(norm["XX"], norm["V"], norm["YY"])
-
-    sources = np.array([
-        [0, -27], # eor0
-        [6.4549166666666675, -26.04], # PKS0023_026
-        # [45, -26.04]
-    ])
-
-    # stretch=AsinhStretch(0.05)
-    # stretch=PowerDistStretch(0.05)
-    stretch=SinhStretch()
+    percentiles = {pol: np.percentile(data[pol], 99.5) for pol in data}
+    v_percentile = percentiles['V']
 
     dpi = 100
     with plt.style.context('dark_background'):
@@ -1010,20 +1001,40 @@ process polComp {
         ax.tick_params(axis="y", direction="in", pad=-30, horizontalalighment="left")
         ax.tick_params(axis="x", direction="in", pad=-20, verticalalignment="bottom")
 
-        for key, vmax in [
-            ['XX', i_percentile],
-            ['YY', i_percentile],
-            ['V', v_percentile]
-        ]:
+        for pol in data:
+            vmax = i_percentile if pol in ['XX', 'YY'] else percentiles[pol]
             for coord in ax.coords:
                 coord.set_ticklabel_visible(True)
-            ax.set_title(f"${obsid} - ${name} - {key}", y=0.95, fontdict={'verticalalignment':'top'})
+            ax.set_title(f"${obsid} - ${name} - {pol}", y=0.95, fontdict={'verticalalignment':'top'})
             cmap = LinearSegmentedColormap.from_list(f'blue-bl-red', ['blue', 'black', 'red'], gamma=1)
-            norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
-            ax.imshow(data[key], cmap=cmap, norm=norm)
-            plt.savefig(f"${obsid}_${name}_{key}.png", bbox_inches='tight', dpi=dpi)
-            plt.cla()
+            norm=ImageNormalize(data[pol], vmin=-vmax, vmax=vmax, clip=False)
+            ax.imshow(data[pol], cmap=cmap, norm=norm)
+            plt.savefig(f"${obsid}_${name}_{pol}.png", bbox_inches='tight', dpi=dpi)
+        plt.cla()
         plt.clf()
+
+        if not all (data[k] for k in ["XX", "YY", "V"]):
+            print("could not make polcomp, XX, YY, or V missing")
+            exit(1)
+
+        norm = {
+            "XX": data["XX"] / i_percentile,
+            "YY": data["YY"] / i_percentile,
+            "V": data["V"] / v_percentile,
+        }
+
+        rgbMap = AsinhMapping(0., stretch=3., Q=5.)
+        rgb = rgbMap.make_rgb_image(norm["XX"], norm["V"], norm["YY"])
+
+        sources = np.array([
+            [0, -27], # eor0
+            [6.4549166666666675, -26.04], # PKS0023_026
+            # [45, -26.04]
+        ])
+
+        # stretch=AsinhStretch(0.05)
+        # stretch=PowerDistStretch(0.05)
+        stretch=SinhStretch()
 
         img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
         # axis setup
@@ -1104,6 +1115,29 @@ process polComp {
         #  hist_ax.hist(data["V"].flatten(), bins=1000, color='green', alpha=0.5, histtype='step')
 
         plt.savefig('${obsid}_${name}_polcomp.png', bbox_inches='tight', dpi=dpi)
+    """
+}
+
+process polMontage {
+    input:
+    tuple val(obsid), val(name), path("*")
+    output:
+    tuple val(obsid), val(name), path("${obsid}_${name}_montage.png")
+
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+
+    label "imagemagick"
+
+    script:
+    """
+    montage \
+        -font /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf \
+        *.png \
+        -geometry +0+0 \
+        -background none \
+        ${obsid}_${name}_montage.png
     """
 }
 
@@ -1977,6 +2011,10 @@ workflow img {
             .map { obsid, name, imgs, _ -> [obsid, name, imgs] }
             | (imgQA & polComp)
 
+        polComp.out
+            .map { obsid, name, _, thumbs -> [obsid, name, thumbs] }
+            | polMontage
+
         // collect imgQA results as .tsv
         imgQA.out
             // form row of tsv from json fields we care about
@@ -2021,6 +2059,9 @@ workflow img {
                     ["imgqa_${name}_pol${pol}", polFile]
                 }
             }
+            .mix(polMontage.out.map { _, name, png ->
+                ["imgqa_${name}_polmontage", png]
+            })
             .groupTuple()
 }
 
@@ -2185,17 +2226,25 @@ workflow {
         channel.from([]) | img
     } else {
         // group obsids by groupid and pointing for imaging
-        imgGroups = ws.out.obsGroupPoint.cross(obsNameMS)
-            .map {
-                def (obsid, group, point) = it[0];
-                def (_, name, ms) = it[1];
-                ["g${group}_p${point}", "g_${name}", ms]
+        imgEpochs = obsNameMS
+            .map { obs, name, ms ->
+                def epoch = obs[0..4]
+                ["e${epoch}XXXXXX", "e_${name}", ms]
             }
             .groupTuple(by: [0, 1])
             .map { group, name, mss -> [group, name, mss.unique()] }
             .filter { _, __, mss -> mss.size() > 1 }
-            .view {it}
-        obsNameMS.mix( imgGroups ) | img
+        obsNameMS
+            // .mix( imgGroups )
+            .mix( imgEpochs )
+            | img
+        imgEpochs
+            .map { group, name, mss -> ([group, name, mss.size()]).join("\t") }
+            .collectFile(
+                name: "img_epoch.tsv", newLine: true, sort: true,
+                seed: ([ "EPOCH", "NAME", "MSS" ]).join("\t"),
+                storeDir: "${results_dir}"
+            )
     }
 
     // obsNameMS | aoQuality
