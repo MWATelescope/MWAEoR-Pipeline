@@ -899,6 +899,12 @@ process uvPlot {
                 (uv.Ntimes, Npairs, uv.Nfreqs))
             imags = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 1].reshape(
                 (uv.Ntimes, Npairs, uv.Nfreqs))
+            wghts = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 2].reshape(
+                (uv.Ntimes, Npairs, uv.Nfreqs))
+            flag_idxs = np.where(wghts < 0)[0]
+            reals[flag_idxs] = np.nan
+            imags[flag_idxs] = np.nan
+
             xs = vis_hdu.data['UU'][blt_idxs].reshape(uv.Ntimes, Npairs)
             xs = np.nanmean(xs, axis=(0,))
             ys = vis_hdu.data['VV'][blt_idxs].reshape(uv.Ntimes, Npairs)
