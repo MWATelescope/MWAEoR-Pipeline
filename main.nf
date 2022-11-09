@@ -1013,9 +1013,9 @@ process polComp {
         plt.cla()
         plt.clf()
 
-        if not all (data[k] for k in ["XX", "YY", "V"]):
+        if any((k not in data) for k in ["XX", "YY", "V"]):
             print("could not make polcomp, XX, YY, or V missing")
-            exit(1)
+            exit(0)
 
         norm = {
             "XX": data["XX"] / i_percentile,
@@ -1179,7 +1179,7 @@ process ffmpeg {
     ffmpeg -y -framerate 5 \
         -pattern_type glob -i "??????????.png" \
         -vcodec libx264 \
-        -vf "scale='min(3840,iw)':'min(2160,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+        -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
         -pix_fmt yuv420p \
         "${name}.mp4"
     """
