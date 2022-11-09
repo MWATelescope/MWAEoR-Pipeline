@@ -5,7 +5,7 @@ def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.getParent()}/${obsids_file.getSimpleName()}${params.obsids_suffix}.${obsids_file.getExtension()}")
 }
-def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.result_suffix}"
+def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.obsids_suffix}${params.result_suffix}/"
 // name of calibration scheme
 def cal_prog = "hyp"
 
@@ -773,7 +773,7 @@ process wscleanDirty {
     tuple val(obsid), val(name), path(vis)
     output:
     tuple val(obsid), val(name), \
-        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,YX,Q,U,V}-dirty.fits"), \
+        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,XYi,Q,U,V}-dirty.fits"), \
         path("wsclean_${name}.log")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
@@ -966,7 +966,7 @@ process polComp {
 
     header = None
     data = {}
-    for pol in ["XX", "YY", "YX", "XY", "I", "Q", "U", "V"]:
+    for pol in ["XX", "YY", "XYi", "XY", "I", "Q", "U", "V"]:
         paths = glob(f"*${obsid}*${name}*{pol}*.fits")
         if not paths:
             continue
@@ -1166,7 +1166,7 @@ process ffmpeg {
     output:
         path("${name}.mp4")
 
-    storeDir "${results_dir}${params.img_suffix}${params.cal_suffix}"
+    storeDir "${results_dir}"
     stageInMode "symlink"
 
     tag "${name}"
@@ -1722,7 +1722,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
                 ].join("\t"),
-                storeDir: "${results_dir}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
 
         // channel of solutions for each obsid: tuple(obsid, solutions)
@@ -1770,7 +1770,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
-                storeDir: "${results_dir}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1845,7 +1845,7 @@ workflow cal {
                     "YY RECEIVER CHISQVAR",
                     "FAILURE_REASON"
                 ].join("\t"),
-                storeDir: "${results_dir}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1942,7 +1942,7 @@ workflow uvfits {
                     "R:YY NPOOR_BLS",
                     "R:YY POOR_BLS",
                 ].join("\t"),
-                storeDir: "${results_dir}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1961,7 +1961,7 @@ workflow uvfits {
                 .map { obsid, vis_name, dat, _ -> dat.getText() }
                 .collectFile(
                     name: "ps_metrics.dat",
-                    storeDir: "${results_dir}${params.cal_suffix}"
+                    storeDir: "${results_dir}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -1979,7 +1979,7 @@ workflow uvfits {
                         "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
-                    storeDir: "${results_dir}${params.cal_suffix}"
+                    storeDir: "${results_dir}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -2038,7 +2038,7 @@ workflow img {
                     "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
                     "V:XX RMS RATIO", "V:XX RMS RATIO BOX"
                 ].join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -2243,7 +2243,7 @@ workflow {
             .collectFile(
                 name: "img_epoch.tsv", newLine: true, sort: true,
                 seed: ([ "EPOCH", "NAME", "MSS" ]).join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+                storeDir: "${results_dir}"
             )
     }
 
