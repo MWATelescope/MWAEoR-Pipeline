@@ -1179,7 +1179,7 @@ process ffmpeg {
     ffmpeg -y -framerate 5 \
         -pattern_type glob -i "??????????.png" \
         -vcodec libx264 \
-        -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+        -vf "scale='min(3840,iw)':'min(2160,ih)':force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2" \
         -pix_fmt yuv420p \
         "${name}.mp4"
     """
