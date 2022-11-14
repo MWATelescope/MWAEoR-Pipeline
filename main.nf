@@ -5,7 +5,7 @@ def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.getParent()}/${obsids_file.getSimpleName()}${params.obsids_suffix}.${obsids_file.getExtension()}")
 }
-def results_dir = "${params.outdir}/results${params.img_suffix}${params.cal_suffix}${params.obsids_suffix}${params.result_suffix}/"
+def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.result_suffix}"
 // name of calibration scheme
 def cal_prog = "hyp"
 
@@ -793,6 +793,26 @@ process plotVisQA {
 //     """
 // }
 
+process delaySpec {
+    input:
+    tuple val(obsid), val(name), path(uvfits)
+    output:
+    tuple val(obsid), val(name), path(dlyspec)
+
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+
+    label 'python'
+
+    script:
+    title = "${obsid}_${name}"
+    dlyspec = "dlyspec_${title}.png"
+    vmin = 3e13
+    vmax = 1e15
+    template "jline_delay_spec_from_uvfits.py"
+}
+
 // create dirty iamges of xx,yy,v
 process wscleanDirty {
     input:
@@ -837,8 +857,7 @@ process psMetrics {
     input:
     tuple val(obsid), val(name), path("vis.uvfits")
     output:
-    tuple val(obsid), val(name), path("output_metrics_${cal_prog}_${obsid}_${name}.dat"), \
-        path("${cal_prog}_${obsid}_${name}.log")
+    tuple val(obsid), val(name), path("output_metrics_${cal_prog}_${obsid}_${name}.dat")
 
     storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}"
 
@@ -856,6 +875,7 @@ process psMetrics {
     export OUTPUTDIR="\$PWD/"
     ${params.ps_metrics} "${uv_base}" "${band}" "${nchan}" "${uv_base}" 2>&1 \
         | tee "${uv_base}.log"
+    mv "output_metrics_vis.dat" "output_metrics_${cal_prog}_${obsid}_${name}.dat"
     """
 }
 
@@ -1759,7 +1779,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
 
         // channel of solutions for each obsid: tuple(obsid, solutions)
@@ -1807,7 +1827,7 @@ workflow cal {
                 seed: [
                     "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1882,7 +1902,7 @@ workflow cal {
                     "YY RECEIVER CHISQVAR",
                     "FAILURE_REASON"
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1979,7 +1999,7 @@ workflow uvfits {
                     "R:YY NPOOR_BLS",
                     "R:YY POOR_BLS",
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -1989,16 +2009,20 @@ workflow uvfits {
         visQA.out | plotVisQA
 
         // ps_metrics
-        if (!params.nopsmetrics) {
+        if (params.nopsmetrics) {
+            passVis = obsNameUvfits
+                .map { obsid, name, __ -> [obsid] }
+                .unique()
+        } else {
             obsNameUvfits | psMetrics
 
             // collect psMetrics as a .dat
             psMetrics.out
                 // read the content of each ps_metrics file including the trailing newline
-                .map { obsid, vis_name, dat, _ -> dat.getText() }
+                .map { obsid, vis_name, dat -> dat.getText() }
                 .collectFile(
                     name: "ps_metrics.dat",
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -2006,7 +2030,7 @@ workflow uvfits {
             // collect psMetrics as a .tsv
             psMetrics.out
                 // form each row of tsv
-                .map { obsid, vis_name, dat, _ ->
+                .map { obsid, vis_name, dat ->
                     def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
                     ([obsid, vis_name] + dat_values).join("\t")
                 }
@@ -2016,11 +2040,32 @@ workflow uvfits {
                         "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
+
+            // filter obs with big ps_metrics
+            // TODO: this is a dirty hack until we get proper vis metrics filtering
+            passVis = psMetrics.out
+                // form each row of tsv
+                .map { obsid, vis_name, dat ->
+                    def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
+                    [obsid, vis_name, p_wedge, p_window]
+                }
+                .filter { obsid, vis_name, p_wedge, p_window ->
+                    if (vis_name.contains("sub")) {
+                        return p_wedge.toFloat() < 100 && p_window.toFloat() < 50
+                    } else {
+                        return p_wedge.toFloat() < 500 && p_window.toFloat() < 500
+                    }
+                }
+                .map { obsid, vis_name, p_wedge, p_window -> [obsid, vis_name] }
+                .unique()
         }
+
+        // delayspectrum
+        obsNameUvfits | delaySpec
 
     emit:
         // channel of files to archive, and their buckets
@@ -2032,7 +2077,10 @@ workflow uvfits {
                 def pol = png.simpleName.split('_')[-2..-1].join('_')
                 ["visqa_${name}_${pol}", png]
             }})
+            .mix(delaySpec.out.map { _, name, png -> ["visqa_dlyspec_${name}", png] })
             .groupTuple()
+
+        passVis = passVis
 }
 
 // image measurement sets and QA images
