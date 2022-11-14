@@ -818,17 +818,15 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name), \
-        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,XYi,Q,U,V}-dirty.fits"), \
-        path("wsclean_${name}.log")
+    tuple val(obsid), val(name_mult), \
+        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,XYi,Q,U,V}-dirty.fits")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}${mult_suffix}"
+    tag "${obsid}.${name_mult}"
     label "wsclean"
 
-    time { 1.hour + 1.hour * multiplier / 5 }
-    memory { 100.GB + 5.GB * multiplier }
+    time { 20.minute * (1 + (multiplier * pix_mult * chan_mult)) }
 
     beforeScript = 'pwd; hostname; df -h .'
 
@@ -836,9 +834,17 @@ process wscleanDirty {
     multiplier = vis.collect().size()
     mult_suffix = multiplier > 1 ? "_x${multiplier}" : ""
     mfs_suffix = params.img_channels_out > 1 ? "-MFS" : ""
-    img_name = "${cal_prog}_${obsid}_${name}${mult_suffix}"
+    name_mult = "${name}${mult_suffix}"
+    img_name = "${cal_prog}_${obsid}_${name_mult}"
+
+    // multipliers for determining compute resources
+    pix_mult = (params.img_size / 2048) ** 2
+    chan_mult = (params.img_channels_out + 1) / 25
     """
     #!/bin/bash -eux
+    """ + (params.chgcentre_args ? \
+        vis.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
+        "") + """
     ${params.wsclean} \
         ${params.wsclean_args} \
         -weight ${params.img_weight} \
@@ -2123,7 +2129,7 @@ workflow img {
                     "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
                     "V:XX RMS RATIO", "V:XX RMS RATIO BOX"
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -2132,10 +2138,18 @@ workflow img {
         // channel of files to archive, and their buckets
         archive = wscleanDirty.out
             .transpose()
+            .filter { obsid, _, __, ___ -> (!obsid.startsWith("e")) }
             .map { _, __, img, ___ -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out
+            .map { obs, name, png, pols ->
+                def name_no_mult = name
+                if (name.startsWith("e")) {
+                    name_no_mult = name.split('_')[0..-2].join('_')
+                }
+                [obs, name_no_mult, png, pols]
+            }
             .flatMap { _, name, png, pols ->
                 [
                     ["imgqa_${name}_polcomp", png],
@@ -2145,7 +2159,11 @@ workflow img {
                 }
             }
             .mix(polMontage.out.map { _, name, png ->
-                ["imgqa_${name}_polmontage", png]
+                def name_no_mult = name
+                if (name.startsWith("e")) {
+                    name_no_mult = name.split('_')[0..-2].join('_')
+                }
+                ["imgqa_${name_no_mult}_polmontage", png]
             })
             .groupTuple()
 }
@@ -2311,16 +2329,23 @@ workflow {
         channel.from([]) | img
     } else {
         // group obsids by groupid and pointing for imaging
-        imgEpochs = obsNameMS
+
+        if (params.nouv) {
+            passMS = obsNameMS
+        } else {
+            passMS = uvfits.out.passVis
+                .cross(obsNameMS) { it[0..1] }
+                .map { it[1] }
+        }
+        imgEpochs = passMS
             .map { obs, name, ms ->
-                def epoch = obs[0..4]
-                ["e${epoch}XXXXXX", "e_${name}", ms]
+                def epoch = obs[0..5]
+                ["e${epoch}X", "e_${name}", ms]
             }
             .groupTuple(by: [0, 1])
             .map { group, name, mss -> [group, name, mss.unique()] }
             .filter { _, __, mss -> mss.size() > 1 }
         obsNameMS
-            // .mix( imgGroups )
             .mix( imgEpochs )
             | img
         imgEpochs
@@ -2328,7 +2353,7 @@ workflow {
             .collectFile(
                 name: "img_epoch.tsv", newLine: true, sort: true,
                 seed: ([ "EPOCH", "NAME", "MSS" ]).join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
     }
 
