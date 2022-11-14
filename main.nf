@@ -2042,7 +2042,6 @@ workflow img {
 
         // imgQA for all groups of images
         wscleanDirty.out
-            .map { obsid, name, imgs, _ -> [obsid, name, imgs] }
             | (imgQA & polComp)
 
         polComp.out
@@ -2081,8 +2080,8 @@ workflow img {
         // channel of files to archive, and their buckets
         archive = wscleanDirty.out
             .transpose()
-            .filter { obsid, _, __, ___ -> (!obsid.startsWith("e")) }
-            .map { _, __, img, ___ -> ["img", img]}
+            .filter { obsid, _, __ -> (!obsid.startsWith("e")) }
+            .map { _, __, img -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out
