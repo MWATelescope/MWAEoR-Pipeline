@@ -907,9 +907,9 @@ process imgQA {
 
 process uvPlot {
     input:
-    tuple val(obsid), val(name), path(vis)
+    tuple val(obsid), val(name), path(uvfits)
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}_uvplot_{XX,YY,XY,YX}.png")
+    tuple val(obsid), val(name), path("uvplot_${title}_{XX,YY,XY,YX}.png")
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
@@ -917,67 +917,10 @@ process uvPlot {
 
     label 'python'
 
-    errorStrategy 'terminate'
-
     script:
-    """
-    #!/usr/bin/env python
-
-    from astropy.io import fits
-    from astropy.visualization import astropy_mpl_style
-    from mpl_toolkits import mplot3d
-    import matplotlib.pyplot as plt
-    from mwa_qa.read_uvfits import UVfits
-    import numpy as np
-
-    uv = UVfits('${vis}')
-
-    Npairs = len([(ap[0], ap[1]) for ap in uv.antpairs if ap[0] != ap[1]])
-    blt_idxs = np.where(
-        uv.ant_1_array - uv.ant_2_array != 0,
-    )[0]
-
-    pols = [ "XX", "YY", "XY", "YX" ]
-
-    plt.style.use(astropy_mpl_style)
-
-    dpi = 100
-    fig = plt.figure(dpi=dpi)
-
-    with fits.open(uv.uvfits_path) as hdus:
-        vis_hdu = hdus['PRIMARY']
-
-        for pol_idx, pol in enumerate(pols):
-            plt.clf()
-            ax = plt.axes(projection='3d')
-            reals = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 0].reshape(
-                (uv.Ntimes, Npairs, uv.Nfreqs))
-            imags = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 1].reshape(
-                (uv.Ntimes, Npairs, uv.Nfreqs))
-            wghts = vis_hdu.data.data[blt_idxs, 0, 0, :, pol_idx, 2].reshape(
-                (uv.Ntimes, Npairs, uv.Nfreqs))
-            flag_idxs = np.where(wghts < 0)[0]
-            reals[flag_idxs] = np.nan
-            imags[flag_idxs] = np.nan
-
-            xs = vis_hdu.data['UU'][blt_idxs].reshape(uv.Ntimes, Npairs)
-            xs = np.nanmean(xs, axis=(0,))
-            ys = vis_hdu.data['VV'][blt_idxs].reshape(uv.Ntimes, Npairs)
-            ys = np.nanmean(ys, axis=(0,))
-
-            means = np.nanmean(reals + 1j * imags, axis=(0,2))
-            print(f"{pol} shapes. xs={xs.shape} ys={ys.shape} reals={reals.shape} means={means.shape}")
-
-            zs = np.abs(means)
-            cs = np.angle(means)
-
-            ax.scatter3D(xs, ys, zs, c=cs, cmap='rainbow', s=1)
-            ax.set_xlabel("u", visible=True)
-            ax.set_ylabel("v", visible=True)
-            ax.set_zlabel("Amplitude", visible=True)
-            ax.set_title(f"${obsid} - ${name} - {pol}")
-            plt.savefig(f"${obsid}_${name}_uvplot_{pol}.png", bbox_inches='tight', dpi=dpi)
-    """
+    title = "${obsid}_${name}"
+    uvplot = "uvplot_${title}"
+    template "uvplot_3d.py"
 }
 
 // polarimetry composite raster
