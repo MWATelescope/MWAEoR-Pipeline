@@ -281,6 +281,32 @@ process flagQA {
     """
 }
 
+process ssins {
+    input:
+    tuple val(obsid), path(uvfits)
+    output:
+    tuple val(obsid),
+        path("_SSINS_mask.h5"),
+        path("{autos,cross,flagged}_SSINS*.png"),
+        path("ssins_occ.json"),
+        path(ssins_uvfits)
+        // todo: path("ssins_VDH.png"),
+        // todo: path("match_events.json"),
+
+    storeDir "${params.outdir}/${obsid}/prep"
+
+    tag "${obsid}"
+
+    label "ssins"
+
+    // errorStrategy "terminate"
+
+    script:
+    ssins_uvfits = "ssins_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits"
+    guard_width = params.prep_freq_res_khz * 5e2
+    template ssins.py
+}
+
 def groovy2bashAssocArray(map, name) {
     // size = map.collect { _, v -> v.size() }.max()
     "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
@@ -1515,9 +1541,9 @@ workflow prep {
             | asvoPrep
 
         if (params.noprepqa) {
-            channel.from([]) | prepVisQA
+            channel.from([]) | prepVisQA & ssins
         } else {
-            asvoPrep.out | prepVisQA
+            asvoPrep.out | prepVisQA & ssins
         }
 
         // uncomment this to skip prep and flag QA
@@ -1677,8 +1703,19 @@ workflow prep {
                     ]
                 })
         // channel of video name and frames to convert
-        frame = plotPrepVisQA.out
-            .map { _, png -> ["prepvisqa_rms", png] }
+        frame = plotPrepVisQA.out.map { _, png -> ["prepvisqa_rms", png] }
+            .mix(ssins.out.flatMap { _, __, imgs, ___, ____ ->
+                imgs.collect { img ->
+                    tokens = img.getSimpleName().split('_')
+                    prefix = tokens[0]
+                    suffix = tokens[-1]
+                    if (suffix == "SSINS") {
+                        ["ssins_${prefix}", img]
+                    } else {
+                        ["ssins_${prefix}_${suffix}", img]
+                    }
+                }
+            })
             .groupTuple()
 }
 
