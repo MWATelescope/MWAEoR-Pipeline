@@ -53,7 +53,7 @@ process wsMetafits {
     """
     #!/bin/bash -eux
     ${params.proxy_prelude} # ensure proxy is set if needed
-    wget -O "${metafits}" "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
+    wget -O "${metafits}" "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=${params.metafits_incl_ppds}"
     """
 }
 
