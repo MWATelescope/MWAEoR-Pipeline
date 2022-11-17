@@ -198,8 +198,8 @@ process ssins {
     tuple val(obsid),
         path("_SSINS_mask.h5"),
         path("{autos,cross,flagged}_SSINS*.png"),
-        path("ssins_occ.json"),
-        path(ssins_uvfits)
+        path("ssins_occ.json")
+        // path(ssins_uvfits)
         // todo: path("ssins_VDH.png"),
         // todo: path("match_events.json"),
 
@@ -213,8 +213,9 @@ process ssins {
 
     script:
     ssins_uvfits = "ssins_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits"
-    guard_width = params.prep_freq_res_khz * 5e2
-    template ssins.py
+    guard_width = params.prep_freq_res_khz * 500
+    title = "${obsid}"
+    template "ssins.py"
 }
 
 def groovy2bashAssocArray(map, name) {
@@ -1581,7 +1582,7 @@ workflow prep {
                 })
         // channel of video name and frames to convert
         frame = plotPrepVisQA.out.map { _, png -> ["prepvisqa_rms", png] }
-            .mix(ssins.out.flatMap { _, __, imgs, ___, ____ ->
+            .mix(ssins.out.flatMap { _, __, imgs, ___ ->
                 imgs.collect { img ->
                     tokens = img.getSimpleName().split('_')
                     prefix = tokens[0]

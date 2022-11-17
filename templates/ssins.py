@@ -51,9 +51,9 @@ def main():
         # is being called directly from nextflow
         args = parser.parse_args([
             "--uvfits=${uvfits}",
-            "--output_prefix=''",
             "--plot_title=${title}",
             "--guard_width=${guard_width}"
+            # "--output_prefix=",
         ])
 
 
