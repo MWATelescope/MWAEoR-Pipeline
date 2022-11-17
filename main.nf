@@ -709,28 +709,26 @@ process wscleanDirty {
     input:
     tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name_mult), \
-        path("wsclean_${img_name}${mfs_suffix}-{XX,YY,XY,XYi,Q,U,V}-dirty.fits")
+    tuple val(obsid), val(name), path("wsclean_${img_name}*-dirty.fits")
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name_mult}"
+    tag "${obsid}.${name}"
     label "wsclean"
 
-    time { 20.minute * (1 + (multiplier * pix_mult * chan_mult)) }
+    time { 10.minute * (1 + (multiplier * pix_mult * chan_mult)) }
 
     beforeScript = 'pwd; hostname; df -h .'
 
     script:
     multiplier = vis.collect().size()
     mult_suffix = multiplier > 1 ? "_x${multiplier}" : ""
-    mfs_suffix = params.img_channels_out > 1 ? "-MFS" : ""
-    name_mult = "${name}${mult_suffix}"
-    img_name = "${cal_prog}_${obsid}_${name_mult}"
+    // name_mult = "${name}${mult_suffix}"
+    img_name = "${cal_prog}_${obsid}_${name}"
 
     // multipliers for determining compute resources
-    pix_mult = (params.img_size / 2048) ** 2
-    chan_mult = (params.img_channels_out + 1) / 25
+    pix_mult = 1 + (params.img_size / 1024) ** 2
+    chan_mult = 1 + ("${params.img_channels_out}".split(' ')[0] as Double) / 25
     """
     #!/bin/bash -eux
     """ + (params.chgcentre_args ? \
@@ -742,10 +740,61 @@ process wscleanDirty {
         -name wsclean_${img_name} \
         -size ${params.img_size} ${params.img_size} \
         -scale ${params.img_scale} \
-        -pol xx,yy,xy,yx,q,u,v \
+        -pol ${params.img_pol} \
+        -channels-out ${params.img_channels_out} \
+        -niter 0 \
+        ${vis.collect().join(' ')}
+    """
+}
+
+// idg with dirty images
+// note: I can't get `-reuse-dirty` to work at all :(
+process wscleanDConv {
+    input:
+    tuple val(obsid), val(name), path(vis)
+    output:
+    tuple val(obsid), val(name), \
+        path("wsclean_${img_name}*-dirty.fits"), \
+        path("wsclean_${img_name}*-image.fits")
+        // path("wsclean_${img_name}-sources.txt") <- only works for stokes I
+
+    storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+    label "wsclean"
+
+    time { 10.minute * (1 + (multiplier * pix_mult * chan_mult * iter_mult)) }
+
+    beforeScript = 'pwd; hostname; df -h .'
+
+    script:
+    multiplier = vis.collect().size()
+    img_name = "${cal_prog}_${obsid}_${name}"
+
+    // multipliers for determining compute resources
+    pix_mult = 1 + (params.img_size / 1024) ** 2
+    chan_mult = 1 + (params.img_channels_out.split(' ')[0] as int) / 25
+    iter_mult = 1 + Math.sqrt(params.img_niter as Double) / 100
+
+    """
+    #!/bin/bash -eux
+    """ + (params.chgcentre_args ? \
+        vis.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
+        "") + """
+    ${params.wsclean} \
+        ${params.wsclean_dconv_args} \
+        -name wsclean_${img_name} \
+        -weight ${params.img_weight} \
+        -size ${params.img_size} ${params.img_size} \
+        -scale ${params.img_scale} \
+        -pol ${params.img_pol} \
         -channels-out ${params.img_channels_out} \
         -niter ${params.img_niter} \
-        ${vis.collect().join(' ')} | tee wsclean_${name}.log
+        -mgain ${params.img_major_clean_gain} -gain ${params.img_minor_clean_gain} \
+        -auto-threshold ${params.img_auto_threshold} -auto-mask ${params.img_auto_mask} \
+        -mwa-path ${params.img_mwa_path} \
+        -parallel-deconvolution ${params.img_size / 3 as int + 1} \
+        ${vis.collect().join(' ')}
     """
 }
 
@@ -837,8 +886,7 @@ process polComp {
     input:
     tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png"), \
-        path("${obsid}_${name}_{XX,YY,XY,YX,Q,U,V}.png")
+    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -870,8 +918,8 @@ process polComp {
 
     header = None
     data = {}
-    for pol in ["XX", "YY", "XYi", "XY", "I", "Q", "U", "V"]:
-        paths = glob(f"*${obsid}*${name}*{pol}*.fits")
+    for pol in ["XX", "YY", "V"]:
+        paths = glob(f"*-{pol}-*.fits")
         if not paths:
             continue
         with fits.open(paths[0]) as hdus:
@@ -898,24 +946,6 @@ process polComp {
         img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
 
         subplot_kw = {"projection": wcs, "slices": ('x', 'y', 0, 0)}
-        ax = img_fig.add_subplot(1, 1, 1, **subplot_kw)
-        ax.set_ylabel("", visible=False)
-        ax.set_xlabel("", visible=False)
-        ax.set_label("")
-        ax.tick_params(axis="y", direction="in", pad=-30, horizontalalighment="left")
-        ax.tick_params(axis="x", direction="in", pad=-20, verticalalignment="bottom")
-
-        for pol in data:
-            vmax = i_percentile if pol in ['XX', 'YY'] else percentiles[pol]
-            for coord in ax.coords:
-                coord.set_ticklabel_visible(True)
-            ax.set_title(f"${obsid} - ${name} - {pol}", y=0.95, fontdict={'verticalalignment':'top'})
-            cmap = LinearSegmentedColormap.from_list(f'blue-bl-red', ['blue', 'black', 'red'], gamma=1)
-            norm=ImageNormalize(data[pol], vmin=-vmax, vmax=vmax, clip=False)
-            ax.imshow(data[pol], cmap=cmap, norm=norm)
-            plt.savefig(f"${obsid}_${name}_{pol}.png", bbox_inches='tight', dpi=dpi)
-        plt.cla()
-        plt.clf()
 
         if any((k not in data) for k in ["XX", "YY", "V"]):
             print("could not make polcomp, XX, YY, or V missing")
@@ -1947,14 +1977,88 @@ workflow img {
         obsNameMS
     main:
         // wsclean: make dirty images
-        obsNameMS | wscleanDirty
+        // obsNameMS | wscleanDirty
 
-        // imgQA for all groups of images
-        wscleanDirty.out
-            | (imgQA & polComp)
+        // wsclean: make deconvolved images
+        obsNameMS | wscleanDConv
 
-        polComp.out
-            .map { obsid, name, _, thumbs -> [obsid, name, thumbs] }
+        // predicate to filter for only xx,yy,v pol multi-frequency images
+        // def mfs_pred = { true }
+        // if (params.img_channels_out.split(' ')[0] > 1) {
+        //     mfs_pred = { it -> it.simpleName.contains('-MFS-') }
+        // }
+        // // predicate to filter for only xx,yy,v pols
+        // def pol_pred = { it -> it.simpleName =~ /-(XX|YY|V)-/ }
+
+        // whether imaging is configured for multiple channels
+        def multichannel = (params.img_channels_out.split(' ')[0] as int > 1)
+        // get Channel, polarization and image class (-dirty, -image) from filename
+        def decomposeImg = { img ->
+            def tokens = img.simpleName.split('-')
+            // channel is only present in multi-frequency imaging
+            def chan = -1
+            if (multichannel && tokens[-3] != "MFS") {
+                chan = (tokens[-3] as int)
+            }
+            [chan] + tokens[-2..-1]
+        }
+
+        // channel of (obs, name, img) for combined multi-frequency images
+        // obsNameMfsPolImg = wscleanDConv.out
+        //     .flatMap { obsid, name, dirtys, dconvs ->
+
+        // channel of (obs, name, imgs) for combined multi-frequency images
+        obsNameImgs = wscleanDConv.out
+            .flatMap { obsid, name, dirtys, dconvs -> [
+                [obsid, name, dirtys],
+                [obsid, "${name}_dconv", dconvs],
+            ]}
+        // channel of (obs, name, imgs) for combined multi-frequency images
+        obsNameMfsImgs = obsNameImgs.map { obs, name, imgs ->
+            [obs, name, imgs.findAll { decomposeImg(it)[0] == -1 } ]
+        }
+
+        // // channel of (obs, name, pol, dirty) for multi-frequency dirty images
+        // obsNameMfsPolDirty = wscleanDConv.out
+        //     .flatMap { obsid, name, dirtys, _ ->
+        //         dirtys.map { img -> decomposeImg(img) + [img] }
+        //             .filter { chan, _, __ -> chan == 'MFS' }
+        //             .collect { _, pol, img -> [obsid, name, pol, img] }
+        //     }
+        // // channel of (obs, name, pol, imgs) for multi-frequency deconvolved images
+        // obsNameMfsPolDconv = wscleanDConv.out
+        //     .flatMap { obsid, name, _, dconvs ->
+        //         dconvs.map { img -> decomposeImg(img) + [img] }
+        //             .filter { chan, _, __ -> chan == 'MFS' }
+        //             .collect { _, pol, img -> [obsid, "${name}_dconv", pol, img] }
+        //     }
+
+        // // channel of (obs, name, imgs) only multi-frequency dirty images of XX,YY,V pols
+        // obsNameMfsPxxyyvDirty = obsNameMfsPolDirty
+        //     .filter { _, __, pol, ___ -> pol =~ /XX|YY|V/ }
+        //     .groupTuple
+        //     .map { obsid, name, imgs ->
+        //         [obsid, name, imgs.findAll { pol_pred(it) }]
+        //     }
+        // // channel of (obs, name, imgs) only multi-frequency deconvolved images of XX,YY,V pols
+        // obsNameMfsPxxyyvDconv = obsNameMfsPolDconv
+        //     .map { obsid, name, imgs ->
+        //         [obsid, name, imgs.findAll { pol_pred(it) }]
+        //     }
+
+        // make thumbnails
+        obsNameMfsImgs.transpose()
+            .map { obs, name, img -> [obs, name, decomposeImg(img)[1], img] }
+            | thumbnail
+
+        // imgQA and polComp for all groups of images
+        obsNameMfsImgs | (imgQA & polComp)
+
+        // montage of polarizations
+        thumbnail.out.groupTuple(by: [0, 1])
+            .map { obs, name, _, thumbs ->
+                [obs, name, thumbs]
+            }
             | polMontage
 
         // collect imgQA results as .tsv
@@ -1987,27 +2091,17 @@ workflow img {
 
     emit:
         // channel of files to archive, and their buckets
-        archive = wscleanDirty.out
+        archive = obsNameMfsImgs.filter { obsid, _, __ -> (!obsid.startsWith("e")) }
             .transpose()
-            .filter { obsid, _, __ -> (!obsid.startsWith("e")) }
             .map { _, __, img -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
-        frame = polComp.out
-            .map { obs, name, png, pols ->
+        frame = polComp.out.map { _, name, png ->
                 def name_no_mult = name
                 if (name.startsWith("e")) {
                     name_no_mult = name.split('_')[0..-2].join('_')
                 }
-                [obs, name_no_mult, png, pols]
-            }
-            .flatMap { _, name, png, pols ->
-                [
-                    ["imgqa_${name}_polcomp", png],
-                ] + pols.collect { polFile ->
-                    def pol = polFile.simpleName.split('_')[-1]
-                    ["imgqa_${name}_pol${pol}", polFile]
-                }
+                ["imgqa_${name_no_mult}_polcomp", png]
             }
             .mix(polMontage.out.map { _, name, png ->
                 def name_no_mult = name
@@ -2015,6 +2109,13 @@ workflow img {
                     name_no_mult = name.split('_')[0..-2].join('_')
                 }
                 ["imgqa_${name_no_mult}_polmontage", png]
+            })
+            .mix(thumbnail.out.map { _, name, pol, png ->
+                def name_no_mult = name
+                if (name.startsWith("e")) {
+                    name_no_mult = name.split('_')[0..-2].join('_')
+                }
+                ["imgqa_${name_no_mult}_pol${pol}", png]
             })
             .groupTuple()
 }
