@@ -45,7 +45,7 @@ def main():
         args = parser.parse_args([
             "--fits=${img}",
             "--output_name=${thumb}",
-            "--plot_title=${obsid} - ${name} - ${pol}",
+            "--plot_title=${title}",
         ])
 
     plt.style.use(astropy_mpl_style)

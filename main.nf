@@ -3,7 +3,7 @@ nextflow.enable.dsl=2
 
 def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
-    obsids_file = file("${obsids_file.getParent()}/${obsids_file.getSimpleName()}${params.obsids_suffix}.${obsids_file.getExtension()}")
+    obsids_file = file("${obsids_file.parent}/${obsids_file.baseName}${params.obsids_suffix}.${obsids_file.extension}")
 }
 def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.result_suffix}"
 // name of calibration scheme
@@ -747,7 +747,7 @@ process wscleanDirty {
     """
 }
 
-// idg with dirty images
+// deconvolved images with wsclean
 // note: I can't get `-reuse-dirty` to work at all :(
 process wscleanDConv {
     input:
@@ -825,12 +825,12 @@ process psMetrics {
     """
 }
 
-// takes dirty V and clean XX, YY for a single vis
+// analyse images of V,XX,YY
 process imgQA {
     input:
-    tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
+    tuple val(obsid), val(name), path(fits)
     output:
-    tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
+    tuple val(obsid), val(name), path(json)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -839,9 +839,10 @@ process imgQA {
     label 'python'
 
     script:
+    json = "wsclean_hyp_${obsid}_${name}-MFS.json"
     """
     #!/bin/bash -eux
-    run_imgqa.py *-{XX,YY,V}-dirty.fits --out wsclean_hyp_${obsid}_${name}-MFS.json
+    run_imgqa.py ${fits.join(' ')} --out ${json}
     """
 }
 
@@ -878,15 +879,16 @@ process thumbnail {
 
     script:
     thumb = "${obsid}_${name}_${pol}.png"
+    title = "${obsid} - ${name} - ${pol}"
     template "thumbnail.py"
 }
 
 // polarimetry composite raster
 process polComp {
     input:
-    tuple val(obsid), val(name), path("*") // <- "*-dirty.fits"
+    tuple val(obsid), val(name), path(fits)
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}_polcomp.png")
+    tuple val(obsid), val(name), path(polcomp)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -895,161 +897,9 @@ process polComp {
     label 'python'
 
     script:
-    """
-    #!/usr/bin/env python
-
-    from astropy.io import fits
-    from astropy.visualization import astropy_mpl_style, make_lupton_rgb, simple_norm, SqrtStretch, imshow_norm
-    from astropy.visualization import ImageNormalize, PowerDistStretch, SinhStretch, LogStretch, AsinhStretch
-    from astropy.visualization.lupton_rgb import AsinhMapping, LinearMapping
-    from astropy.visualization.wcsaxes import WCSAxesSubplot, WCSAxes
-    from astropy.wcs import WCS
-    from matplotlib.patches import Rectangle, Circle
-    from matplotlib.colors import LinearSegmentedColormap
-    import matplotlib.pyplot as plt
-    from mpl_toolkits.axes_grid1.axes_divider import AxesDivider, HBoxDivider, make_axes_locatable, Size
-    from mpl_toolkits.axes_grid1.axes_rgb import make_rgb_axes
-    from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-    import numpy as np
-    from os.path import basename, exists
-    from glob import glob
-
-    plt.style.use(astropy_mpl_style)
-
-    header = None
-    data = {}
-    for pol in ["XX", "YY", "V"]:
-        paths = glob(f"*-{pol}-*.fits")
-        if not paths:
-            continue
-        with fits.open(paths[0]) as hdus:
-            if not header:
-                header = hdus[0].header
-            data[pol] = hdus[0].data[0,0,:,:]
-
-    if not data:
-        raise Exception("No data found")
-
-    wcs = WCS(header)
-    img_size = header['NAXIS1'], header['NAXIS2']
-    # TODO: beam stuff
-    # cell_size = header['CDELT1'], header['CDELT2']
-    # beam_shape = header['BMAJ'], header['BMIN'], header['BPA']
-
-    # normalize 0-percentile to 0-1, use same percentile for XX and YY
-    i_percentile = np.percentile(np.stack((data["XX"], data["YY"])), 99.5)
-    percentiles = {pol: np.percentile(data[pol], 99.5) for pol in data}
-    v_percentile = percentiles['V']
-
-    dpi = 100
-    with plt.style.context('dark_background'):
-        img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
-
-        subplot_kw = {"projection": wcs, "slices": ('x', 'y', 0, 0)}
-
-        if any((k not in data) for k in ["XX", "YY", "V"]):
-            print("could not make polcomp, XX, YY, or V missing")
-            exit(0)
-
-        norm = {
-            "XX": data["XX"] / i_percentile,
-            "YY": data["YY"] / i_percentile,
-            "V": data["V"] / v_percentile,
-        }
-
-        rgbMap = AsinhMapping(0., stretch=3., Q=5.)
-        rgb = rgbMap.make_rgb_image(norm["XX"], norm["V"], norm["YY"])
-
-        sources = np.array([
-            [0, -27], # eor0
-            [6.4549166666666675, -26.04], # PKS0023_026
-            # [45, -26.04]
-        ])
-
-        # stretch=AsinhStretch(0.05)
-        # stretch=PowerDistStretch(0.05)
-        stretch=SinhStretch()
-
-        img_fig = plt.figure(dpi=dpi, figsize=(img_size[0]/dpi, 4*img_size[1]/3/dpi))
-        # axis setup
-
-        axd = img_fig.subplot_mosaic(
-            [
-                ["Comp", "XX"],
-                ["Comp", "YY"],
-                ["Comp", "V"],
-            ],
-            subplot_kw=subplot_kw,
-            gridspec_kw={ "width_ratios": [3, 1], },
-        )
-
-        for ax in axd.values():
-            ax.set_ylabel("", visible=False)
-            ax.set_xlabel("", visible=False)
-            ax.set_label("")
-
-        divider = AxesDivider(axd['Comp'])
-        locator = divider.new_locator(nx=0, ny=0)
-        axd['Comp'].set_axes_locator(locator)
-
-        sub_xsize = (1/3) * Size.AxesX(axd['Comp'])
-        cb_xsize = (1/10) * sub_xsize
-        ysize = (1./3) * Size.AxesY(axd['Comp'])
-
-        divider.set_horizontal([Size.AxesX(axd['Comp']), sub_xsize, cb_xsize])
-        divider.set_vertical([ysize, ysize, ysize])
-
-        axd['Comp'].set_axes_locator(divider.new_locator(0, 0, ny1=-1))
-        axd["Comp"].tick_params(axis="y", direction="in", pad=-30, horizontalalighment="left")
-        axd["Comp"].tick_params(axis="x", direction="in", pad=-20, verticalalignment="bottom")
-        axd["Comp"].imshow(rgb)
-        axd["Comp"].set_title("${obsid} - ${name}", y=0.95, fontdict={'verticalalignment':'top'})
-
-        for key, ny, neg_col, pos_col, vmax in [
-            ['XX', 2, 'cyan', 'red', i_percentile],
-            ['YY', 1, 'yellow', 'blue', i_percentile],
-            ['V', 0, 'magenta', 'green', v_percentile]
-        ]:
-            ax = axd[key]
-            ax.set_title(key, y=0.95, fontdict={'verticalalignment':'top'})
-            ax.set_axes_locator(divider.new_locator(nx=1, ny=ny))
-            cmap = LinearSegmentedColormap.from_list(f'{neg_col}-bl-{pos_col}', [neg_col, 'black', pos_col], gamma=1)
-            norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
-            im = ax.imshow(data[key], cmap=cmap, norm=norm)
-            for coord in ax.coords:
-                coord.set_ticklabel_visible(False)
-            cax = inset_axes(
-                ax,
-                width="5%",
-                height="100%",
-                loc='lower left',
-                bbox_to_anchor=(1.0, 0., 1, 1),
-                bbox_transform=ax.transAxes,
-                borderpad=0,
-                axes_kwargs={ "axisbelow": False}
-            )
-            cbar = img_fig.colorbar(im, cax=cax)
-
-        for ax in axd.values():
-            ax.scatter(sources[:,0], sources[:,1], s=100, edgecolor='white', facecolor='none', transform=ax.get_transform('world'))
-            ax.add_patch(Rectangle((0, 0), 100, 100, edgecolor='white', fill=False, zorder=999))
-
-        #  hist_ax = inset_axes(
-        #      axd["Comp"],
-        #      width="100%",
-        #      height="20%",
-        #      loc='lower left',
-        #      bbox_to_anchor=(0., -0.25, 1, 1),
-        #      bbox_transform=axd['Comp'].transAxes,
-        #      borderpad=0,
-        #  )
-
-        #  hist_ax.hist(data["XX"].flatten(), bins=1000, color='red', alpha=0.5, histtype='step')
-        #  hist_ax.hist(data["YY"].flatten(), bins=1000, color='blue', alpha=0.5, histtype='step')
-        #  hist_ax.hist(data["V"].flatten(), bins=1000, color='green', alpha=0.5, histtype='step')
-
-        plt.savefig('${obsid}_${name}_polcomp.png', bbox_inches='tight', dpi=dpi)
-    """
+    polcomp = "${obsid}_${name}_polcomp.png"
+    title = "${obsid} - ${name}"
+    template "polcomp.py"
 }
 
 process polMontage {
@@ -1614,7 +1464,7 @@ workflow prep {
         frame = plotPrepVisQA.out.map { _, png -> ["prepvisqa_rms", png] }
             .mix(ssins.out.flatMap { _, __, imgs, ___ ->
                 imgs.collect { img ->
-                    tokens = img.getSimpleName().split('_')
+                    tokens = img.baseName.split('_')
                     prefix = tokens[0]
                     suffix = tokens[-1]
                     if (suffix == "SSINS") {
@@ -1815,7 +1665,7 @@ workflow cal {
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, name, pngs ->
                 pngs.collect { png ->
-                    def png_name = png.getSimpleName().split('_')[-1]
+                    def png_name = png.baseName.split('_')[-1]
                     ["calqa_${name}_${png_name}", png]
                 }
             }
@@ -1962,7 +1812,7 @@ workflow uvfits {
         frame = plotVisQA.out
             .map { _, name, png -> ["visqa_${name}_rms", png] }
             .mix(uvPlot.out.flatMap {_, name, pngs -> pngs.collect { png ->
-                def pol = png.simpleName.split('_')[-2..-1].join('_')
+                def pol = png.baseName.split('_')[-2..-1].join('_')
                 ["visqa_${name}_${pol}", png]
             }})
             .mix(delaySpec.out.map { _, name, png -> ["visqa_dlyspec_${name}", png] })
@@ -1994,7 +1844,7 @@ workflow img {
         def multichannel = (params.img_channels_out.split(' ')[0] as int > 1)
         // get Channel, polarization and image class (-dirty, -image) from filename
         def decomposeImg = { img ->
-            def tokens = img.simpleName.split('-')
+            def tokens = img.baseName.split('-')
             // channel is only present in multi-frequency imaging
             def chan = -1
             if (multichannel && tokens[-3] != "MFS") {
@@ -2002,10 +1852,6 @@ workflow img {
             }
             [chan] + tokens[-2..-1]
         }
-
-        // channel of (obs, name, img) for combined multi-frequency images
-        // obsNameMfsPolImg = wscleanDConv.out
-        //     .flatMap { obsid, name, dirtys, dconvs ->
 
         // channel of (obs, name, imgs) for combined multi-frequency images
         obsNameImgs = wscleanDConv.out
@@ -2017,34 +1863,6 @@ workflow img {
         obsNameMfsImgs = obsNameImgs.map { obs, name, imgs ->
             [obs, name, imgs.findAll { decomposeImg(it)[0] == -1 } ]
         }
-
-        // // channel of (obs, name, pol, dirty) for multi-frequency dirty images
-        // obsNameMfsPolDirty = wscleanDConv.out
-        //     .flatMap { obsid, name, dirtys, _ ->
-        //         dirtys.map { img -> decomposeImg(img) + [img] }
-        //             .filter { chan, _, __ -> chan == 'MFS' }
-        //             .collect { _, pol, img -> [obsid, name, pol, img] }
-        //     }
-        // // channel of (obs, name, pol, imgs) for multi-frequency deconvolved images
-        // obsNameMfsPolDconv = wscleanDConv.out
-        //     .flatMap { obsid, name, _, dconvs ->
-        //         dconvs.map { img -> decomposeImg(img) + [img] }
-        //             .filter { chan, _, __ -> chan == 'MFS' }
-        //             .collect { _, pol, img -> [obsid, "${name}_dconv", pol, img] }
-        //     }
-
-        // // channel of (obs, name, imgs) only multi-frequency dirty images of XX,YY,V pols
-        // obsNameMfsPxxyyvDirty = obsNameMfsPolDirty
-        //     .filter { _, __, pol, ___ -> pol =~ /XX|YY|V/ }
-        //     .groupTuple
-        //     .map { obsid, name, imgs ->
-        //         [obsid, name, imgs.findAll { pol_pred(it) }]
-        //     }
-        // // channel of (obs, name, imgs) only multi-frequency deconvolved images of XX,YY,V pols
-        // obsNameMfsPxxyyvDconv = obsNameMfsPolDconv
-        //     .map { obsid, name, imgs ->
-        //         [obsid, name, imgs.findAll { pol_pred(it) }]
-        //     }
 
         // make thumbnails
         obsNameMfsImgs.transpose()
