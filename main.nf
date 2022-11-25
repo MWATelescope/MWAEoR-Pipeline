@@ -404,6 +404,7 @@ process hypApplyUV {
         --data "${metafits}" "${vis}" \
         --solutions "${soln}" \
         --outputs "${cal_vis}" \
+        ${params.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
 
     # print out important info from log
@@ -437,6 +438,7 @@ process hypApplyMS {
         --data "${metafits}" "${vis}" \
         --solutions "${soln}" \
         --outputs "${cal_vis}" \
+        ${params.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
 
     # print out important info from log
