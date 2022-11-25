@@ -795,6 +795,7 @@ process wscleanDConv {
         -mgain ${params.img_major_clean_gain} -gain ${params.img_minor_clean_gain} \
         -auto-threshold ${params.img_auto_threshold} -auto-mask ${params.img_auto_mask} \
         -mwa-path ${params.img_mwa_path} \
+        -circular-beam \
         -parallel-deconvolution ${params.img_size / 3 as int + 1} \
         ${vis.collect().join(' ')}
     """
