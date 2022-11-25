@@ -2103,37 +2103,31 @@ workflow {
         // group obsids by groupid and pointing for imaging
 
         if (params.nouv) {
-            passMS = obsNameMS
+            obsNameVisPass = obsNameMS
         } else {
-            passMS = uvfits.out.passVis
+            obsNameVisPass = uvfits.out.passVis
                 .cross(obsNameMS) { it[0..1] }
                 .map { it[1] }
         }
-        imgEpochs = passMS
-            .map { obs, name, ms ->
-                def epoch = obs[0..5]
-                ["e${epoch}X", "e_${name}", ms]
-            }
-            .groupTuple(by: [0, 1])
-            .map { group, name, mss -> [group, name, mss.unique()] }
-            .filter { _, __, mss -> mss.size() > 1 }
-        obsNameMS
-            .mix( imgEpochs )
+        // imgEpochs = obsNameVisPass
+        //     .map { obs, name, vis ->
+        //         def epoch = obs[0..5]
+        //         ["e${epoch}X", "e_${name}", vis]
+        //     }
+        //     .groupTuple(by: [0, 1])
+        //     .map { group, name, viss -> [group, name, viss.unique()] }
+        //     .filter { _, __, viss -> viss.size() > 1 }
+        obsNameVisPass
+            // .mix( imgEpochs )
             | img
-        imgEpochs
-            .map { group, name, mss -> ([group, name, mss.size()]).join("\t") }
-            .collectFile(
-                name: "img_epoch.tsv", newLine: true, sort: true,
-                seed: ([ "EPOCH", "NAME", "MSS" ]).join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-            )
+        // imgEpochs
+        //     .map { group, name, viss -> ([group, name, viss.size()]).join("\t") }
+        //     .collectFile(
+        //         name: "img_epoch.tsv", newLine: true, sort: true,
+        //         seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
+        //         storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+        //     )
     }
-
-    // obsNameMS | aoQuality
-
-    // aoQuality.out.view {it}
-    //     .map { obsid, name,  -> [obsid, name, ms] } | img
-    // }
 
     if (params.archive) {
         if (params.archive_prep) {
