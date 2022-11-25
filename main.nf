@@ -1877,7 +1877,7 @@ workflow img {
         // montage of polarizations
         thumbnail.out.groupTuple(by: [0, 1])
             .map { obs, name, _, thumbs ->
-                [obs, name, thumbs]
+                [obs, name, thumbs.sort()]
             }
             | polMontage
 
@@ -1917,30 +1917,18 @@ workflow img {
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out.map { _, name, png ->
-                def name_no_mult = name
-                if (name.startsWith("e")) {
-                    name_no_mult = name.split('_')[0..-2].join('_')
-                }
-                ["imgqa_${name_no_mult}_polcomp", png]
+                ["imgqa_${name}_polcomp", png]
             }
             .mix(polMontage.out.map { _, name, png ->
-                def name_no_mult = name
-                if (name.startsWith("e")) {
-                    name_no_mult = name.split('_')[0..-2].join('_')
-                }
-                ["imgqa_${name_no_mult}_polmontage", png]
+                ["imgqa_${name}_polmontage", png]
             })
             .mix(thumbnail.out.map { _, name, pol, png ->
-                def name_no_mult = name
-                if (name.startsWith("e")) {
-                    name_no_mult = name.split('_')[0..-2].join('_')
-                }
-                ["imgqa_${name_no_mult}_pol${pol}", png]
+                ["imgqa_${name}_pol${pol}", png]
             })
             .groupTuple()
 }
 
-// separate entrypoint for moving unfiltered preprocessed uvfits from asvo accacia to mwaeor accacia
+// entrypoint: move unfiltered preprocessed uvfits from asvo accacia to mwaeor accacia
 workflow archivePrep {
     obsids = channel.of(obsids_file)
         .splitCsv()
@@ -1954,6 +1942,7 @@ workflow archivePrep {
     }
 }
 
+// default entrypoint: get preprocessed vis from asvo and run qa
 workflow {
     // get obsids from csv
     obsids = channel.of(obsids_file)
@@ -2007,15 +1996,27 @@ workflow {
         // display output path and number of lines
         | view { [it, it.readLines().size()] }
 
+    obsFlags = prep.out.obsFlags
+        .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
+    frame = ws.out.frame
+            .mix(prep.out.frame)
+    qaPrep(prep.out.obsMetaVis, obsFlags, frame)
+}
+
+// given a channel of tuple (obs, metafits, vis), calibrate and analyse
+workflow qaPrep {
+    take:
+        obsMetaVis
+        obsFlags
+        frame
+    main:
     // calibrate each obs that passes flag gate unless nocal is set:
     if (params.nocal) {
         channel.from([]) | cal
     } else {
-        prep.out.obsMetaVis.join(
-            prep.out.obsFlags
-                // .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, []]}
-                .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
-        ) | cal
+            obsMetaVis.join(obsFlags, remainder: true)
+                .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ?: [] ]}
+                | cal
     }
 
     // channel of arguments for hypApply{UV,MS}
@@ -2025,7 +2026,7 @@ workflow {
     if (params.noapply) {
         allApply = channel.from([])
     } else {
-        allApply = prep.out.obsMetaVis
+            allApply = obsMetaVis
             .cross(
                 cal.out.passCal
                     .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
@@ -2053,7 +2054,7 @@ workflow {
             .map { obsid, name, vis, _ -> [obsid, name, vis] }
     } else {
         // get subtracted uvfits vis
-        prep.out.obsMetaVis
+            obsMetaVis
             .cross(hypApplyUV.out)
             .map {
                 def (obsid, metafits, _) = it[0]
@@ -2082,7 +2083,7 @@ workflow {
             .map { obsid, name, vis, _ -> [obsid, name, vis] }
     } else {
         // get subtracted ms vis
-        prep.out.obsMetaVis
+            obsMetaVis
             .cross(hypApplyMS.out)
             .map {
                 def (obsid, metafits, _) = it[0]
@@ -2131,7 +2132,7 @@ workflow {
 
     if (params.archive) {
         if (params.archive_prep) {
-            prep_archive = prep.out.obsMetaVis.map { _, __, vis -> ["prep", vis] }
+                prep_archive = obsMetaVis.map { _, __, vis -> ["prep", vis] }
         } else {
             prep_archive = channel.from([])
         }
@@ -2149,12 +2150,24 @@ workflow {
     }
 
     // make videos
-    ws.out.frame
-        .mix(prep.out.frame)
-        .mix(cal.out.frame)
+        frame.mix(cal.out.frame)
         .mix(uvfits.out.frame)
         .mix(img.out.frame)
         .map { name, frames -> [name, frames.sort()] }
         | ffmpeg
         | view { [it, it.size()] }
 }
+
+// entrypoint: get externally preprocessed uvfits files from csv file and run qa
+workflow extPrep {
+    obsVis = channel.of(file("external${params.external_suffix}.csv"))
+        .splitCsv(header: ["obsid", "vis"])
+        .filter { !it.obsid.startsWith('#') }
+        .map { [it.obsid, file(it.vis)] }
+
+    obsids = obsVis.map { obsid, _ -> obsid }
+    obsids | ws
+
+    qaPrep(ws.out.obsMetafits.join(obsVis), channel.from([]), ws.out.frame)
+}
+
