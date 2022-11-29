@@ -218,6 +218,25 @@ process ssins {
     template "ssins.py"
 }
 
+process autoplot {
+    input:
+    tuple val(obsid), path(metafits), path(uvfits)
+    output:
+    tuple val(obsid), path(autoplot)
+
+    storeDir "${params.outdir}/${obsid}/vis_qa"
+
+    tag "${obsid}"
+
+    label 'python'
+
+    script:
+    autoplot = "${obsid}_autoplot.png"
+    title = "${obsid}"
+    args = "${params.autoplot_args}"
+    template "autoplot.py"
+}
+
 def groovy2bashAssocArray(map, name) {
     // size = map.collect { _, v -> v.size() }.max()
     "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
@@ -777,12 +796,22 @@ process wscleanDConv {
     pix_mult = 1 + (params.img_size / 1024) ** 2
     chan_mult = 1 + (params.img_channels_out.split(' ')[0] as int) / 25
     iter_mult = 1 + Math.sqrt(params.img_niter as Double) / 100
-
+    vis_ms = vis.collect {"${it.baseName}.ms"}
     """
     #!/bin/bash -eux
-    """ + (params.chgcentre_args ? \
-        vis.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
-        "") + """
+    """ + (
+        // convert any uvfits to ms
+        [vis, vis_ms].transpose().collect { uv, ms ->
+            (uv.extension == 'uvfits' ? \
+            """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
+        }.join("\n")
+    ) + """
+    """ + (
+        // run chgcentre if params.chgcentre_args specified.
+        params.chgcentre_args ? \
+            vis_ms.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
+            ""
+    ) + """
     ${params.wsclean} \
         ${params.wsclean_dconv_args} \
         -name wsclean_${img_name} \
@@ -797,7 +826,7 @@ process wscleanDConv {
         -mwa-path ${params.img_mwa_path} \
         -circular-beam \
         -parallel-deconvolution ${params.img_size / 3 as int + 1} \
-        ${vis.collect().join(' ')}
+        ${vis_ms.join(' ')}
     """
 }
 
