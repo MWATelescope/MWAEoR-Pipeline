@@ -2040,152 +2040,153 @@ workflow qaPrep {
         obsFlags
         frame
     main:
-    // calibrate each obs that passes flag gate unless nocal is set:
-    if (params.nocal) {
-        channel.from([]) | cal
-    } else {
+        // calibrate each obs that passes flag gate unless nocal is set:
+        if (params.nocal) {
+            channel.from([]) | cal
+        } else {
             obsMetaVis.join(obsFlags, remainder: true)
                 .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ?: [] ]}
                 | cal
-    }
+        }
 
-    // channel of arguments for hypApply{UV,MS}
-    // - take tuple(obsid, cal_name, soln) from obsNameSoln
-    // - lookup [apply_name, apply_args] from params.apply_args on cal_name
-    // - match with tuple(obsid, metafits, prepUVFits) by obsid
-    if (params.noapply) {
-        allApply = channel.from([])
-    } else {
+        // channel of arguments for hypApply{UV,MS}
+        // - take tuple(obsid, cal_name, soln) from obsNameSoln
+        // - lookup [apply_name, apply_args] from params.apply_args on cal_name
+        // - match with tuple(obsid, metafits, prepUVFits) by obsid
+        if (params.noapply) {
+            allApply = channel.from([])
+        } else {
             allApply = obsMetaVis
-            .cross(
-                cal.out.passCal
-                    .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
-                    .map { obsid, cal_name, soln ->
-                        def (apply_name, apply_args) = params.apply_args[cal_name]
-                        [obsid, soln, cal_name, apply_name, apply_args]
-                    }
-            )
-            .map {
-                def (obsid, metafits, prepUVFits) = it[0]
-                def (_, soln, cal_name, apply_name, apply_args) = it[1]
-                [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
-            }
-    }
-
-    if (params.nouv) {
-        channel.from([]) | hypApplyUV
-    } else {
-        allApply | hypApplyUV
-    }
-
-    // channel of calibrated (or subtracted) uvfits: tuple(obsid, name, uvfits)
-    if (params.nosub) {
-        obsNameUvfits = hypApplyUV.out
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
-    } else {
-        // get subtracted uvfits vis
-            obsMetaVis
-            .cross(hypApplyUV.out)
-            .map {
-                def (obsid, metafits, _) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis]
-            }
-            | hypSubUV
-
-        obsNameUvfits = hypApplyUV.out
-            .mix(hypSubUV.out)
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
-    }
-
-    // QA uvfits visibilities
-    obsNameUvfits | uvfits
-
-    if (params.noms) {
-        channel.from([]) | hypApplyMS
-    } else {
-        allApply | hypApplyMS
-    }
-
-    // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
-    if (params.nosub) {
-        obsNameMS = hypApplyMS.out
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
-    } else {
-        // get subtracted ms vis
-            obsMetaVis
-            .cross(hypApplyMS.out)
-            .map {
-                def (obsid, metafits, _) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis]
-            }
-            | hypSubMS
-
-        obsNameMS = hypApplyMS.out
-            .mix(hypSubMS.out)
-            .map { obsid, name, vis, _ -> [obsid, name, vis] }
-    }
-
-    // image and qa measurementsets unless noimage is set
-    if (params.noimg) {
-        channel.from([]) | img
-    } else {
-        // group obsids by groupid and pointing for imaging
+                .cross(
+                    cal.out.passCal
+                        .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
+                        .map { obsid, cal_name, soln ->
+                            def (apply_name, apply_args) = params.apply_args[cal_name]
+                            [obsid, soln, cal_name, apply_name, apply_args]
+                        }
+                )
+                .map {
+                    def (obsid, metafits, prepUVFits) = it[0]
+                    def (_, soln, cal_name, apply_name, apply_args) = it[1]
+                    [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
+                }
+        }
 
         if (params.nouv) {
-            obsNameVisPass = obsNameMS
+            channel.from([]) | hypApplyUV
         } else {
-            obsNameVisPass = uvfits.out.passVis
-                .cross(obsNameMS) { it[0..1] }
-                .map { it[1] }
+            allApply | hypApplyUV
         }
-        // imgEpochs = obsNameVisPass
-        //     .map { obs, name, vis ->
-        //         def epoch = obs[0..5]
-        //         ["e${epoch}X", "e_${name}", vis]
-        //     }
-        //     .groupTuple(by: [0, 1])
-        //     .map { group, name, viss -> [group, name, viss.unique()] }
-        //     .filter { _, __, viss -> viss.size() > 1 }
-        obsNameVisPass
-            // .mix( imgEpochs )
-            | img
-        // imgEpochs
-        //     .map { group, name, viss -> ([group, name, viss.size()]).join("\t") }
-        //     .collectFile(
-        //         name: "img_epoch.tsv", newLine: true, sort: true,
-        //         seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
-        //         storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-        //     )
-    }
 
-    if (params.archive) {
-        if (params.archive_prep) {
+        // channel of calibrated (or subtracted) uvfits: tuple(obsid, name, uvfits)
+        if (params.nosub) {
+            obsNameUvfits = hypApplyUV.out
+                .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        } else {
+            // get subtracted uvfits vis
+            obsMetaVis
+                .cross(hypApplyUV.out)
+                .map {
+                    def (obsid, metafits, _) = it[0]
+                    def (__, name, vis) = it[1];
+                    [obsid, name, metafits, vis]
+                }
+                | hypSubUV
+
+            obsNameUvfits = hypApplyUV.out
+                .mix(hypSubUV.out)
+                .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        }
+
+        // QA uvfits visibilities
+        obsNameUvfits | uvfits
+
+        if (params.noms) {
+            channel.from([]) | hypApplyMS
+        } else {
+            allApply | hypApplyMS
+        }
+
+        // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
+        if (params.nosub) {
+            obsNameMS = hypApplyMS.out
+                .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        } else {
+            // get subtracted ms vis
+            obsMetaVis
+                .cross(hypApplyMS.out)
+                .map {
+                    def (obsid, metafits, _) = it[0]
+                    def (__, name, vis) = it[1];
+                    [obsid, name, metafits, vis]
+                }
+                | hypSubMS
+
+            obsNameMS = hypApplyMS.out
+                .mix(hypSubMS.out)
+                .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        }
+
+        // image and qa measurementsets unless noimage is set
+        if (params.noimg) {
+            channel.from([]) | img
+        } else {
+            // group obsids by groupid and pointing for imaging
+
+            if (params.nouv) {
+                obsNameVisPass = obsNameMS
+            } else {
+                obsNameVisPass = uvfits.out.passVis
+                    .cross(obsNameMS) { it[0..1] }
+                    .map { it[1] }
+            }
+            // imgEpochs = obsNameVisPass
+            //     .map { obs, name, vis ->
+            //         def epoch = obs[0..5]
+            //         ["e${epoch}X", "e_${name}", vis]
+            //     }
+            //     .groupTuple(by: [0, 1])
+            //     .map { group, name, viss -> [group, name, viss.unique()] }
+            //     .filter { _, __, viss -> viss.size() > 1 }
+            obsNameVisPass
+                .map { obs, name, vis -> [obs, name, [vis]]}
+                // .mix( imgEpochs )
+                | img
+            // imgEpochs
+            //     .map { group, name, viss -> ([group, name, viss.size()]).join("\t") }
+            //     .collectFile(
+            //         name: "img_epoch.tsv", newLine: true, sort: true,
+            //         seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
+            //         storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            //     )
+        }
+
+        if (params.archive) {
+            if (params.archive_prep) {
                 prep_archive = obsMetaVis.map { _, __, vis -> ["prep", vis] }
-        } else {
-            prep_archive = channel.from([])
+            } else {
+                prep_archive = channel.from([])
+            }
+            if (params.archive_uvfits) {
+                vis_archive = obsNameUvfits.map { _, __, vis -> ["uvfits", vis]}
+            } else {
+                vis_archive = channel.from([])
+            }
+            prep_archive.mix(vis_archive)
+                .mix(cal.out.passCal.map { _, __, soln -> ["soln", soln] })
+                .mix(cal.out.archive)
+                .mix(uvfits.out.archive)
+                .mix(img.out.archive)
+                | archive
         }
-        if (params.archive_uvfits) {
-            vis_archive = obsNameUvfits.map { _, __, vis -> ["uvfits", vis]}
-        } else {
-            vis_archive = channel.from([])
-        }
-        prep_archive.mix(vis_archive)
-            .mix(cal.out.passCal.map { _, __, soln -> ["soln", soln] })
-            .mix(cal.out.archive)
-            .mix(uvfits.out.archive)
-            .mix(img.out.archive)
-            | archive
-    }
 
-    // make videos
+        // make videos
         frame.mix(cal.out.frame)
-        .mix(uvfits.out.frame)
-        .mix(img.out.frame)
-        .map { name, frames -> [name, frames.sort()] }
-        | ffmpeg
-        | view { [it, it.size()] }
+            .mix(uvfits.out.frame)
+            .mix(img.out.frame)
+            .map { name, frames -> [name, frames.sort()] }
+            | ffmpeg
+            | view { [it, it.size()] }
 }
 
 // entrypoint: get externally preprocessed uvfits files from csv file and run qa
