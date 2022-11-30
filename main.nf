@@ -774,9 +774,7 @@ process wscleanDConv {
     input:
     tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name), \
-        path("wsclean_${img_name}*-dirty.fits"), \
-        path("wsclean_${img_name}*-image.fits")
+    tuple val(obsid), val(name), path("wsclean_${img_name}*-{dirty,image,uv-real,uv-imag}.fits")
         // path("wsclean_${img_name}-sources.txt") <- only works for stokes I
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
@@ -824,9 +822,47 @@ process wscleanDConv {
         -mgain ${params.img_major_clean_gain} -gain ${params.img_minor_clean_gain} \
         -auto-threshold ${params.img_auto_threshold} -auto-mask ${params.img_auto_mask} \
         -mwa-path ${params.img_mwa_path} \
+        -save-uv \
+        -j \$(nproc) \
+        -parallel-gridding \$(nproc) \
         -circular-beam \
-        -parallel-deconvolution ${params.img_size / 3 as int + 1} \
         ${vis_ms.join(' ')}
+    """
+}
+
+process imgQuantiles {
+    input:
+    tuple val(obsid), val(name), val(meta), path(fits)
+    output:
+    tuple val(obsid), val(name), val(meta), path(csv)
+
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
+
+    tag "${name}.${meta.suffix}"
+
+    label 'python'
+
+    script:
+    csv = "quantile_${name}_${meta.suffix}.csv"
+    """
+    #!/usr/bin/env python
+
+    from astropy.io import fits
+    import numpy as np
+
+    with fits.open("${fits}") as hdus:
+        data = hdus[0].data[0,0,:,:]
+
+    quantiles = [0.90, 0.95, 0.99, 1.0]
+    values = np.quantile(data, quantiles)
+    np.savetxt(
+        "${csv}", np.array([quantiles, values]).T,
+        delimiter=',', fmt='%.6e', header='quantile,value'
+    )
+
+    # TODO: histogram?
+    # import matplotlib.pyplot as plt
+    # plt.style.use([astropy_mpl_style, 'dark_background'])
     """
 }
 
@@ -899,38 +935,41 @@ process uvPlot {
 // make a thumbnail png from a fits image
 process thumbnail {
     input:
-    tuple val(obsid), val(name), val(pol), path(img)
+    tuple val(obsid), val(name), val(meta), path(img)
     output:
-    tuple val(obsid), val(name), val(pol), path(thumb)
+    tuple val(obsid), val(name), val(meta), path(thumb)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}.${pol}"
+    tag "${obsid}.${name}.${meta.suffix}"
 
     label 'python'
 
     script:
-    thumb = "${obsid}_${name}_${pol}.png"
-    title = "${obsid} - ${name} - ${pol}"
+    thumb = "${obsid}_${name}_${meta.suffix}.png"
+    title = "${obsid} ${name} ${meta.suffix}"
     template "thumbnail.py"
 }
 
 // polarimetry composite raster
 process polComp {
     input:
-    tuple val(obsid), val(name), path(fits)
+    tuple val(obsid), val(name), val(prod), val(order), val(metas), path(fits), val(limits)
     output:
-    tuple val(obsid), val(name), path(polcomp)
+    tuple val(obsid), val(name), val(prod), val(orderName), path(polcomp)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${name}.${prod}.${orderName}"
 
     label 'python'
 
     script:
-    polcomp = "${obsid}_${name}_polcomp.png"
-    title = "${obsid} - ${name}"
+    orderName = order.join('')
+    polcomp = "${obsid}_${name}_polcomp_${prod}_${orderName}.png"
+    title = "${obsid} ${name} ${prod} ${orderName}"
+    pols = metas.collect { it.pol }
+    args = "--pol_order ${order.join(' ')} --limits ${limits.join(' ')} "
     template "polcomp.py"
 }
 
@@ -1069,6 +1108,19 @@ jslurp = new JsonSlurper()
 def parseJson(path) {
     // TODO: fix nasty hack to deal with NaNs
     jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"$1"'))
+}
+
+def parseCsv(path, header = true, skipBytes = 0) {
+    allLines = path.readLines()
+    if (!header) {
+        return allLines.collect { it.split(',') }
+    } else {
+        head = allLines[0][skipBytes..-1].split(',')
+        body = allLines[1..-1]
+        return body.collect { row ->
+            [head, row.split(',')].transpose().collectEntries()
+        }
+    }
 }
 
 import java.text.SimpleDateFormat
@@ -1404,9 +1456,9 @@ workflow prep {
 
         // analyse flag occupancy
         if (params.noprepqa) {
-            channel.from([]) | flagQA
+            channel.from([]) | flagQA & autoplot
         } else {
-            obsMetafits.join(asvoPrep.out) | flagQA
+            obsMetafits.join(asvoPrep.out) | flagQA & autoplot
         }
 
         // collect flagQA results
@@ -1506,6 +1558,7 @@ workflow prep {
                     }
                 }
             })
+            .mix(autoplot.out.map {_, img -> ["prepvisqa_autoplot", img]})
             .groupTuple()
 }
 
@@ -1712,7 +1765,8 @@ workflow uvfits {
         // vis QA
         obsNameUvfits
             .filter { _, name, __ -> !name.toString().startsWith("sub_") }
-            | (visQA & uvPlot)
+            | visQA
+        channel.from([]) | uvPlot
 
         // collect visQA results as .tsv
         visQA.out
@@ -1775,8 +1829,8 @@ workflow uvfits {
             | view { [it, it.readLines().size()] }
 
         // TODO: plotVisQA isn't working
-        // channel.from([]) | plotVisQA
-        visQA.out | plotVisQA
+        channel.from([]) | plotVisQA
+        // visQA.out | plotVisQA
 
         // ps_metrics
         if (params.nopsmetrics) {
@@ -1856,59 +1910,135 @@ workflow uvfits {
 // image measurement sets and QA images
 workflow img {
     take:
-        obsNameMS
+        obsNameVis
     main:
-        // wsclean: make dirty images
-        // obsNameMS | wscleanDirty
 
         // wsclean: make deconvolved images
-        obsNameMS | wscleanDConv
-
-        // predicate to filter for only xx,yy,v pol multi-frequency images
-        // def mfs_pred = { true }
-        // if (params.img_channels_out.split(' ')[0] > 1) {
-        //     mfs_pred = { it -> it.simpleName.contains('-MFS-') }
-        // }
-        // // predicate to filter for only xx,yy,v pols
-        // def pol_pred = { it -> it.simpleName =~ /-(XX|YY|V)-/ }
+        obsNameVis | wscleanDConv
 
         // whether imaging is configured for multiple channels
-        def multichannel = (params.img_channels_out.split(' ')[0] as int > 1)
-        // get Channel, polarization and image class (-dirty, -image) from filename
+        def img_channels_out = (params.img_channels_out instanceof String ? \
+            params.img_channels_out.split(' ')[0] :\
+            params.img_channels_out)
+        def multichannel = (img_channels_out as int > 1)
+        // get channel, polarization and image product name (dirty, image, model, uv-{real,imag}) from filename
         def decomposeImg = { img ->
             def tokens = img.baseName.split('-')
+            // this handles the case where product is "uv-{real,imag}"
+            if (tokens[-2] == "uv") {
+                tokens = tokens[0..-3] + ["uv-${tokens[-1]}"]
+            }
             // channel is only present in multi-frequency imaging
             def chan = -1
-            if (multichannel && tokens[-3] != "MFS") {
-                chan = (tokens[-3] as int)
+            def suffix = (["MFS"] + tokens[-2..-1]).join('-')
+            if (multichannel) {
+                if (tokens[-3] != "MFS") {
+                    chan = (tokens[-3] as int)
+                }
+                suffix = tokens[-3..-1].join('-')
             }
-            [chan] + tokens[-2..-1]
+            [chan: chan, pol: tokens[-2], prod: tokens[-1], suffix: suffix]
         }
 
-        // channel of (obs, name, imgs) for combined multi-frequency images
-        obsNameImgs = wscleanDConv.out
-            .flatMap { obsid, name, dirtys, dconvs -> [
-                [obsid, name, dirtys],
-                [obsid, "${name}_dconv", dconvs],
-            ]}
-        // channel of (obs, name, imgs) for combined multi-frequency images
-        obsNameMfsImgs = obsNameImgs.map { obs, name, imgs ->
-            [obs, name, imgs.findAll { decomposeImg(it)[0] == -1 } ]
+        // channel of (obsid, name, meta, img)
+        obsNameMetaImg = wscleanDConv.out.flatMap { obsid, name, imgs ->
+            imgs.collect { img -> [obsid, name, decomposeImg(img), img] }
         }
+
+        // obsNameMetaImg but only MFS images
+        obsNameMetaImgMfs = obsNameMetaImg.filter { _, __, meta, img -> meta.chan == -1 }
+
+        // calculate quantiles (what values are at nth percentile)
+        obsNameMetaImgMfs | imgQuantiles
+
+        // limits are used to set the color scale of each type of image.
+        imgLimits = imgQuantiles.out
+            .map { obsid, name, meta, hist ->
+                limit = parseCsv(hist, true, 2)
+                    // get 90th percentile
+                    .find { row -> Float.compare(row.quantile as float, 0.90) == 0 }
+                [obsid, name, meta, limit.value as float]
+            }
+            .groupTuple(by: 0..1)
+            .map { obsid, name, metas, limits ->
+                suffs = metas.collect { meta -> meta.suffix }
+                suffLimits = [suffs, limits].transpose().collectEntries()
+                [obsid, name, suffLimits]
+            }
+
+        // all the image suffixes we care about
+        allSuffs = [
+            "MFS-XX-dirty", "MFS-XX-image",
+            "MFS-YY-dirty", "MFS-YY-image",
+            // "MFS-XY-dirty", "MFS-XY-image",
+            // "MFS-XYi-dirty", "MFS-XYi-image",
+            // "MFS-I-dirty", "MFS-I-image",
+            // "MFS-Q-dirty", "MFS-Q-image",
+            // "MFS-U-dirty", "MFS-U-image",
+            "MFS-V-dirty", "MFS-V-image",
+        ]
+
+        imgLimits.map { obsid, name, limits ->
+                ([obsid, name] + allSuffs.collect { limits[it]?:'' }).join("\t")
+            }
+            .collectFile(
+                name: "img_limits.tsv", newLine: true, sort: true,
+                seed: (["OBSID", "IMG NAME"] + allSuffs).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}"
+            )
+
+        // value channel containing a map from img suffix to max limit
+        suffLimits = imgLimits.map { _, __, limits ->
+                [allSuffs.collect { limits[it] }]
+            }
+            .collect()
+            .transpose()
+            .collect{ it -> it.max() }
+            .map { allLimits ->
+                [allSuffs, allLimits].transpose().collectEntries()
+            }
+
+        // all pol orders for polComp that we could possibly care about
+        polOrders = [
+            // ["I", "V", "Q"],
+            ["XX", "V", "YY"],
+            // ["XX", "XY", "YY"]
+        ]
+
+        // do a polcomp for each prod in ['dirty', 'image']
+        obsNameMetaImgMfs.filter {_, __, meta, ___ -> meta.prod in ['dirty', 'image']}
+            .map { obsid, name, meta, img ->
+                [obsid, name, meta.prod, meta, img]
+            }
+            .groupTuple(by: 0..2)
+            .combine(suffLimits)
+            .flatMap { obsid, name, prod, metas, imgs, suffLimits ->
+                polLimits = metas.collect { meta -> [meta.pol, suffLimits[meta.suffix]] }
+                    .findAll { pol, limit -> limit != null }
+                    .collectEntries()
+                // this line is so damn salient
+                polOrders.findAll { order -> polLimits.keySet().containsAll(order) }
+                    .collect { order ->
+                        limits = order.collect { pol -> polLimits[pol] }
+                        [obsid, name, prod, order, metas, imgs, limits]
+                    }
+            }
+            | polComp
 
         // make thumbnails
-        obsNameMfsImgs.transpose()
-            .map { obs, name, img -> [obs, name, decomposeImg(img)[1], img] }
-            | thumbnail
+        obsNameMetaImgMfs | thumbnail
 
         // imgQA and polComp for all groups of images
-        obsNameMfsImgs | (imgQA & polComp)
+        // obsNameMfsImgs | (imgQA & polComp)
+        channel.from([]) \
+            | imgQA
 
         // montage of polarizations
-        thumbnail.out.groupTuple(by: [0, 1])
-            .map { obs, name, _, thumbs ->
-                [obs, name, thumbs.sort()]
-            }
+        // thumbnail.out.groupTuple(by: [0, 1])
+        //     .map { obs, name, _, thumbs ->
+        //         [obs, name, thumbs.sort()]
+        //     }
+        channel.from([]) \
             | polMontage
 
         // collect imgQA results as .tsv
@@ -1941,19 +2071,19 @@ workflow img {
 
     emit:
         // channel of files to archive, and their buckets
-        archive = obsNameMfsImgs.filter { obsid, _, __ -> (!obsid.startsWith("e")) }
+        archive = obsNameMetaImgMfs.filter { obsid, _, __, ___ -> (!obsid.startsWith("e")) }
             .transpose()
-            .map { _, __, img -> ["img", img]}
+            .map { _, __, ___, img -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
-        frame = polComp.out.map { _, name, png ->
-                ["imgqa_${name}_polcomp", png]
+        frame = polComp.out.map { _, name, prod, orderName, png ->
+                ["imgqa_${name}_polcomp_${prod}_${orderName}", png]
             }
-            .mix(polMontage.out.map { _, name, png ->
-                ["imgqa_${name}_polmontage", png]
-            })
-            .mix(thumbnail.out.map { _, name, pol, png ->
-                ["imgqa_${name}_pol${pol}", png]
+            // .mix(polMontage.out.map { _, name, prod, orderName, png ->
+            //     ["imgqa_${name}_polmontage_${prod}_${orderName}", png]
+            // })
+            .mix(thumbnail.out.map { _, name, meta, png ->
+                ["imgqa_${name}_${meta.suffix}", png]
             })
             .groupTuple()
 }

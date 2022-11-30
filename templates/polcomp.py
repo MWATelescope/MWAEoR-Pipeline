@@ -17,6 +17,7 @@ from os.path import basename, exists
 from glob import glob
 import argparse
 import sys
+import shlex
 
 
 def get_parser():
@@ -29,10 +30,16 @@ def get_parser():
     )
     plot_group.add_argument('--plot_title', default=None,
         help="Optional title for the plot")
-    plot_group.add_argument('--plot_dpi', default=100)
-    plot_group.add_argument('--norm_percentile', default=99.5)
-    plot_group.add_argument('--xy_percentile', default=None)
-    plot_group.add_argument('--v_percentile', default=None)
+    plot_group.add_argument('--plot_dpi', default=100,
+        help="dots per inch for the plot")
+    plot_group.add_argument('--pol_order', nargs=3, default=["XX", "V", "YY"],
+        help="Which pols are red, green and blue")
+    plot_group.add_argument('--limits', nargs=3, default=[None, None, None],
+        help="normalise each pol to a given brightness limit")
+    plot_group.add_argument('--limit_percentile', default=99.5,
+        help="percentile used to normalize pols if --limits is not specified")
+    plot_group.add_argument('--red_blue_lock', default=True, 
+        help="set red and blue max values to the max of the two")
     
     return parser
 
@@ -47,19 +54,21 @@ def main():
         args = parser.parse_args([
             "--output_name=${polcomp}",
             "--plot_title=${title}",
-            "--xy_percentile=${xy_percentile}",
-            "--v_percentile=${v_percentile}",
-        ] + "${fits.join(' ')}".split(' '))
+        ] + \
+            shlex.split("${args}") + \
+            "${fits.join(' ')}".split(' '))
     
     header = None
     paths = {}
-    for pol in ["XX", "YY", "V"]:
+    for pol in args.pol_order:
+        found = False
         for path in args.fits:
             if f"-{pol}-" in path:
                 paths[pol] = path
+                found = True
                 break
-        if not pol in paths:
-            raise ValueError(f"No {pol} fits file found")
+        if not found:
+            raise ValueError(f"No {pol} fits file found in paths: {', '.join(args.fits)}")
     data = {}
     for pol, path in paths.items():
         with fits.open(path) as hdus:
@@ -67,34 +76,32 @@ def main():
                 header = hdus[0].header
             data[pol] = hdus[0].data[0,0,:,:]
 
-    if not data:
-        raise Exception("No data found")
-
     wcs = WCS(header)
     img_size = header['NAXIS1'], header['NAXIS2']
     # TODO: beam stuff
     # cell_size = header['CDELT1'], header['CDELT2']
     # beam_shape = header['BMAJ'], header['BMIN'], header['BPA']
 
-    # normalize 0-percentile to 0-1, use same percentile for XX and YY
-    
-    xy_percentile = float(args.xy_percentile) if args.xy_percentile else \
-        np.percentile(np.stack((data["XX"], data["YY"])), args.norm_percentile)
-    
-    v_percentile = float(args.v_percentile) if args.v_percentile else \
-        np.percentile(data["V"], args.norm_percentile)
+    limits = {}
+    for pol, norm in zip(args.pol_order, args.limits):
+        if norm is None:
+            limits[pol] = np.percentile(data[pol], args.limit_percentile)
+        else:
+            limits[pol] = float(norm)
+
+    red_pol, green_pol, blue_pol = args.pol_order
+    if args.red_blue_lock:
+        limits[red_pol] = max(limits[red_pol], limits[blue_pol])
+        limits[blue_pol] = limits[red_pol]
 
     subplot_kw = {"projection": wcs, "slices": ('x', 'y', 0, 0)}
 
-    if any((k not in data) for k in ["XX", "YY", "V"]):
-        print("could not make polcomp, XX, YY, or V missing")
-        exit(0)
-
     rgbMap = AsinhMapping(0., stretch=3., Q=5.)
+    # normalize 0-norm to 0-1
     rgb = rgbMap.make_rgb_image(
-        data["XX"] / xy_percentile, 
-        data["V"] / v_percentile, 
-        data["YY"] / xy_percentile
+        data[red_pol] / limits[red_pol], 
+        data[green_pol] / limits[green_pol], 
+        data[blue_pol] / limits[blue_pol]
     )
 
     # sources = np.array([
@@ -113,9 +120,9 @@ def main():
 
     axd = img_fig.subplot_mosaic(
         [
-            ["Comp", "XX"],
-            ["Comp", "YY"],
-            ["Comp", "V"],
+            ["Comp", red_pol],
+            ["Comp", blue_pol],
+            ["Comp", green_pol],
         ],
         subplot_kw=subplot_kw,
         gridspec_kw={ "width_ratios": [3, 1], },
@@ -143,17 +150,19 @@ def main():
     axd["Comp"].imshow(rgb)
     axd["Comp"].set_title(args.plot_title, y=0.95, fontdict={'verticalalignment':'top'})
 
-    for key, ny, neg_col, pos_col, vmax in [
-        ['XX', 2, 'cyan', 'red', xy_percentile],
-        ['YY', 1, 'yellow', 'blue', xy_percentile],
-        ['V', 0, 'magenta', 'green', v_percentile]
+    for pol, ny, neg_col, pos_col in [
+        [red_pol, 2, 'cyan', 'red'],
+        [blue_pol, 1, 'yellow', 'blue'],
+        [green_pol, 0, 'magenta', 'green']
     ]:
-        ax = axd[key]
-        ax.set_title(key, y=0.95, fontdict={'verticalalignment':'top'})
+        ax = axd[pol]
+        ax.set_title(pol, y=0.95, fontdict={'verticalalignment':'top'})
         ax.set_axes_locator(divider.new_locator(nx=1, ny=ny))
-        cmap = LinearSegmentedColormap.from_list(f'{neg_col}-bl-{pos_col}', [neg_col, 'black', pos_col], gamma=1)
-        norm=ImageNormalize(data[key], vmin=-vmax, vmax=vmax, clip=False)
-        im = ax.imshow(data[key], cmap=cmap, norm=norm)
+        cmap = LinearSegmentedColormap.from_list(
+            f'{neg_col}-bl-{pos_col}', [neg_col, 'black', pos_col], gamma=1
+        )
+        norm=ImageNormalize(data[pol], vmin=-limits[pol], vmax=limits[pol], clip=False)
+        im = ax.imshow(data[pol], cmap=cmap, norm=norm)
         for coord in ax.coords:
             coord.set_ticklabel_visible(False)
         cax = inset_axes(
