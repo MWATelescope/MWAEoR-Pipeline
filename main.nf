@@ -823,9 +823,11 @@ process imgQuantiles {
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
-    tag "${name}.${meta.suffix}"
+    tag "${obsid}.${name}.${meta.suffix}"
 
     label 'python'
+
+    time 5.minute
 
     script:
     csv = "quantile_${name}_${meta.suffix}.csv"
