@@ -1222,7 +1222,7 @@ workflow ws {
                 def fail_reasons = []
 
                 def fileStats = parseJson(filesJson)
-                if (!params.filter_pointings.contains(pointing)) {
+                if (params.filter_pointings.size > 0 && !params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
                 if (dataquality > params.filter_quality) {
@@ -1234,6 +1234,12 @@ workflow ws {
                 if (dead_dipole_frac > params.filter_dead_dipole_frac) {
                     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
                 }
+                // if (ra_phase_center != 0.0) {
+                //     fail_reasons += ["ra_phase_center=${ra_phase_center}"]
+                // }
+                // if (dec_phase_center != -27.0) {
+                //     fail_reasons += ["dec_phase_center=${dec_phase_center}"]
+                // }
                 def summary = [
                     fail_reasons: fail_reasons,
                     // obs metadata
