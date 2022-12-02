@@ -777,7 +777,7 @@ process wscleanDConv {
 
     // multipliers for determining compute resources
     pix_mult = 1 + (params.img_size / 1024) ** 2
-    chan_mult = 1 + (params.img_channels_out.split(' ')[0] as int) / 25
+    chan_mult = 1 + ("${params.img_channels_out}".split(' ')[0] as int) / 25
     iter_mult = 1 + Math.sqrt(params.img_niter as Double) / 100
     vis_ms = vis.collect {"${it.baseName}.ms"}
     """
