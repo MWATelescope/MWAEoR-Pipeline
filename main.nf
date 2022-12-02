@@ -425,11 +425,6 @@ process hypApplyUV {
         --outputs "${cal_vis}" \
         ${params.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
-
-    # print out important info from log
-    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
-        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
-    fi
     """
 }
 
@@ -459,11 +454,6 @@ process hypApplyMS {
         --outputs "${cal_vis}" \
         ${params.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
-
-    # print out important info from log
-    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
-        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
-    fi
     """
 }
 
@@ -487,15 +477,10 @@ process hypSubUV {
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
-        --invert --num-sources 4000 \
+        --invert --num-sources ${params.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
     # TODO: ^ num sources is hardcoded twice, would be better to re-use model from cal
-
-    # print out important info from log
-    if [ \$(ls *.log 2> /dev/null | wc -l) -gt 0 ]; then
-        grep -iE "err|warn|hyperdrive|chanblocks|reading|writing|flagged" *.log
-    fi
     """
 }
 process hypSubMS {
@@ -518,7 +503,7 @@ process hypSubMS {
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${params.sourcelist}" \
-        --invert --num-sources 4000 \
+        --invert --num-sources ${params.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
     """
