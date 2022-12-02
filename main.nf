@@ -948,6 +948,7 @@ process thumbnail {
     script:
     thumb = "${obsid}_${name}_${meta.suffix}.png"
     title = "${obsid} ${name} ${meta.suffix}"
+    args = "${params.thumbnail_args}"
     template "thumbnail.py"
 }
 
