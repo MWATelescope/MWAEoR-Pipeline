@@ -344,7 +344,7 @@ process hypCalSol {
                 --source-list "${params.sourcelist}" \
                 --outputs \$soln_name \
                 ${flag_args} \
-                > \$log_name
+                | tee \$log_name
         ) &
         # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
         # increment the target device mod num_gpus
