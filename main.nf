@@ -1941,9 +1941,17 @@ workflow img {
 
         // obsNameMetaImg but only MFS images
         obsNameMetaImgMfs = obsNameMetaImg.filter { _, __, meta, img -> meta.chan == -1 }
+        // obsNameMetaImg but only uv images
+        if (params.thumbnail_uvs) {
+            obsNameMetaUV = obsNameMetaImg.filter { _, __, meta, img -> meta.prod ==~ /uv-.*/ }
+        } else {
+            obsNameMetaUV = channel.from([])
+        }
 
         // calculate quantiles (what values are at nth percentile)
-        obsNameMetaImgMfs | imgQuantiles
+        obsNameMetaImgMfs \
+            // .mix(obsNameMetaUV) \
+            | imgQuantiles
 
         // limits are used to set the color scale of each type of image.
         imgLimits = imgQuantiles.out

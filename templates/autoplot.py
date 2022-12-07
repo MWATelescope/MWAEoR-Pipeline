@@ -32,50 +32,65 @@ singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singula
     --output_name="/astro/mwaeor/dev/MWAEoR-Pipeline/${obsid}_autoplot.png" \
     --plot_title="${obsid}" \
     --transparent \
-    --log_scale \
     --highlight_ants 14 24 25
 ```
 """
 
+
 def get_parser():
-    parser = ArgumentParser(description="Plot autocorrelations in 3D for each pol.")
+    parser = ArgumentParser(
+        description="Plot autocorrelations in 3D for each pol.")
 
     parser.add_argument('--uvfits', help='uvfits file to plot')
-    parser.add_argument('--metafits', help='metafits file for antenna metadata')
+    parser.add_argument(
+        '--metafits', help='metafits file for antenna metadata')
     plot_group = parser.add_argument_group('PLOTTING OPTIONS')
     plot_group.add_argument('--output_name', default=False,
-        help='Name for output plot file, defaults to using the input uvfits name')
+                            help='Name for output plot file, defaults to using the input uvfits name')
     plot_group.add_argument('--plot_title', default=None,
-        help="Optional title for the plot")
+                            help="Optional title for the plot")
     plot_group.add_argument('--plot_dpi', default=100,
-        help="dots per inch for the plot")
+                            help="dots per inch for the plot")
     plot_group.add_argument('--plot_style', default="lines",
-        choices=["lines", "imshow"])
+                            choices=["lines", "imshow"])
     plot_group.add_argument('--log_scale', default=False, action="store_true")
-    plot_group.add_argument('--transparent', default=False, action="store_true")
+    plot_group.add_argument(
+        '--transparent', default=False, action="store_true")
 
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
     flag_group.add_argument('--flag_style', default="metafits",
-        choices=["metafits", "weights"])
+                            choices=["metafits", "weights"])
     flag_group.add_argument('--edge_width', default=80,
-        help="width of the edge channels to be flagged if metafits style [kHz]")
+                            help="width of the edge channels to be flagged if metafits style [kHz]")
     flag_group.add_argument('--highlight_ants', default=[], nargs='+',
-        help="only plot tiles at these indices")
+                            help="only plot tiles at these indices")
 
     return parser
+
+
+def split_strip_filter(str):
+    return list(filter(None, map(lambda tok: tok.strip(), str.split(','))))
+
 
 def autoplot(args):
     with fits.open(args.metafits) as metafits:
         metafits.info()
+
+        mpr = metafits['PRIMARY']
+        sky_chans = [*map(int, split_strip_filter(mpr.header['CHANNELS']))]
+        num_cchans = len(sky_chans)
+        print(f"sky_chans={sky_chans} ({num_cchans})")
+        int_time = mpr.header['INTTIME'] * u.s
+        quack_time = mpr.header['QUACKTIM'] * u.s
+        freq_res = mpr.header['FINECHAN'] * u.kHz
+        bandwidth = mpr.header['BANDWDTH'] * u.MHz
+
         mtd = metafits['TILEDATA']
         metafits_ants = pd.DataFrame(dict([
             (col, list(mtd.data.field(col)[:]))
             for col in ['Antenna', 'Rx', 'Slot', 'Pol', 'TileName', 'Flag']
         ])).drop_duplicates('Antenna').sort_values('Antenna')
-        mpr = metafits['PRIMARY']
-        int_time = mpr.header['INTTIME'] * u.s
-        quack_time = mpr.header['QUACKTIM'] * u.s
-        freq_res = mpr.header['FINECHAN'] * u.kHz
+
     print(metafits_ants, file=sys.stderr)
 
     uv = UVfits(args.uvfits)
@@ -85,7 +100,7 @@ def autoplot(args):
     blt_idxs = np.where(
         uv.ant_1_array - uv.ant_2_array == 0,
     )[0]
-    
+
     freqs = (uv.freq_array * u.Hz).to(u.MHz)
 
     with fits.open(uv.uvfits_path) as hdus:
@@ -104,18 +119,21 @@ def autoplot(args):
 
     if args.flag_style == "metafits":
         # flag quack time, edge channels, center channels
-        quack_scans = ceil((quack_time / int_time).value)
-        edge_chans = ceil((args.edge_width / freq_res).value)
+        quack_scans = ceil((quack_time / int_time).decompose().value)
+        edge_chans = ceil(
+            ((args.edge_width * u.kHz) / freq_res).decompose().value)
         print(f"quack_scans={quack_scans}, edge_chans={edge_chans}")
         autos2[:quack_scans, :, :, :] = np.nan
 
-        tile_idxs = np.where(metafits_ants['Flag'].values == 1)[0]
-        autos2[:, tile_idxs, :, :] = np.nan
-        
-        coarse_chans = 24
-        fine_chans_per_coarse = ceil(uv.Nfreqs/coarse_chans)
-        center_fine_chan = ceil(fine_chans_per_coarse/2)
-        chan_flags = np.full((coarse_chans, fine_chans_per_coarse), True)
+        flagged_tile_idxs = np.where(metafits_ants['Flag'].values == 1)[0]
+        autos2[:, flagged_tile_idxs, :, :] = np.nan
+
+        cchan_bandwidth = bandwidth / num_cchans
+        # number of fine chans per coarse
+        num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
+        num_cchans = uv.Nfreqs // num_fchans
+        center_fine_chan = ceil(num_fchans/2)
+        chan_flags = np.full((num_cchans, num_fchans), True)
         chan_flags[:, edge_chans:-edge_chans] = False
         chan_flags[:, center_fine_chan] = True
         chan_idxs = np.where(chan_flags.flatten())[0]
@@ -142,9 +160,10 @@ def autoplot(args):
         pol_std = np.nanstd(rms_ant)
         pol_low_cutoff = max(0, pol_median - 3 * pol_std)
         pol_high_cutoff = pol_median + 3 * pol_std
-        print(f"{pol} median={pol_median}, std={pol_std}, high={pol_high_cutoff}, low={pol_low_cutoff}")
+        print(
+            f"{pol} median={pol_median}, std={pol_std}, high={pol_high_cutoff}, low={pol_low_cutoff}")
 
-        norm=simple_norm(
+        norm = simple_norm(
             rms_ant_freq,
             # 'log' if args.log_scale else 'linear',
             min_cut=pol_low_cutoff,
@@ -157,16 +176,19 @@ def autoplot(args):
             cmap = copy.copy(plt.get_cmap('viridis'))
             # cmap.set_over('fuchsia')
             # cmap.set_under('red')
-            ax.imshow(rms_ant_freq, interpolation='none', norm=norm, cmap=cmap, aspect=6)
+            ax.imshow(rms_ant_freq, interpolation='none',
+                      norm=norm, cmap=cmap, aspect=6)
             ax.set_ylabel("Antenna")
         elif args.plot_style == "lines":
             for line in rms_ant_freq:
-                ax.plot(freqs, np.log(line) if args.log_scale else line, alpha=(0.2 if args.highlight_ants else 0.5))
+                ax.plot(freqs, np.log(line) if args.log_scale else line,
+                        alpha=(0.2 if args.highlight_ants else 0.5))
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
                 for line in rms_ant_freq[highlight_idxs, :]:
-                    ax.plot(freqs, np.log(line) if args.log_scale else line, alpha=1, linewidth=4, color='yellow')
-                
+                    ax.plot(freqs, np.log(line) if args.log_scale else line,
+                            alpha=1, linewidth=4, color='yellow')
+
             ax.set_ylabel("log(RMS)" if args.log_scale else "RMS")
         ax.grid(None)
         # ax.set_xticks([])
@@ -182,7 +204,9 @@ def autoplot(args):
     # plt.tight_layout()
     plt.suptitle(args.plot_title)
     print(f"title={args.plot_title}")
-    plt.savefig(args.output_name, bbox_inches='tight', dpi=args.plot_dpi, transparent=args.transparent)
+    plt.savefig(args.output_name, bbox_inches='tight',
+                dpi=args.plot_dpi, transparent=args.transparent)
+
 
 def main():
 
@@ -197,10 +221,10 @@ def main():
             "--metafits=${metafits}",
             "--output_name=${autoplot}",
             "--plot_title=${title}",
-        ] + \
-            shlex.split("${args}"))
+        ] + shlex.split("${args}"))
 
     autoplot(args)
+
 
 if __name__ == '__main__':
     main()
