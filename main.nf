@@ -1377,16 +1377,16 @@ workflow ws {
                 def fail_reasons = []
 
                 def fileStats = parseJson(filesJson)
-                if (params.filter_pointings.size > 0 && !params.filter_pointings.contains(pointing)) {
+                if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
-                if (dataquality > params.filter_quality) {
+                if (params.filter_quality && dataquality > params.filter_quality) {
                     fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
                 }
-                if (bad_tile_frac > params.filter_bad_tile_frac) {
+                if (params.filter_bad_tile_frac && bad_tile_frac > params.filter_bad_tile_frac) {
                     fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
                 }
-                if (dead_dipole_frac > params.filter_dead_dipole_frac) {
+                if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
                     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
                 }
                 // if (ra_phase_center != 0.0) {
@@ -1437,16 +1437,16 @@ workflow ws {
                     num_data_files: fileStats.num_data_files,
                     num_data_files_archived: fileStats.num_data_files_archived,
                 ]
-                if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
+                [obsid, summary]
             }
 
-                if (params.filter_quality && dataquality > params.filter_quality) {
+        // display wsSummary
         wsSummary.map { obsid, summary ->
                 [
-                if (params.filter_bad_tile_frac && bad_tile_frac > params.filter_bad_tile_frac) {
+                    obsid,
                     summary.fail_reasons.join('|'),
 
-                if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
+                    summary.groupid,
                     summary.ra_pointing,
                     summary.dec_pointing,
                     summary.ra_phase_center,
@@ -1655,7 +1655,7 @@ workflow prep {
             // filter
             flagQA.out
                 .filter { obsid, json ->
-                    jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
+                    params.flag_occupancy_threshold && jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
                 }
                 .map { obsid, _ -> obsid }
                 .join(obsMetafits)
@@ -2027,13 +2027,13 @@ workflow uvfits {
                     def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
                     [obsid, vis_name, p_wedge, p_window]
                 }
-                .filter { obsid, vis_name, p_wedge, p_window ->
-                    if (vis_name.contains("sub")) {
-                        return p_wedge.toFloat() < 100 && p_window.toFloat() < 50
-                    } else {
-                        return p_wedge.toFloat() < 500 && p_window.toFloat() < 500
-                    }
-                }
+                // .filter { obsid, vis_name, p_wedge, p_window ->
+                //     if (vis_name.contains("sub")) {
+                //         return p_wedge.toFloat() < 100 && p_window.toFloat() < 50
+                //     } else {
+                //         return p_wedge.toFloat() < 500 && p_window.toFloat() < 500
+                //     }
+                // }
                 .map { obsid, vis_name, p_wedge, p_window -> [obsid, vis_name] }
                 .unique()
         }
@@ -2135,12 +2135,12 @@ workflow img {
             imgLimits
                 .map { obsid, name, limits ->
                     ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")
-            }
-            .collectFile(
-                name: "img_limits.tsv", newLine: true, sort: true,
+                }
+                .collectFile(
+                    name: "img_limits.tsv", newLine: true, sort: true,
                     seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
                     storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-            )
+                )
         }
 
         // value channel containing a map from img suffix to max limit
