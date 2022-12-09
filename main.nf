@@ -1910,10 +1910,10 @@ workflow cal {
 // process uvfits visibilities
 workflow uvfits {
     take:
-        obsNameUvfits
+        obsNameVis
     main:
         // vis QA
-        obsNameUvfits
+        obsNameVis
             .filter { _, name, __ -> !name.toString().startsWith("sub_") }
             | visQA
         channel.from([]) | uvPlot
@@ -1984,11 +1984,11 @@ workflow uvfits {
 
         // ps_metrics
         if (params.nopsmetrics) {
-            passVis = obsNameUvfits
+            passVis = obsNameVis
                 .map { obsid, name, __ -> [obsid] }
                 .unique()
         } else {
-            obsNameUvfits | psMetrics
+            obsNameVis | psMetrics
 
             // collect psMetrics as a .dat
             psMetrics.out
@@ -2039,7 +2039,7 @@ workflow uvfits {
         }
 
         // delayspectrum
-        obsNameUvfits | delaySpec
+        obsNameVis | delaySpec
 
     emit:
         // channel of files to archive, and their buckets
