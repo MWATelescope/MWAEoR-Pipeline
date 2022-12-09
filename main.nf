@@ -79,6 +79,29 @@ process wsSkyMap {
     """
 }
 
+process wsPPDs {
+    input:
+    val(obsid)
+    output:
+    tuple val(obsid), path(ppds)
+
+    maxForks 1
+
+    // persist results in outdir, process will be skipped if files already present.
+    storeDir "${params.outdir}/${obsid}/meta"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    script:
+    ppds = "${obsid}_ppds.png"
+    """
+    #!/bin/bash -eux
+    ${params.proxy_prelude} # ensure proxy is set if needed
+    curl "http://ws.mwatelescope.org/observation/ppds/?replot=replot&obs_id=${obsid}&merge=on&corgains=on&adu=on&plotscale=1.0"
+    wget -O "${ppds}" "http://ws.mwatelescope.org/observation/powerplot/?obs_id=${obsid}&group=False&plotscale=1.0&merge=1&corgains=1&adu=1&waterfall=False"
+    """
+}
+
 // download preprocessed files from asvo
 process asvoPrep {
     input:
@@ -1282,16 +1305,16 @@ workflow ws {
                     num_data_files: fileStats.num_data_files,
                     num_data_files_archived: fileStats.num_data_files_archived,
                 ]
-                [obsid, summary]
+                if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
             }
 
-        // display wsSummary
+                if (params.filter_quality && dataquality > params.filter_quality) {
         wsSummary.map { obsid, summary ->
                 [
-                    obsid,
+                if (params.filter_bad_tile_frac && bad_tile_frac > params.filter_bad_tile_frac) {
                     summary.fail_reasons.join('|'),
 
-                    summary.groupid,
+                if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
                     summary.ra_pointing,
                     summary.dec_pointing,
                     summary.ra_phase_center,
@@ -1348,7 +1371,7 @@ workflow ws {
             .filter { _, summary -> summary.fail_reasons == [] }
             .map { obsid, _ -> obsid }
 
-        pass | wsMetafits & wsSkyMap
+        pass | wsMetafits & wsSkyMap & wsPPDs
 
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
@@ -1357,6 +1380,7 @@ workflow ws {
         // channel of video name and frames to convert
         frame = wsSkyMap.out
             .map { _, png -> ["skymap", png] }
+            .mix( wsPPDs.out.map { _, png -> ["ppd", png] } )
             .groupTuple()
 
         // channel of (obsid, groupid, pointing)
@@ -1408,7 +1432,7 @@ workflow prep {
                     stats.XX?.MXRMS_AMP_ANT?:'',
                     stats.XX?.MNRMS_AMP_ANT?:'',
                     stats.XX?.MXRMS_AMP_FREQ?:'',
-                    stats.XX?.MNRMS_AMP_FREQ?:'',
+        pass | wsMetafits & wsSkyMap & wsPPDs
                     stats.XX?.NPOOR_ANTENNAS?:'',
                     displayInts(stats.XX?.POOR_ANTENNAS?:[]),
                     stats.YY?.MXRMS_AMP_ANT?:'',
@@ -1417,6 +1441,7 @@ workflow prep {
                     stats.YY?.MNRMS_AMP_FREQ?:'',
                     stats.YY?.NPOOR_ANTENNAS?:'',
                     displayInts(stats.YY?.POOR_ANTENNAS?:[]),
+            .mix( wsPPDs.out.map { _, png -> ["ppd", png] } )
                 ].join("\t")
             }
             .collectFile(
