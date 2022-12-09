@@ -1117,24 +1117,25 @@ process polComp {
 
 process polMontage {
     input:
-    tuple val(obsid), val(name), path("*")
+    tuple val(obsid), val(subobs), val(name), path(thumbs)
     output:
-    tuple val(obsid), val(name), path("${obsid}_${name}_montage.png")
+    tuple val(obsid), val(subobs), val(name), path(montage)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}${subobs}.${name}"
 
     label "imagemagick"
 
     script:
+    montage = "${obsid}${subobs}_${name}_montage.png"
     """
     montage \
         -font /usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf \
-        *.png \
+        ${thumbs.join(' ')} \
         -geometry +0+0 \
         -background none \
-        ${obsid}_${name}_montage.png
+        ${montage}
     """
 }
 
@@ -2095,8 +2096,8 @@ workflow img {
             imgs.collect { img -> [obsid, name, decomposeImg(img), img] }
         }
 
-        // obsNameMetaImg but only MFS images
-        obsNameMetaImgMfs = obsNameMetaImg.filter { _, __, meta, img -> meta.chan == -1 }
+        // obsNameMetaImg but only MFS images unless thumbnail_all_chans
+        obsNameMetaImgMfs = obsNameMetaImg.filter { _, __, meta, img -> meta.prod !=~ /uv-.*/ && (params.thumbnail_all_chans || meta.chan == -1) }
         // obsNameMetaImg but only uv images
         if (params.thumbnail_uvs) {
             obsNameMetaUV = obsNameMetaImg.filter { _, __, meta, img -> meta.prod ==~ /uv-.*/ }
@@ -2124,39 +2125,37 @@ workflow img {
                 [obsid, name, suffLimits]
             }
 
-        // all the image suffixes we care about
-        allSuffs = [
-            "MFS-XX-dirty", "MFS-XX-image",
-            "MFS-YY-dirty", "MFS-YY-image",
-            // "MFS-XY-dirty", "MFS-XY-image",
-            // "MFS-XYi-dirty", "MFS-XYi-image",
-            // "MFS-I-dirty", "MFS-I-image",
-            // "MFS-Q-dirty", "MFS-Q-image",
-            // "MFS-U-dirty", "MFS-U-image",
-            "MFS-V-dirty", "MFS-V-image",
-        ]
+        allSuffs = imgLimits.flatMap { obsid, name, limits -> limits.keySet()}
+            .unique()
+            .collect(sort: true)
+            .toList()
 
-        imgLimits.map { obsid, name, limits ->
-                ([obsid, name] + allSuffs.collect { limits[it]?:'' }).join("\t")
+        // write img limits to file
+        allSuffs.subscribe { suffs ->
+            imgLimits
+                .map { obsid, name, limits ->
+                    ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")
             }
             .collectFile(
                 name: "img_limits.tsv", newLine: true, sort: true,
-                seed: (["OBSID", "IMG NAME"] + allSuffs).join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}"
+                    seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
+                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
+        }
 
         // value channel containing a map from img suffix to max limit
-        suffLimits = imgLimits.map { _, __, limits ->
-                [allSuffs.collect { limits[it] }]
+        suffLimits = imgLimits.combine(allSuffs)
+            .map { _, __, limits, suffs ->
+                [suffs.collect { limits[it] }]
             }
             .collect()
             .transpose()
             .collect{ it -> it.max() }
             .map { allLimits ->
-                [allSuffs, allLimits].transpose().collectEntries()
+                [suffs, allLimits].transpose().collectEntries()
             }
 
-        // all pol orders for polComp that we could possibly care about
+        // all valid pol orders for polComp
         polOrders = [
             // ["I", "V", "Q"],
             ["XX", "V", "YY"],
@@ -2184,7 +2183,9 @@ workflow img {
             | polComp
 
         // make thumbnails
-        obsNameMetaImgMfs | thumbnail
+        obsNameMetaImgMfs \
+            .mix(obsNameMetaUV) \
+            | thumbnail
 
         // imgQA and polComp for all groups of images
         // obsNameMfsImgs | (imgQA & polComp)
@@ -2192,12 +2193,30 @@ workflow img {
             | imgQA
 
         // montage of polarizations
-        // thumbnail.out.groupTuple(by: [0, 1])
-        //     .map { obs, name, _, thumbs ->
-        //         [obs, name, thumbs.sort()]
-        //     }
-        channel.from([]) \
+        thumbnail.out.map { obs, name, meta, png ->
+            vis_name = name
+            sub_name = 'nosub'
+            if (m = name =~ /(sub|ionosub)_(.*)/) {
+                sub_name = m.group(1)
+                vis_name = m.group(2)
+            }
+            suffix = meta.suffix
+            subobs = ''
+            if (multiinterval) {
+                subobs = meta.suffix.split('-')[0]
+                suffix = meta.suffix.split('-')[1..-1].join('-')
+            }
+            def montage_name = [sub: suffix, pol: sub_name].get(params.montage_by)
+            [obs, subobs, "${vis_name}_${montage_name}", png] }
+            .groupTuple(by: 0..2)
+            .map { obs, subobs, name, pngs ->
+                [obs, subobs, name, pngs.sort()]
+            }
             | polMontage
+        thumbnail.out.groupTuple(by: [0, 1])
+            .map { obs, name, _, thumbs ->
+                [obs, name, thumbs.sort()]
+            }
 
         // collect imgQA results as .tsv
         imgQA.out
