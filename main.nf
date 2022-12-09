@@ -260,6 +260,58 @@ process autoplot {
     template "autoplot.py"
 }
 
+// make a reduced sourcelist with hyperdrive
+process hypSrclist {
+    input:
+    tuple val(obsid), path(metafits)
+    output:
+    tuple val(obsid), path(reduced)
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}"
+    label "hyperdrive"
+
+    script:
+    reduced = "${obsid}_reduced_n${params.sub_nsrcs}.txt"
+    """
+    #!/bin/bash -eux
+
+    # Reduce a sky-model source list to the top N brightest sources, given pointing information
+    ${params.hyperdrive} srclist-by-beam \
+        --metafits "${metafits}" \
+        --number ${params.sub_nsrcs} \
+        --beam-file "${params.beam_path}" \
+        -o ao \
+        "${params.sourcelist}" "${reduced}"
+    """
+}
+
+// cluster a reduced sourcelist with mwa-reduce
+process rexCluster {
+    input:
+    tuple val(obsid), path(reduced)
+    output:
+    tuple val(obsid), path(cluster)
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}"
+    label "mwa_reduce"
+
+    script:
+    cluster = "${obsid}_cluster_n${params.sub_nsrcs}_i${params.ionosub_nsrcs}.txt"
+    nclusters = params.sub_nsrcs / params.ionosub_nsrcs
+    """
+    #!/bin/bash -eux
+
+    ${params.mwa_reduce} cluster \
+        "${reduced}" \
+        "${cluster}" \
+        ${nclusters}
+    """
+}
+
 def groovy2bashAssocArray(map, name) {
     // size = map.collect { _, v -> v.size() }.max()
     "declare -A ${name}=(" + map.collect { k, v -> "[${k}]=\"${v}\"".toString() }.join(" ") + ")".toString()
@@ -482,7 +534,7 @@ process hypApplyMS {
 
 process hypSubUV {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis)
+    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
     output:
     tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
 
@@ -499,7 +551,7 @@ process hypSubUV {
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
-        --source-list "${params.sourcelist}" \
+        --source-list "${srclist}" \
         --invert --num-sources ${params.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
@@ -508,9 +560,9 @@ process hypSubUV {
 }
 process hypSubMS {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis)
+    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
+    tuple val(obsid), val(sub_name), path(sub_vis), path(json), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -521,13 +573,73 @@ process hypSubMS {
     sub_name = "sub_${name}"
     sub_vis = "hyp_${obsid}_${sub_name}.ms"
     logs = "hyp_vis-${sub_name}_ms.log"
+    json = "hyp_peel_${obsid}_${sub_name}_ms.json"
     """
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
-        --source-list "${params.sourcelist}" \
+        --source-list "${srclist}" \
         --invert --num-sources ${params.sub_nsrcs} \
+        --outputs "${sub_vis}" "${json}" \
+        | tee "${logs}"
+    """
+}
+process hypIonoSubUV {
+    input:
+    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    output:
+    tuple val(obsid), val(sub_name), path(sub_vis), path(json), path(logs)
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+    label "hyperdrive"
+
+    time 8.hour
+
+    script:
+    sub_name = "ionosub_${name}"
+    sub_vis = "hyp_${obsid}_${sub_name}.uvfits"
+    logs = "hyp_vis-${sub_name}_uv.log"
+    json = "hyp_peel_${obsid}_${sub_name}_uv.json"
+    """
+    ${params.hyperdrive} peel \
+        --data "${metafits}" "${vis}" \
+        --beam "${params.beam_path}" \
+        --source-list "${srclist}" \
+        --iono-sub ${params.ionosub_nsrcs} \
+        --sub ${params.sub_nsrcs} \
+        --outputs "${sub_vis}" "${json}" \
+        | tee "${logs}"
+    """
+}
+process hypIonoSubMS {
+    input:
+    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    output:
+    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+    label "hyperdrive"
+
+    time 8.hour
+
+    script:
+    sub_name = "ionosub_${name}"
+    sub_vis = "hyp_${obsid}_${sub_name}.ms"
+    logs = "hyp_vis-${sub_name}_ms.log"
+    """
+    echo nproc \$(nproc)
+    ${params.hyperdrive} peel \
+        --data "${metafits}" "${vis}" \
+        --beam "${params.beam_path}" \
+        --source-list "${srclist}" \
+        --iono-sub ${params.ionosub_nsrcs} \
+        --sub ${params.sub_nsrcs} \
         --outputs "${sub_vis}" \
+        -v \
         | tee "${logs}"
     """
 }
@@ -1432,7 +1544,7 @@ workflow prep {
                     stats.XX?.MXRMS_AMP_ANT?:'',
                     stats.XX?.MNRMS_AMP_ANT?:'',
                     stats.XX?.MXRMS_AMP_FREQ?:'',
-        pass | wsMetafits & wsSkyMap & wsPPDs
+                    stats.XX?.MNRMS_AMP_FREQ?:'',
                     stats.XX?.NPOOR_ANTENNAS?:'',
                     displayInts(stats.XX?.POOR_ANTENNAS?:[]),
                     stats.YY?.MXRMS_AMP_ANT?:'',
@@ -1441,7 +1553,6 @@ workflow prep {
                     stats.YY?.MNRMS_AMP_FREQ?:'',
                     stats.YY?.NPOOR_ANTENNAS?:'',
                     displayInts(stats.YY?.POOR_ANTENNAS?:[]),
-            .mix( wsPPDs.out.map { _, png -> ["ppd", png] } )
                 ].join("\t")
             }
             .collectFile(
@@ -2136,6 +2247,7 @@ workflow {
         .splitCsv()
         .flatten()
         .filter { line -> !line.startsWith('#') }
+        .unique()
 
     // analyse obsids with web services
     obsids | ws
@@ -2197,11 +2309,30 @@ workflow qaPrep {
         obsFlags
         frame
     main:
-        // calibrate each obs that passes flag gate unless nocal is set:
+        // get sourcelists for each obs (only currently used in subtraction, not calibration)
+        obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits ] }
+            | hypSrclist
+
+        // obsMetaSrclist: channel of tuple(obsid, metafits, srclist)
+        // cluster unless --nocluster
+        if (params.nocluster) {
+            channel.from([]) | rexCluster
+            obsMetaSrclist = obsMetaVis.join(hypSrclist.out)
+                .map { obsid, metafits, _, srclist ->
+                    [obsid, metafits, srclist] }
+        } else {
+            hypSrclist.out | rexCluster
+            obsMetaSrclist = obsMetaVis.join(rexCluster.out)
+                .map { obsid, metafits, _, cluster ->
+                    [obsid, metafits, cluster] }
+        }
+
+        // calibrate each obs that passes flag gate unless --nocal:
         if (params.nocal) {
+            // empty channel disables a process
             channel.from([]) | cal
         } else {
-            obsMetaVis.join(obsFlags, remainder: true)
+            obsMetaVis.join(obsFlags)
                 .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ?: [] ]}
                 | cal
         }
@@ -2229,74 +2360,75 @@ workflow qaPrep {
                 }
         }
 
+        // apply calibration solutions to uvfits and ms unless --nouv or --noms
         if (params.nouv) {
             channel.from([]) | hypApplyUV
         } else {
             allApply | hypApplyUV
         }
-
-        // channel of calibrated (or subtracted) uvfits: tuple(obsid, name, uvfits)
-        if (params.nosub) {
-            obsNameUvfits = hypApplyUV.out
-                .map { obsid, name, vis, _ -> [obsid, name, vis] }
-        } else {
-            // get subtracted uvfits vis
-            obsMetaVis
-                .cross(hypApplyUV.out)
-                .map {
-                    def (obsid, metafits, _) = it[0]
-                    def (__, name, vis) = it[1];
-                    [obsid, name, metafits, vis]
-                }
-                | hypSubUV
-
-            obsNameUvfits = hypApplyUV.out
-                .mix(hypSubUV.out)
-                .map { obsid, name, vis, _ -> [obsid, name, vis] }
-        }
-
-        // QA uvfits visibilities
-        obsNameUvfits | uvfits
-
         if (params.noms) {
             channel.from([]) | hypApplyMS
         } else {
             allApply | hypApplyMS
         }
-
-        // channel of calibrated (or subtracted) measurement sets: tuple(obsid, name, ms)
-        if (params.nosub) {
-            obsNameMS = hypApplyMS.out
-                .map { obsid, name, vis, _ -> [obsid, name, vis] }
-        } else {
-            // get subtracted ms vis
-            obsMetaVis
-                .cross(hypApplyMS.out)
+        // get uvfits subtraction arguments from apply output.
+        subArgsUV = obsMetaSrclist.cross(hypApplyUV.out)
                 .map {
-                    def (obsid, metafits, _) = it[0]
+                def (obsid, metafits, srclist) = it[0]
                     def (__, name, vis) = it[1];
-                    [obsid, name, metafits, vis]
+                [obsid, name, metafits, vis, srclist]
                 }
-                | hypSubMS
-
-            obsNameMS = hypApplyMS.out
-                .mix(hypSubMS.out)
-                .map { obsid, name, vis, _ -> [obsid, name, vis] }
+        subArgsMS = obsMetaSrclist.cross(hypApplyMS.out)
+            .map {
+                def (obsid, metafits, srclist) = it[0]
+                def (__, name, vis) = it[1];
+                [obsid, name, metafits, vis, srclist]
         }
+        if (params.nosub) {
+            channel.from([]) | (hypSubUV & hypSubMS)
+        } else {
+            subArgsUV | hypSubUV
+            subArgsMS | hypSubMS
+        }
+        if (params.noionosub) {
+            channel.from([]) | (hypIonoSubUV & hypIonoSubMS)
+        } else {
+            subArgsUV | hypIonoSubUV
+            subArgsMS | hypIonoSubMS
+                }
+        // channel of calibrated, subtracted and ionosubtracted uvfits: tuple(obsid, name, uvfits)
+        obsNameUvfits = hypApplyUV.out.map { obsid, name, vis, _ -> [obsid, name, vis] }
+            .mix(hypIonoSubUV.out.map { obsid, name, vis, _, __ -> [obsid, name, vis] })
+            .mix(hypSubUV.out.map { obsid, name, vis, _ -> [obsid, name, vis] })
 
-        // image and qa measurementsets unless noimage is set
+        // QA uvfits visibilities
+        obsNameUvfits | uvfits
+
+        // channel of calibrated, subtracted and ionosubtracted ms: tuple(obsid, name, vis)
+        obsNameMS = hypApplyMS.out.map { obsid, name, vis, _ -> [obsid, name, vis] }
+            .mix(hypIonoSubMS.out.map { obsid, name, vis, _, __ -> [obsid, name, vis] })
+            .mix(hypSubMS.out.map { obsid, name, vis, _ -> [obsid, name, vis] })
+
+        // image and qa measurementsets or uvfits unless --noimage
         if (params.noimg) {
             channel.from([]) | img
         } else {
-            // group obsids by groupid and pointing for imaging
-
+            // visibilities for imaging
+            // prefer measurement sets if availabe, otherwise importuvfits
+            // filter by visibilities that pass uvfits QA if --nouv is not set
             if (params.nouv) {
                 obsNameVisPass = obsNameMS
+            }
+            else if (params.noms) {
+                obsNameVisPass = uvfits.out.passVis
+                    .cross(obsNameUvfits) { it[0..1] }
+                    .map { it[1] }
             } else {
                 obsNameVisPass = uvfits.out.passVis
                     .cross(obsNameMS) { it[0..1] }
                     .map { it[1] }
             }
+            // group obsids by groupid and pointing for imaging
             // imgEpochs = obsNameVisPass
             //     .map { obs, name, vis ->
             //         def epoch = obs[0..5]
@@ -2318,6 +2450,7 @@ workflow qaPrep {
             //     )
         }
 
+        // archive data to object store
         if (params.archive) {
             if (params.archive_prep) {
                 prep_archive = obsMetaVis.map { _, __, vis -> ["prep", vis] }
