@@ -9,6 +9,14 @@ def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.resul
 // name of calibration scheme
 def cal_prog = "hyp"
 
+// whether imaging is configured for multiple channels
+def img_channels_out = (params.img_channels_out instanceof String ? \
+    params.img_channels_out.split(' ')[0] :\
+    params.img_channels_out)
+def multichannel = (img_channels_out as int > 1)
+// whether imaging is configured for multiple intervals
+def multiinterval = (params.img_intervals_out as int > 1)
+
 // download observation metadata from webservices in json format
 process wsMeta {
     input:
@@ -894,7 +902,7 @@ process wscleanDConv {
     input:
     tuple val(obsid), val(name), path(vis)
     output:
-    tuple val(obsid), val(name), path("wsclean_${img_name}*-{dirty,image,uv-real,uv-imag}.fits")
+    tuple val(obsid), val(name), path(img_glob)
         // path("wsclean_${img_name}-sources.txt") <- only works for stokes I
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
@@ -902,7 +910,7 @@ process wscleanDConv {
     tag "${obsid}.${name}"
     label "wsclean"
 
-    time { 10.minute * (1 + (multiplier * pix_mult * chan_mult * iter_mult)) }
+    time { 15.minute * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
 
     beforeScript = 'pwd; hostname; df -h .'
 
@@ -913,18 +921,28 @@ process wscleanDConv {
     // multipliers for determining compute resources
     pix_mult = 1 + (params.img_size / 1024) ** 2
     chan_mult = 1 + ("${params.img_channels_out}".split(' ')[0] as int) / 25
+    inter_mult = 1 + ("${params.img_intervals_out}".split(' ')[0] as int) / 4
     iter_mult = 1 + Math.sqrt(params.img_niter as Double) / 100
     vis_ms = vis.collect {"${it.baseName}.ms"}
+    vis = vis.collect()
+    img_glob = "wsclean_${img_name}*"
+    if (multiinterval) {
+        img_glob += "t????-"
+    }
+    if (multichannel) {
+        img_glob += "MFS-"
+    }
+    img_glob += "{XX,YY,XY,XYi,I,Q,U,V}-{dirty,image,uv-real,uv-imag}.fits"
     """
     #!/bin/bash -eux
     """ + (
-        // convert any uvfits to ms
-        [vis, vis_ms].transpose().collect { uv, ms ->
-            (uv.extension == 'uvfits' ? \
-            """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
-        }.join("\n")
-    ) + """
-    """ + (
+            // convert any uvfits to ms
+            [vis, vis_ms].transpose().collect { uv, ms ->
+                (uv.extension == 'uvfits' ? \
+                """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
+            }.join("\n")
+        ) + """
+        """ + (
         // run chgcentre if params.chgcentre_args specified.
         params.chgcentre_args ? \
             vis_ms.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
@@ -938,6 +956,7 @@ process wscleanDConv {
         -scale ${params.img_scale} \
         -pol ${params.img_pol} \
         -channels-out ${params.img_channels_out} \
+        -intervals-out ${params.img_intervals_out} \
         -niter ${params.img_niter} \
         -mgain ${params.img_major_clean_gain} -gain ${params.img_minor_clean_gain} \
         -auto-threshold ${params.img_auto_threshold} -auto-mask ${params.img_auto_mask} \
@@ -2046,11 +2065,6 @@ workflow img {
         // wsclean: make deconvolved images
         obsNameVis | wscleanDConv
 
-        // whether imaging is configured for multiple channels
-        def img_channels_out = (params.img_channels_out instanceof String ? \
-            params.img_channels_out.split(' ')[0] :\
-            params.img_channels_out)
-        def multichannel = (img_channels_out as int > 1)
         // get channel, polarization and image product name (dirty, image, model, uv-{real,imag}) from filename
         def decomposeImg = { img ->
             def tokens = img.baseName.split('-')
@@ -2067,7 +2081,13 @@ workflow img {
                 }
                 suffix = tokens[-3..-1].join('-')
             }
-            [chan: chan, pol: tokens[-2], prod: tokens[-1], suffix: suffix]
+            def inter = -1
+            if (multiinterval) {
+                inter_idx = multichannel ? -4 : -3
+                inter = tokens[inter_idx][1..-1] as int
+                suffix = "${tokens[inter_idx]}-${suffix}"
+            }
+            [inter: inter, chan: chan, pol: tokens[-2], prod: tokens[-1], suffix: suffix]
         }
 
         // channel of (obsid, name, meta, img)
