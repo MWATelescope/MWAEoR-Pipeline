@@ -268,8 +268,8 @@ process autoplot {
     template "autoplot.py"
 }
 
-// make a reduced sourcelist with hyperdrive
-process hypSrclist {
+// make a reduced ao-format sourcelist with hyperdrive
+process hypSrclistAO {
     input:
     tuple val(obsid), path(metafits)
     output:
@@ -291,6 +291,33 @@ process hypSrclist {
         --number ${params.sub_nsrcs} \
         --beam-file "${params.beam_path}" \
         -o ao \
+        "${params.sourcelist}" "${reduced}"
+    """
+}
+
+// make a reduced yaml-format sourcelist with hyperdrive
+process hypSrclistYaml {
+    input:
+    tuple val(obsid), path(metafits)
+    output:
+    tuple val(obsid), path(reduced)
+
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+
+    tag "${obsid}"
+    label "hyperdrive"
+
+    script:
+    reduced = "${obsid}_reduced_n${params.sub_nsrcs}.yaml"
+    """
+    #!/bin/bash -eux
+
+    # Reduce a sky-model source list to the top N brightest sources, given pointing information
+    ${params.hyperdrive} srclist-by-beam \
+        --metafits "${metafits}" \
+        --number ${params.sub_nsrcs} \
+        --beam-file "${params.beam_path}" \
+        -o hyperdrive \
         "${params.sourcelist}" "${reduced}"
     """
 }
@@ -650,6 +677,24 @@ process hypIonoSubMS {
         -v \
         | tee "${logs}"
     """
+}
+
+process cthulhuPlot {
+    input:
+    tuple val(obsid), val(name), path(srclist), path(offsets)
+    output:
+    tuple val(obsid), val(name), path("cthuluplot_${title}*.png")
+
+    storeDir "${params.outdir}/${obsid}/iono_qa${params.cal_suffix}"
+
+    tag "${obsid}.${name}"
+
+    label 'python'
+
+    script:
+    title = "${obsid}_${name}"
+    cthulhuplot = "cthuluplot_${title}.png"
+    template "cthulhuplot.py"
 }
 
 // QA tasks that can be run on preprocessed visibility files.
@@ -2350,17 +2395,17 @@ workflow qaPrep {
     main:
         // get sourcelists for each obs (only currently used in subtraction, not calibration)
         obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits ] }
-            | hypSrclist
+            | (hypSrclistAO & hypSrclistYaml)
 
         // obsMetaSrclist: channel of tuple(obsid, metafits, srclist)
         // cluster unless --nocluster
         if (params.nocluster) {
             channel.from([]) | rexCluster
-            obsMetaSrclist = obsMetaVis.join(hypSrclist.out)
+            obsMetaSrclist = obsMetaVis.join(hypSrclistAO.out)
                 .map { obsid, metafits, _, srclist ->
                     [obsid, metafits, srclist] }
         } else {
-            hypSrclist.out | rexCluster
+            hypSrclistAO.out | rexCluster
             obsMetaSrclist = obsMetaVis.join(rexCluster.out)
                 .map { obsid, metafits, _, cluster ->
                     [obsid, metafits, cluster] }
@@ -2412,17 +2457,17 @@ workflow qaPrep {
         }
         // get uvfits subtraction arguments from apply output.
         subArgsUV = obsMetaSrclist.cross(hypApplyUV.out)
-                .map {
+            .map {
                 def (obsid, metafits, srclist) = it[0]
-                    def (__, name, vis) = it[1];
+                def (__, name, vis) = it[1];
                 [obsid, name, metafits, vis, srclist]
-                }
+            }
         subArgsMS = obsMetaSrclist.cross(hypApplyMS.out)
             .map {
                 def (obsid, metafits, srclist) = it[0]
                 def (__, name, vis) = it[1];
                 [obsid, name, metafits, vis, srclist]
-        }
+            }
         if (params.nosub) {
             channel.from([]) | (hypSubUV & hypSubMS)
         } else {
@@ -2434,7 +2479,13 @@ workflow qaPrep {
         } else {
             subArgsUV | hypIonoSubUV
             subArgsMS | hypIonoSubMS
-                }
+        }
+        // make cthulhu plots
+        hypIonoSubUV.out.map {obsid, name, _, offsets, __ -> [obsid, name, offsets]}
+            .cross(hypSrclistYaml.out) {it[0]}
+            .map { def (obsid, name, offsets) = it[0]; def (_, srclist) = it[1]; [obsid, name, srclist, offsets] }
+            | cthulhuPlot
+
         // channel of calibrated, subtracted and ionosubtracted uvfits: tuple(obsid, name, uvfits)
         obsNameUvfits = hypApplyUV.out.map { obsid, name, vis, _ -> [obsid, name, vis] }
             .mix(hypIonoSubUV.out.map { obsid, name, vis, _, __ -> [obsid, name, vis] })
@@ -2513,6 +2564,8 @@ workflow qaPrep {
         frame.mix(cal.out.frame)
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
+            .mix(cthulhuPlot.out.map {_, name, pngs -> ["cthulhuplot_${name}", pngs]})
+            // .mix(cthulhuPlot.out.flatMap {_, name, plots -> plots.collect {plot -> ["cthulhuplot_${name}", plot]}})
             .map { name, frames -> [name, frames.sort()] }
             | ffmpeg
             | view { [it, it.size()] }
