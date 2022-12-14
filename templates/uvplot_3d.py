@@ -6,10 +6,10 @@ import matplotlib.pyplot as plt
 from mwa_qa.read_uvfits import UVfits
 import numpy as np
 import sys
+import argparse
+
 
 def get_parser():
-    import argparse
-
     parser = argparse.ArgumentParser(description="Plot Visibilities in 3D for each pol.")
 
     parser.add_argument('--uvfits', default=False, help='uvfits file to plot')
@@ -20,6 +20,12 @@ def get_parser():
     )
     plot_group.add_argument('--plot_title', default=None,
         help="Optional title for the plot")
+    plot_group.add_argument('--plot_dpi', default=100,
+        help="dots per inch for the plot")
+    plot_group.add_argument('--z_max', default=None,
+        help="Optional maximum value for the Z axis")
+    plot_group.add_argument('--dpi', default=100,
+        help="Plot DPI")
 
     return parser
 
@@ -35,8 +41,7 @@ def uvplot_3d(args):
 
     plt.style.use(astropy_mpl_style)
 
-    dpi = 100
-    fig = plt.figure(dpi=dpi)
+    fig = plt.figure(dpi=args.plot_dpi)
 
     with fits.open(uv.uvfits_path) as hdus:
         vis_hdu = hdus['PRIMARY']
@@ -65,12 +70,15 @@ def uvplot_3d(args):
             zs = np.abs(means)
             cs = np.angle(means)
 
+            z_max = float(args.z_max) if args.z_max else np.quantile(zs, 0.90)
+
             ax.scatter3D(xs, ys, zs, c=cs, cmap='rainbow', s=1)
             ax.set_xlabel("u", visible=True)
             ax.set_ylabel("v", visible=True)
             ax.set_zlabel("Amplitude", visible=True)
+            ax.set_zlim3d(0, z_max)
             ax.set_title(f"{args.plot_title} - {pol}")
-            plt.savefig(f"{args.output_name}_{pol}.png", bbox_inches='tight', dpi=dpi)
+            plt.savefig(f"{args.output_name}_{pol}.png", bbox_inches='tight', dpi=args.plot_dpi)
 
 def main():
     """
@@ -95,6 +103,7 @@ def main():
             "--uvfits=${uvfits}",
             "--output_name=${uvplot}",
             "--plot_title=${title}",
+            "--z_max=${z_max}",
         ])
 
     uvplot_3d(args)

@@ -15,20 +15,22 @@ import sys
 def get_parser():
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run SSINS on uvfits visibilities.")
+    parser = argparse.ArgumentParser(
+        description="Run SSINS on uvfits visibilities.")
 
     parser.add_argument('--uvfits', default=False, help='uvfits file to flag')
 
     plot_group = parser.add_argument_group('PLOTTING OPTIONS')
     plot_group.add_argument('--output_prefix',
-        help='Prefix of output plot files', default=''
-    )
+                            help='Prefix of output plot files', default=''
+                            )
     plot_group.add_argument('--plot_title', default=None,
-        help="Optional title for the plot")
+                            help="Optional title for the plot")
     plot_group.add_argument('--guard_width', default=0, type=int,
-        help="Guard width of RFI bands in Hz. Half a fine channel width is recommended.")
+                            help="Guard width of RFI bands in Hz. Half a fine channel width is recommended.")
 
     return parser
+
 
 def main():
     """
@@ -56,11 +58,10 @@ def main():
             # "--output_prefix=",
         ])
 
-
     ins_plot_args = {
-        "file_ext":"png",
+        "file_ext": "png",
         "title": args.plot_title,
-        "extent_time_format":"lst"
+        "extent_time_format": "lst"
     }
     shape_dict = {
         "DAB-5A":   [1.74160e8 - args.guard_width, 1.75696e8 + args.guard_width],
@@ -121,7 +122,8 @@ def main():
     ins_cross = INS(ss, spectrum_type='cross')
     cp.INS_plot(ins_cross, f'{args.output_prefix}cross', **ins_plot_args)
 
-    mf = MF(ins_cross.freq_array, sig_thresh, shape_dict=shape_dict, streak=True, narrow=True)
+    mf = MF(ins_cross.freq_array, sig_thresh,
+            shape_dict=shape_dict, streak=True, narrow=True)
     ins_cross.metric_array[ins_cross.metric_array == 0] = np.ma.masked
     ins_cross.metric_ms = ins_cross.mean_subtract()
     ins_cross.sig_array = np.ma.copy(ins_cross.metric_ms)
@@ -155,6 +157,7 @@ def main():
     # params.sky_chans.collect { ch ->
     #          "\"\${ch}\": [\${(ch-0.51)*1.28e8}, \${(ch+0.51)*1.28e8}]".toString()
     #      }
+
 
 if __name__ == '__main__':
     main()

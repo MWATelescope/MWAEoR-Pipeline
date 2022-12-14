@@ -29,6 +29,7 @@ export obsid=1322482208
 export obsid=1094230128
 export obsid=1094230616
 export obsid=1090012424
+export obsid=1090611176
 cp /astro/mwaeor/dev/nfdata/${obsid}/cal/${obsid}_reduced_n4000.yaml srclist.yaml
 cp /astro/mwaeor/dev/nfdata/${obsid}/cal/hyp_peel_${obsid}_ionosub_30l_src4k_8s_80kHz_uv.json offsets.json
 singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
@@ -50,7 +51,9 @@ def get_parser():
     parser.add_argument('--offsets', help='offset file (json)')
     parser.add_argument('--obsid', default=0, type=int)
     parser.add_argument('--time_res', default=1, type=int,
-                        help='time resolution in seconds')
+                        help='time resolution (seconds)')
+    parser.add_argument('--time_offset', default=0, type=int,
+                        help='offset from obsid to first timestep (seconds)')
     plot_group = parser.add_argument_group('PLOTTING OPTIONS')
     plot_group.add_argument('--output_name',
                             help='Name of output plot file', default=None)
@@ -73,8 +76,7 @@ def main():
             "--offsets=${offsets}",
             "--obsid=${obsid}",
             "--output_name=${cthulhuplot}",
-        ]  # + shlex.split("${args}")
-        )
+        ] + shlex.split(extra) if (extra := "${extra}") else [])
 
     # read source list
     with open(args.srclist, "r") as h:
@@ -91,6 +93,7 @@ def main():
     decs = []
     ra_shifts = []
     dec_shifts = []
+    src_names = []
 
     # calculate offsets at a given freq
     # freq = 200e6
@@ -111,6 +114,7 @@ def main():
         decs.append(dec)
         ra_shifts.append(alphas)
         dec_shifts.append(betas)
+        src_names.append(src_name)
 
     ras = np.array(ras)
     decs = np.array(decs)
@@ -122,27 +126,52 @@ def main():
     ras = np.rad2deg(np.unwrap(np.deg2rad(ras), discont=pi))
 
     if args.average:
+
+        av_ra_shifts = np.mean(ra_shifts, axis=1) * wavelength_2
+        av_dec_shifts = np.mean(dec_shifts, axis=1) * wavelength_2
+        av_total_shifts = np.sqrt(av_ra_shifts**2 + av_dec_shifts**2)
+        max_total_shift_idx = np.argmax(av_total_shifts)
+
         # plot the average of shifts over time
-        t_ra_shifts = np.mean(ra_shifts, axis=1) * wavelength_2
-        t_dec_shifts = np.mean(dec_shifts, axis=1) * wavelength_2
-        o = Obsid((ras, decs, t_ra_shifts, t_dec_shifts), args.obsid)
+        o = Obsid((ras, decs, av_ra_shifts, av_dec_shifts), args.obsid)
         o.pca()
         o.obsid_metric()
         o.reconstruct_tec()
         o.tec_power_spectrum()
+        o.metrics.append(
+            [av_total_shifts[max_total_shift_idx], f"max total shift"])
+        o.metric_weights.append(0)
+        o.metrics.append([0, f"{src_names[max_total_shift_idx]}"])
+        o.metric_weights.append(0)
+        o.metrics.append([ras[max_total_shift_idx], "max RA"])
+        o.metric_weights.append(0)
+        o.metrics.append([decs[max_total_shift_idx], "max Dec"])
+        o.metric_weights.append(0)
         generate_diagnostic_figure(
             o, filename=args.output_name, directory='.', overwrite=True)
     else:
         # plot each time separately
         for t in range(n_times):
-            obsid = args.obsid + (t * args.time_res)
+            obsid = args.obsid + args.time_offset + (t * args.time_res)
             t_ra_shifts = ra_shifts[:, t] * wavelength_2
             t_dec_shifts = dec_shifts[:, t] * wavelength_2
+            t_total_shifts = np.sqrt(t_ra_shifts**2 + t_dec_shifts**2)
+            max_total_shift_idx = np.argmax(t_total_shifts)
+
             o = Obsid((ras, decs, t_ra_shifts, t_dec_shifts), obsid)
             o.pca()
             o.obsid_metric()
             o.reconstruct_tec()
             o.tec_power_spectrum()
+            o.metrics.append(
+                [t_total_shifts[max_total_shift_idx], f"max total shift"])
+            o.metric_weights.append(0)
+            o.metrics.append([0, f"{src_names[max_total_shift_idx]}"])
+            o.metric_weights.append(0)
+            o.metrics.append([ras[max_total_shift_idx], "max RA"])
+            o.metric_weights.append(0)
+            o.metrics.append([decs[max_total_shift_idx], "max Dec"])
+            o.metric_weights.append(0)
             output_name, ext = os.path.splitext(args.output_name)
             filename = f"{output_name}-t{t:04d}{ext}"
             generate_diagnostic_figure(

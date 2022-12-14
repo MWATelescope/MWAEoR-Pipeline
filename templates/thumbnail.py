@@ -65,8 +65,8 @@ def get_parser():
                             help="percentile used to normalize brightness if --limit is not specified")
     plot_group.add_argument('--transparent', default=False, action="store_true",
                             help="adds transparency to colormap")
-    plot_group.add_argument('--symmetric', default=False,
-                            action="store_true", help="make colormap symmetric")
+    plot_group.add_argument('--symmetric', default=False, action="store_true",
+                            help="make colormap symmetric")
     plot_group.add_argument('--cmap', default='plasma',
                             help="matplotlib colormap to use")
 
