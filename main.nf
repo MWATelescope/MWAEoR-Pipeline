@@ -770,7 +770,6 @@ process prepVisQA {
 
     tag "${obsid}"
 
-    label 'cpu'
     label 'python'
 
     script:
@@ -784,23 +783,40 @@ process prepVisQA {
 // QA tasks that can be run on calibrated visibility files.
 process visQA {
     input:
-    tuple val(obsid), val(name), path(uvfits)
+    tuple val(obsid), val(meta), path(uvfits)
     output:
-    tuple val(obsid), val(name), path(metrics)
+    tuple val(obsid), val(meta), path(json)
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
-    label 'cpu'
     label 'python'
 
     script:
-    metrics = "${cal_prog}_${obsid}_${name}_vis_metrics.json"
+    // TODO: json = "vis_metrics_${meta.cal_prog}_${obsid}_${meta.name}.json"
+    json = "${meta.cal_prog}_${obsid}_${meta.name}_vis_metrics.json"
     """
     #!/bin/bash -eux
-    run_visqa.py "${uvfits}" --out "${metrics}"
+    run_visqa.py "${uvfits}" --out "${json}"
     """
+}
+
+process uvMeta {
+    input:
+    tuple val(obsid), val(meta), path(vis)
+    output:
+    tuple val(obsid), val(meta), path(uvmeta)
+
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+
+    tag "${obsid}.${meta.name}"
+
+    label 'python'
+
+    script:
+    uvmeta = "uvmeta_${meta.cal_prog}_${obsid}_${meta.name}.json"
+    template "uvmeta.py"
 }
 
 // QA tasks that can be run on each calibration parameter set
@@ -2616,27 +2632,51 @@ workflow qaPrep {
         if (params.noionosub) {
             channel.from([]) | (hypIonoSubUV & hypIonoSubMS)
         } else {
-            subArgsUV | hypIonoSubUV
-            subArgsMS | hypIonoSubMS
+            subArgsUV.map {obsid, meta, metafits, vis, srclist ->
+                def newMeta = meta.collectEntries {e->e};
+                newMeta.ionosub_nsrcs = params.ionosub_nsrcs
+                [obsid, newMeta, metafits, vis, srclist]}
+                | hypIonoSubUV
+            subArgsMS.map {obsid, meta, metafits, vis, srclist ->
+                def newMeta = meta.collectEntries {e->e};
+                newMeta.ionosub_nsrcs = params.ionosub_nsrcs
+                [obsid, newMeta, metafits, vis, srclist]}
+                | hypIonoSubMS
         }
         // make cthulhu plots
-        hypIonoSubUV.out.map {obsid, name, _, offsets, __ -> [obsid, name, offsets]}
+        hypIonoSubUV.out.map {obsid, meta, _, offsets, __ -> [obsid, meta, offsets]}
             .cross(hypSrclistYaml.out) {it[0]}
-            .map { def (obsid, name, offsets) = it[0]; def (_, srclist) = it[1]; [obsid, name, srclist, offsets] }
+            .map { hypIonoSubUV_, hypSrclistYaml_ ->
+                def (obsid, meta, offsets) = hypIonoSubUV_;
+                def (_, srclist) = hypSrclistYaml_;
+                [obsid, meta, srclist, offsets]
+            }
             | cthulhuPlot
 
         // channel of calibrated, subtracted and ionosubtracted uvfits: tuple(obsid, name, uvfits)
-        obsNameUvfits = hypApplyUV.out.map { obsid, name, vis, _ -> [obsid, name, vis] }
-            .mix(hypIonoSubUV.out.map { obsid, name, vis, _, __ -> [obsid, name, vis] })
-            .mix(hypSubUV.out.map { obsid, name, vis, _ -> [obsid, name, vis] })
+        obsMetaUV = hypApplyUV.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] }
+            .mix(hypIonoSubUV.out.map { obsid, meta, vis, _, __ -> [obsid, meta, vis] })
+            .mix(hypSubUV.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] })
+
+        // improve uvfits meta
+        obsMetaUV | uvMeta
+        obsMetaUVSmart = obsMetaUV.cross(uvMeta.out) {[it[0], it[1].name]}
+            .map { obsMetaUV_, obsMetaUV_ ->
+                def (obsid, meta, vis) = obsMetaUV_; def (_, __, json) = obsMetaUV_;
+                def jsonMeta = parseJson(json)
+                def meta2 = [
+                    nchans:jsonMeta.freqs.size(),
+                    ntimes:jsonMeta.times.size()
+                ];
+                [obsid, meta + meta2, vis] }
 
         // QA uvfits visibilities
-        obsNameUvfits | uvfits
+        obsMetaUVSmart | uvfits
 
         // channel of calibrated, subtracted and ionosubtracted ms: tuple(obsid, name, vis)
-        obsNameMS = hypApplyMS.out.map { obsid, name, vis, _ -> [obsid, name, vis] }
-            .mix(hypIonoSubMS.out.map { obsid, name, vis, _, __ -> [obsid, name, vis] })
-            .mix(hypSubMS.out.map { obsid, name, vis, _ -> [obsid, name, vis] })
+        obsMetaMS = hypApplyMS.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] }
+            .mix(hypIonoSubMS.out.map { obsid, meta, vis, _, __ -> [obsid, meta, vis] })
+            .mix(hypSubMS.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] })
 
         // image and qa measurementsets or uvfits unless --noimage
         if (params.noimg) {
