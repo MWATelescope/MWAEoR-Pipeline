@@ -6,8 +6,6 @@ if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.parent}/${obsids_file.baseName}${params.obsids_suffix}.${obsids_file.extension}")
 }
 def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.result_suffix}"
-// name of calibration scheme
-def cal_prog = "hyp"
 
 // whether imaging is configured for multiple channels
 def img_channels_out = (params.img_channels_out instanceof String ? \
@@ -15,7 +13,7 @@ def img_channels_out = (params.img_channels_out instanceof String ? \
     params.img_channels_out)
 def multichannel = (img_channels_out as int > 1)
 // whether imaging is configured for multiple intervals
-def multiinterval = (params.img_intervals_out as int > 1)
+def multiinterval = (params.img_intervals_out as int > 1) || params.img_split_intervals
 
 // download observation metadata from webservices in json format
 process wsMeta {
@@ -355,7 +353,7 @@ def groovy2bashAssocArray(map, name) {
 // calibrate with mwa reduce
 process rexCalSol {
     input:
-    tuple val(obsid), val(dical_args), path(metafits), path(uvfits), val(tile_flags)
+    tuple val(obsid), val(dical_args), path(metafits), path(vis), val(tile_flags)
     output:
     tuple val(obsid), path("rex_soln_${obsid}_${name_glob}.bin"), path("rex_di-cal_${obsid}_${name_glob}.log")
 
@@ -363,16 +361,18 @@ process rexCalSol {
 
     tag "${obsid}"
 
+    label "mwa_reduce"
+
     script:
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
     flag_args = tile_flags.size() > 0 ? "--tile-flags ${tile_flags.join(' ')}" : ""
+    vis_ms = "${uvfits.baseName}.ms"
     """
     #!/bin/bash -eux
     """ + groovy2bashAssocArray(dical_args, "dical_args") + """
-    ${params.casa} -c "importuvfits('${uvfits}', '${obsid}.ms')"
-    // singularity exec --bind \$PWD:/tmp --writable-tmpfs --pwd /tmp --no-home
+    ${params.casa} -c "importuvfits('${vis}', '${vis_ms}')"
     singularity exec ${params.cotter_sif} fixmwams vis.ms ${metafits}
 
     for name in \${!dical_args[@]}; do
@@ -384,7 +384,7 @@ process rexCalSol {
             -m "${params.sourcelist}" \
             -i 50 \
             -a 1e-4 1e-8 \
-            vis.ms \
+            ${vis_ms} \
             \${soln_name} | tee \${log_name}
     """
 }
@@ -475,21 +475,25 @@ process hypCalSol {
 }
 
 // fit polynomial to calibration solution
+// meta is a map containing calibration solution metadata, fields:
+// - name: name of the calibration (dical_name)
+// - cal_prog: name of the calibration program (hyp or rex)
 process polyFit {
     input:
-    tuple val(obsid), val(dical_name), path(soln)
+    tuple val(obsid), val(meta), path(soln)
     output:
-    tuple val(obsid), val(name), path(poly_soln), path(logs)
+    tuple val(obsid), val(meta), path(poly_soln), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
-    tag "${obsid}.${dical_name}"
+    tag "${obsid}.${old_name}"
 
     label 'python'
 
     script:
-    name = "poly_${dical_name}"
-    poly_soln = "${cal_prog}_soln_${obsid}_${name}.fits"
-    logs = "polyfit_${obsid}_${name}.log"
+    old_name = meta.name
+    meta.name = "poly_${meta.name}"
+    poly_soln = "${meta.cal_prog}_soln_${obsid}_${meta.name}.fits"
+    logs = "polyfit_${obsid}_${meta.name}.log"
     """
     #!/bin/bash -eux
     run_polyfit.py "${soln}" --outfile "${poly_soln}" | tee "${logs}"
@@ -511,54 +515,70 @@ process polyFit {
 // }
 
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
+// meta is a map containing calibration solution metadata, fields:
+// - name: unique name of the calibration ((poly_)?$dical_name)
+// - apply_name: name of the apply arguments used
+// - time_res: time resolution to average when applying (seconds)
+// - freq_res: frequency resolution to average when applying (kHz)
+// - apply_args: any extra args for apply
 process hypApplyUV {
     input:
-    tuple val(obsid), path(metafits), path(vis), path(soln), val(dical_name), val(apply_name), val(apply_args)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(soln)
     output:
-    tuple val(obsid), val(name), path(cal_vis), path(logs)
+    tuple val(obsid), val(meta), path(cal_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${dical_name}_${apply_name}"
+    tag "${obsid}.${meta.name}"
     label "cpu"
     label "hyperdrive"
 
     script:
-    name = "${dical_name}_${apply_name}"
-    cal_vis = "hyp_${obsid}_${name}.uvfits"
-    logs = "hyp_apply_${name}.log"
+    meta.name = "${meta.name}_${meta.apply_name}"
+    cal_vis = "hyp_${obsid}_${meta.name}.uvfits"
+    logs = "hyp_apply_${meta.name}.log"
     """
     # hyperdrive solutions apply uvfits
-    ${params.hyperdrive} solutions-apply ${apply_args} \
+    ${params.hyperdrive} solutions-apply ${meta.apply_args} \
+        --time-average=${meta.time_res}s \
+        --freq-average=${meta.freq_res}kHz \
         --data "${metafits}" "${vis}" \
         --solutions "${soln}" \
         --outputs "${cal_vis}" \
-        ${params.nodut1 ? "--ignore-dut1" : ""} \
+        ${meta.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
     """
 }
 
 // ensure calibrated ms are present, or apply calsols to prep uvfits with hyperdrive
+// meta is a map containing calibration solution metadata, fields:
+// - name: unique name of the calibration ((poly_)?$dical_name)
+// - apply_name: name of the apply arguments used
+// - time_res: time resolution to average when applying (seconds)
+// - freq_res: frequency resolution to average when applying (kHz)
+// - apply_args: any extra args for apply
 process hypApplyMS {
     input:
-    tuple val(obsid), path(metafits), path(vis), path(soln), val(dical_name), val(apply_name), val(apply_args)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(soln)
     output:
-    tuple val(obsid), val(name), path(cal_vis), path(logs)
+    tuple val(obsid), val(meta), path(cal_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
-    tag "${obsid}.${dical_name}_${apply_name}"
+    tag "${obsid}.${meta.name}"
     label "cpu"
     label "hyperdrive"
 
     script:
-    name = "${dical_name}_${apply_name}"
-    cal_vis = "hyp_${obsid}_${name}.ms"
-    logs = "hyp_apply_${name}_ms.log"
+    meta.name = "${meta.name}_${meta.apply_name}"
+    cal_vis = "hyp_${obsid}_${meta.name}.ms"
+    logs = "hyp_apply_${meta.name}_ms.log"
     """
     # hyperdrive solutions apply ms
-    ${params.hyperdrive} solutions-apply ${apply_args} \
+    ${params.hyperdrive} solutions-apply ${meta.apply_args} \
+        --time-average=${meta.time_res}s \
+        --freq-average=${meta.freq_res}kHz \
         --data "${metafits}" "${vis}" \
         --solutions "${soln}" \
         --outputs "${cal_vis}" \
@@ -567,37 +587,54 @@ process hypApplyMS {
     """
 }
 
+// ensure subtracted uvfits are present, or subtract srclist from cal vis with hyperdrive
+// meta is a map containing visibility metadata, fields:
+// - name: unique name of the calibrated vis ((poly_)?${dical_name}_${apply_name})
+// - sub_nsrcs: number of sources to subtract
+// in output, meta will be updated:
+// - name: add sub_ prefix
+// - sub: set to "sub"
 process hypSubUV {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${old_name}"
     label "hyperdrive"
 
     script:
-    sub_name = "sub_${name}"
-    sub_vis = "hyp_${obsid}_${sub_name}.uvfits"
-    logs = "hyp_vis-${sub_name}_uv.log"
+    old_name = meta.name
+    meta.sub = "sub"
+    meta.name = "sub_${meta.name}"
+    sub_vis = "hyp_${obsid}_${meta.name}.uvfits"
+    logs = "hyp_vis-${meta.name}_uv.log"
     """
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${srclist}" \
-        --invert --num-sources ${params.sub_nsrcs} \
+        --invert --num-sources ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
     # TODO: ^ num sources is hardcoded twice, would be better to re-use model from cal
     """
 }
+
+// ensure subtracted ms are present, or subtract srclist from cal vis with hyperdrive
+// meta is a map containing visibility metadata, fields:
+// - name: unique name of the calibrated vis ((poly_)?${dical_name}_${apply_name})
+// - sub_nsrcs: number of sources to subtract
+// in output, meta will be updated:
+// - name: add sub_ prefix
+// - sub: set to "sub"
 process hypSubMS {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(sub_name), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -605,25 +642,35 @@ process hypSubMS {
     label "hyperdrive"
 
     script:
-    sub_name = "sub_${name}"
-    sub_vis = "hyp_${obsid}_${sub_name}.ms"
-    logs = "hyp_vis-${sub_name}_ms.log"
-    json = "hyp_peel_${obsid}_${sub_name}_ms.json"
+    old_name = meta.name
+    meta.sub = "sub"
+    meta.name = "sub_${meta.name}"
+    sub_vis = "hyp_${obsid}_${meta.name}.ms"
+    logs = "hyp_vis-${meta.name}_ms.log"
     """
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${srclist}" \
-        --invert --num-sources ${params.sub_nsrcs} \
-        --outputs "${sub_vis}" "${json}" \
+        --invert --num-sources ${meta.sub_nsrcs} \
+        --outputs "${sub_vis}" \
         | tee "${logs}"
     """
 }
+
+// ensure ionosubtracted uvfits are present, or ionosubtract srclist from cal vis with hyperdrive
+// meta is a map containing visibility metadata, fields:
+// - name: unique name of the calibrated vis ((poly_)?${dical_name}_${apply_name})
+// - sub_nsrcs: total number of sources to subtract (including iono sources)
+// - ionosub_nsrcs: number of sources to iono subtract
+// in output, meta will be updated:
+// - name: add ionosub_ prefix
+// - sub: set to "ionosub"
 process hypIonoSubUV {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(sub_name), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -633,47 +680,61 @@ process hypIonoSubUV {
     time 8.hour
 
     script:
-    sub_name = "ionosub_${name}"
-    sub_vis = "hyp_${obsid}_${sub_name}.uvfits"
-    logs = "hyp_vis-${sub_name}_uv.log"
-    json = "hyp_peel_${obsid}_${sub_name}_uv.json"
+    old_name = meta.name
+    meta.sub = "ionosub"
+    meta.name = "ionosub_${meta.name}"
+    sub_vis = "hyp_${obsid}_${meta.name}.uvfits"
+    logs = "hyp_vis-${meta.name}_uv.log"
+    json = "hyp_peel_${obsid}_${meta.name}_uv.json"
     """
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${srclist}" \
-        --iono-sub ${params.ionosub_nsrcs} \
-        --sub ${params.sub_nsrcs} \
+        --iono-sub ${meta.ionosub_nsrcs} \
+        --sub ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
         | tee "${logs}"
     """
 }
+
+// ensure ionosubtracted ms are present, or ionosubtract srclist from cal vis with hyperdrive
+// meta is a map containing visibility metadata, fields:
+// - name: unique name of the calibrated vis ((poly_)?${dical_name}_${apply_name})
+// - sub_nsrcs: total number of sources to subtract (including iono sources)
+// - ionosub_nsrcs: number of sources to iono subtract
+// in output, meta will be updated:
+// - name: add ionosub_ prefix
+// - sub: set to "ionosub"
 process hypIonoSubMS {
     input:
-    tuple val(obsid), val(name), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(sub_name), path(sub_vis), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${old_name}"
     label "hyperdrive"
 
     time 8.hour
 
     script:
-    sub_name = "ionosub_${name}"
-    sub_vis = "hyp_${obsid}_${sub_name}.ms"
-    logs = "hyp_vis-${sub_name}_ms.log"
+    old_name = meta.name
+    meta.sub = "ionosub"
+    meta.name = "ionosub_${meta.name}"
+    sub_vis = "hyp_${obsid}_${meta.name}.ms"
+    logs = "hyp_vis-${meta.name}_ms.log"
+    json = "hyp_peel_${obsid}_${meta.name}_ms.json"
     """
     echo nproc \$(nproc)
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
         --source-list "${srclist}" \
-        --iono-sub ${params.ionosub_nsrcs} \
-        --sub ${params.sub_nsrcs} \
-        --outputs "${sub_vis}" \
+        --iono-sub ${meta.ionosub_nsrcs} \
+        --sub ${meta.sub_nsrcs} \
+        --outputs "${sub_vis}" "${json}" \
         -v \
         | tee "${logs}"
     """
@@ -681,19 +742,20 @@ process hypIonoSubMS {
 
 process cthulhuPlot {
     input:
-    tuple val(obsid), val(name), path(srclist), path(offsets)
+    tuple val(obsid), val(meta), path(srclist), path(offsets)
     output:
-    tuple val(obsid), val(name), path("cthuluplot_${title}*.png")
+    tuple val(obsid), val(meta), path("cthuluplot_${title}*.png")
 
     storeDir "${params.outdir}/${obsid}/iono_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    title = "${obsid}_${name}"
+    title = "${obsid}_${meta.name}"
     cthulhuplot = "cthuluplot_${title}.png"
+    extra = meta.time_res ? "--time_res=${meta.time_res}" : ""
     template "cthulhuplot.py"
 }
 
@@ -744,18 +806,18 @@ process visQA {
 // QA tasks that can be run on each calibration parameter set
 process calQA {
     input:
-    tuple val(obsid), val(name), path(metafits), path(soln)
+    tuple val(obsid), val(meta), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(name), path(metrics)
+    tuple val(obsid), val(meta), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    metrics = "${cal_prog}_soln_${obsid}_${name}_X.json"
+    metrics = "${meta.cal_prog}_soln_${obsid}_${meta.name}_X.json"
     """
     #!/bin/bash -eux
     run_calqa.py "${soln}" "${metafits}" --pol X --out "${metrics}"
@@ -765,17 +827,17 @@ process calQA {
 // write info from solutions to json
 process solJson {
     input:
-    tuple val(obsid), val(dical_name), path(soln)
+    tuple val(obsid), val(meta), path(soln)
     output:
-    tuple val(obsid), val(dical_name), path(metrics)
+    tuple val(obsid), val(meta), path(metrics)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
-    tag "${obsid}.${dical_name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    metrics = "${cal_prog}_soln_${obsid}_${dical_name}.fits.json"
+    metrics = "${meta.cal_prog}_soln_${obsid}_${meta.name}.fits.json"
     template "soljson.py"
 }
 
@@ -801,17 +863,18 @@ process plotPrepVisQA {
 
 process plotSols {
     input:
-    tuple val(obsid), val(name), path(metafits), path(soln)
+    tuple val(obsid), val(meta), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(name), path("${cal_prog}_soln_${obsid}*_${name}_{phases,amps}.png")
+    tuple val(obsid), val(meta), path(plots_glob)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label "hyperdrive"
 
     script:
+    plots_glob = "${meta.cal_prog}_soln_${obsid}*_${meta.name}_{phases,amps}.png"
     """
     hyperdrive solutions-plot -m "${metafits}" ${soln}
     """
@@ -819,20 +882,21 @@ process plotSols {
 
 process plotCalQA {
     input:
-    tuple val(obsid), val(name), path(metrics)
+    tuple val(obsid), val(meta), path(metrics)
     output:
-    tuple val(obsid), val(name), path("calmetrics_${obsid}_${name}_{fft,variance,dlyspectrum}.png")
+    tuple val(obsid), val(meta), path(plots_glob)
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
+    plots_glob = "calmetrics_${obsid}_${meta.name}_{fft,variance,dlyspectrum}.png"
     """
     #!/bin/bash -eux
-    plot_calqa.py "${metrics}" --out "calmetrics_${obsid}_${name}.png" --save
+    plot_calqa.py "${metrics}" --out "calmetrics_${obsid}_${meta.name}.png" --save
     """
 }
 
@@ -945,39 +1009,43 @@ process wscleanDirty {
 // note: I can't get `-reuse-dirty` to work at all :(
 process wscleanDConv {
     input:
-    tuple val(obsid), val(name), path(vis)
+    tuple val(obsid), val(meta), path(vis), val(img_params)
     output:
-    tuple val(obsid), val(name), path(img_glob)
+    tuple val(obsid), val(meta), path(img_glob)
         // path("wsclean_${img_name}-sources.txt") <- only works for stokes I
 
-    storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
+    storeDir "${params.outdir}/${obsid}/img${img_params.suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
     label "wsclean"
 
-    time { 15.minute * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
+    time { 20.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
 
     beforeScript = 'pwd; hostname; df -h .'
 
     script:
     multiplier = vis.collect().size()
-    img_name = "${cal_prog}_${obsid}_${name}"
+    img_name = "${meta.cal_prog}_${obsid}_${meta.name}"
 
     // multipliers for determining compute resources
-    pix_mult = 1 + (params.img_size / 1024) ** 2
-    chan_mult = 1 + ("${params.img_channels_out}".split(' ')[0] as int) / 25
-    inter_mult = 1 + ("${params.img_intervals_out}".split(' ')[0] as int) / 4
-    iter_mult = 1 + Math.sqrt(params.img_niter as Double) / 100
+    pix_mult = 1 + (img_params.size / 1024) ** 2
+    chan_mult = 1 + ("${img_params.channels_out}".split(' ')[0] as int) / 25
+    if (img_params.split_intervals) {
+        inter_mult = 1
+    } else {
+        inter_mult = 1 + ("${img_params.intervals_out}".split(' ')[0] as int) / 3
+    }
+    iter_mult = 1 + Math.sqrt(img_params.niter as Double) / 100
     vis_ms = vis.collect {"${it.baseName}.ms"}
     vis = vis.collect()
-    img_glob = "wsclean_${img_name}*"
-    if (multiinterval) {
-        img_glob += "t????-"
+    img_glob = "wsclean_${img_name}"
+    if (multiinterval && !img_params.split_intervals) {
+        img_glob += "-t????"
     }
     if (multichannel) {
-        img_glob += "MFS-"
+        img_glob += "-MFS"
     }
-    img_glob += "{XX,YY,XY,XYi,I,Q,U,V}-{dirty,image,uv-real,uv-imag}.fits"
+    img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}-{dirty,image,uv-real,uv-imag}.fits"
     """
     #!/bin/bash -eux
     """ + (
@@ -996,16 +1064,16 @@ process wscleanDConv {
     ${params.wsclean} \
         ${params.wsclean_dconv_args} \
         -name wsclean_${img_name} \
-        -weight ${params.img_weight} \
-        -size ${params.img_size} ${params.img_size} \
-        -scale ${params.img_scale} \
-        -pol ${params.img_pol} \
-        -channels-out ${params.img_channels_out} \
-        -intervals-out ${params.img_intervals_out} \
-        -niter ${params.img_niter} \
-        -mgain ${params.img_major_clean_gain} -gain ${params.img_minor_clean_gain} \
-        -auto-threshold ${params.img_auto_threshold} -auto-mask ${params.img_auto_mask} \
-        -mwa-path ${params.img_mwa_path} \
+        -weight ${img_params.weight} \
+        -size ${img_params.size} ${img_params.size} \
+        -scale ${img_params.scale} \
+        -pol ${img_params.pol} \
+        -channels-out ${img_params.channels_out} \
+        -intervals-out ${img_params.intervals_out} \
+        -niter ${img_params.niter} \
+        -mgain ${img_params.major_clean_gain} -gain ${img_params.minor_clean_gain} \
+        -auto-threshold ${img_params.auto_threshold} -auto-mask ${img_params.auto_mask} \
+        -mwa-path ${img_params.mwa_path} \
         -save-uv \
         -j \$(nproc) \
         -parallel-gridding \$(nproc) \
@@ -1026,7 +1094,7 @@ process imgQuantiles {
 
     label 'python'
 
-    time 5.minute
+    time {5.min * task.attempt}
 
     script:
     csv = "quantile_${name}_${meta.suffix}.csv"
@@ -1055,27 +1123,27 @@ process imgQuantiles {
 // power spectrum metrics via chips
 process psMetrics {
     input:
-    tuple val(obsid), val(name), path("vis.uvfits")
+    tuple val(obsid), val(meta), path("vis.uvfits")
     output:
-    tuple val(obsid), val(name), path("output_metrics_${cal_prog}_${obsid}_${name}.dat")
+    tuple val(obsid), val(meta), path(out_metrics)
 
     storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label "chips"
 
     script:
     band = 0
-    nchan = 384
     uv_base = "vis"
+    out_metrics = "output_metrics_${meta.cal_prog}_${obsid}_${meta.name}.dat"
     """
     #!/bin/bash -eux
     export DATADIR="\$PWD"
     export OUTPUTDIR="\$PWD/"
-    ${params.ps_metrics} "${uv_base}" "${band}" "${nchan}" "${uv_base}" 2>&1 \
+    ${params.ps_metrics} "${uv_base}" "${band}" "${meta.nchan}" "${uv_base}" 2>&1 \
         | tee "${uv_base}.log"
-    mv "output_metrics_vis.dat" "output_metrics_${cal_prog}_${obsid}_${name}.dat"
+    mv "output_metrics_vis.dat" "${out_metrics}"
     """
 }
 
@@ -1130,6 +1198,7 @@ process thumbnail {
     tag "${obsid}.${name}.${meta.suffix}"
 
     label 'python'
+    time {10.min * task.attempt}
 
     script:
     thumb = "${obsid}_${name}_${meta.suffix}.png"
@@ -1366,6 +1435,36 @@ def get_seconds(float time, String unit) {
     } else {
         time * unit_conversions[unit]
     }
+}
+
+// decompose an image filename into:
+// - interval if multiple intervals or -1 if combined
+// - channel of multiple channels or -1 if combined
+// - polarization
+// - image product name (dirty, image, model, uv-{real,imag})
+def decomposeImg = { img ->
+    def tokens = img.baseName.split('-')
+    // this handles the case where product is "uv-{real,imag}"
+    if (tokens[-2] == "uv") {
+        tokens = tokens[0..-3] + ["uv-${tokens[-1]}"]
+    }
+    // channel is only present in multi-frequency imaging
+    def chan = -1
+    def suffix = (["MFS"] + tokens[-2..-1]).join('-')
+    def inter_idx = -3
+    if (multichannel) {
+        if (tokens[-3] != "MFS") {
+            chan = (tokens[-3] as int)
+        }
+        suffix = tokens[-3..-1].join('-')
+        inter_idx = -4
+    }
+    def inter = -1
+    if (tokens[inter_idx] =~ /t\d{4}/) {
+        inter = tokens[inter_idx][1..-1] as int
+        suffix = "${tokens[inter_idx]}-${suffix}"
+    }
+    [inter: inter, chan: chan, pol: tokens[-2], prod: tokens[-1], suffix: suffix]
 }
 
 // use mwa webservices to gate obsids by pointing and faults
@@ -1800,36 +1899,41 @@ workflow cal {
                 storeDir: "${results_dir}${params.cal_suffix}"
             )
 
-        // channel of solutions for each obsid: tuple(obsid, solutions)
-        obsSolns = hypCalSol.out.map { obsid, solutions, _ -> [obsid, solutions] }
-        // channel of individual dical solutions: tuple(obsid, name, soln)
+        // channel of individual dical solutions: tuple(obsid, meta, soln)
         // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
-        eachCal = obsSolns
+        eachCal = hypCalSol.out
+            .map { obsid, solutions, _ -> [obsid, solutions] } // ignore logs
             .transpose()
             .map { obsid, soln ->
-                // give each calibration a name from basename of solution fits
-                def name = soln.getBaseName().split('_')[3..-1].join('_')
-                [obsid, name, soln]
+                // give each calibration a name from basename of solution fits.
+                // this is everything after the obsid
+                def meta = [
+                    dical_name: soln.baseName.split('_')[3..-1].join('_'),
+                    cal_prog: "hyp"
+                ]
+                meta.name = meta.dical_name
+                [obsid, meta, soln]
             }
 
         // generate json from solns
         eachCal | solJson
 
-        // channel of all dical (and polyfit) solutions: tuple(obsid, name, soln)
-        if (!params.nopoly) {
-            // do polyFit if nopoly is not set
-            eachCal | polyFit
-            // channel of individual polyfit solutions: tuple(obsid, name, soln)
-            eachPolyCal = polyFit.out.map { obsid, name, soln, _ -> [obsid, name, soln] }
-            allCal = eachCal.mix(eachPolyCal)
+        // do polyFit unless --nopoly is set
+        if (params.nopoly) {
+            channel.from([]) | polyFit
         } else {
-            allCal = eachCal
+            eachCal | polyFit
         }
+        // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
+        allCal = eachCal.mix(
+            polyFit.out.map { obsid, meta, soln, _ -> [obsid, meta, soln] }
+        )
 
         // collect solJson results as .tsv
         solJson.out
             // form row of tsv from json fields we care about
-            .map { obsid, name, json ->
+            .map { obsid, meta, json ->
+                def name = meta.name
                 def stats = parseJson(json)
                 def results = stats.RESULTS?[0]?:[]
                 def (nans, convergences) = results.split { it == "NaN" }
@@ -1857,8 +1961,8 @@ workflow cal {
             // join with solutions from eachCal and eachPolyCal
             .cross(allCal)
             // .map { (obsid, metafits), (_, name, soln) ->
-            .map { def (obsid, metafits) = it[0]; def (_, name, soln) = it[1]
-                [obsid, name, metafits, soln]
+            .map { def (obsid, metafits) = it[0]; def (_, meta, soln) = it[1]
+                [obsid, meta, metafits, soln]
             }
             | (plotSols & calQA)
 
@@ -1931,22 +2035,23 @@ workflow cal {
     // - take obsid and name
     obsidNamePass = calQA.out
         .filter { _, __, json -> parseJson(json).STATUS == "PASS" }
-        .map { obsid, name, _ -> [obsid, name] }
+        .map { obsid, meta, _ -> [obsid, meta] }
 
     emit:
         // channel of calibration solutions that pass qa. tuple(obsid, name, cal)
-        // - take tuple(obsid, cal_name, soln) from allCal
+        // - take tuple(obsid, meta, soln) from allCal
         // - match with obsidNamePass on (obsid, cal_name)
         passCal = allCal
-            .join(obsidNamePass, by: [0,1] )
+            .cross(obsidNamePass) {it -> [it[0], it[1].name]}
+            .map{ allCal, _ -> allCal }
         // channel of files to archive, and their buckets
         archive = calQA.out.map { _, __, json -> ["calqa", json]}
         // channel of video name and frames to convert
         frame = plotCalQA.out.mix(plotSols.out)
-            .flatMap { _, name, pngs ->
+            .flatMap { _, meta, pngs ->
                 pngs.collect { png ->
                     def png_name = png.baseName.split('_')[-1]
-                    ["calqa_${name}_${png_name}", png]
+                    ["calqa_${meta.name}_${png_name}", png]
                 }
             }
             .groupTuple()
@@ -1955,22 +2060,22 @@ workflow cal {
 // process uvfits visibilities
 workflow uvfits {
     take:
-        obsNameVis
+        obsMetaVis
     main:
         // vis QA
-        obsNameVis
-            .filter { _, name, __ -> !name.toString().startsWith("sub_") }
+        obsMetaVis
+            .filter { _, meta, __ -> !meta.sub }
             | visQA
         channel.from([]) | uvPlot
 
         // collect visQA results as .tsv
         visQA.out
             // form row of tsv from json fields we care about
-            .map { obsid, name, json ->
+            .map { obsid, meta, json ->
                 def stats = parseJson(json);
                 [
                     obsid,
-                    name,
+                    meta.name,
                     stats.AUTOS?.XX?.MXRMS_AMP_ANT?:'',
                     stats.AUTOS?.XX?.MNRMS_AMP_ANT?:'',
                     stats.AUTOS?.XX?.MXRMS_AMP_FREQ?:'',
@@ -2029,11 +2134,11 @@ workflow uvfits {
 
         // ps_metrics
         if (params.nopsmetrics) {
-            passVis = obsNameVis
-                .map { obsid, name, __ -> [obsid] }
+            passVis = obsMetaVis
+                .map { obsid, meta, __ -> [obsid, meta.name] }
                 .unique()
         } else {
-            obsNameVis | psMetrics
+            obsMetaVis | psMetrics
 
             // collect psMetrics as a .dat
             psMetrics.out
@@ -2084,7 +2189,8 @@ workflow uvfits {
         }
 
         // delayspectrum
-        obsNameVis | delaySpec
+        // obsMetaVis | delaySpec
+        channel.from([]) | delaySpec
 
     emit:
         // channel of files to archive, and their buckets
@@ -2105,40 +2211,51 @@ workflow uvfits {
 // image measurement sets and QA images
 workflow img {
     take:
-        obsNameVis
+        obsMetaVis
     main:
 
         // wsclean: make deconvolved images
-        obsNameVis | wscleanDConv
-
-        // get channel, polarization and image product name (dirty, image, model, uv-{real,imag}) from filename
-        def decomposeImg = { img ->
-            def tokens = img.baseName.split('-')
-            // this handles the case where product is "uv-{real,imag}"
-            if (tokens[-2] == "uv") {
-                tokens = tokens[0..-3] + ["uv-${tokens[-1]}"]
+        wscleanParams = [
+            suffix: params.img_suffix,
+            weight: params.img_weight,
+            size: params.img_size,
+            scale: params.img_scale,
+            channels_out: params.img_channels_out,
+            intervals_out: params.img_intervals_out,
+            split_intervals: params.img_split_intervals,
+            pol: params.img_pol,
+            args: params.wsclean_args,
+        ]
+        wscleanDConvParams = wscleanParams + [
+            args: params.wsclean_dconv_args,
+            niter: params.img_niter,
+            minor_clean_gain: params.img_minor_clean_gain,
+            major_clean_gain: params.img_major_clean_gain,
+            auto_threshold: params.img_auto_threshold,
+            auto_mask: params.img_auto_mask,
+            mwa_path: params.img_mwa_path,
+        ]
+        if (params.img_split_intervals) {
+            // add -t???? suffix to name, to split wsclean over multiple jobs
+            obsMetaVis.flatMap { obsid, meta, vis ->
+                (0..meta.ntimes).collect { i ->
+                    def intervalMeta = meta.collectEntries { e -> e }
+                    intervalMeta.name = sprintf("%s-t%04d", meta.name, i)
+                    imgParams = wscleanDConvParams.collectEntries { e -> e }
+                    imgParams.args = "${wscleanDConvParams.args} -interval ${i} ${i+1}"
+                    [obsid, intervalMeta, vis, imgParams]
             }
-            // channel is only present in multi-frequency imaging
-            def chan = -1
-            def suffix = (["MFS"] + tokens[-2..-1]).join('-')
-            if (multichannel) {
-                if (tokens[-3] != "MFS") {
-                    chan = (tokens[-3] as int)
                 }
-                suffix = tokens[-3..-1].join('-')
-            }
-            def inter = -1
-            if (multiinterval) {
-                inter_idx = multichannel ? -4 : -3
-                inter = tokens[inter_idx][1..-1] as int
-                suffix = "${tokens[inter_idx]}-${suffix}"
-            }
-            [inter: inter, chan: chan, pol: tokens[-2], prod: tokens[-1], suffix: suffix]
-        }
-
+            | wscleanDConv
+            // remove -t???? suffix from name
+            obsNameMetaImg = wscleanDConv.out.flatMap { obsid, meta, imgs ->
+                def name = meta.name.split('-')[0..-2].join('-')
+                imgs.collect { img -> [obsid, name, decomposeImg(img), img] }}
+        } else {
+            obsMetaVis.combine(channel.of(wscleanDConvParams)) | wscleanDConv
         // channel of (obsid, name, meta, img)
-        obsNameMetaImg = wscleanDConv.out.flatMap { obsid, name, imgs ->
-            imgs.collect { img -> [obsid, name, decomposeImg(img), img] }
+            obsNameMetaImg = wscleanDConv.out.flatMap { obsid, meta, imgs ->
+                imgs.collect { img -> [obsid, meta.name, decomposeImg(img), img] }}
         }
 
         // obsNameMetaImg but only MFS images unless thumbnail_all_chans
@@ -2301,11 +2418,30 @@ workflow img {
         frame = polComp.out.map { _, name, prod, orderName, png ->
                 ["imgqa_${name}_polcomp_${prod}_${orderName}", png]
             }
-            // .mix(polMontage.out.map { _, name, prod, orderName, png ->
-            //     ["imgqa_${name}_polmontage_${prod}_${orderName}", png]
-            // })
-            .mix(thumbnail.out.map { _, name, meta, png ->
-                ["imgqa_${name}_${meta.suffix}", png]
+            .mix(polMontage.out.map { _, __, name, png ->
+                ["imgqa_${name}_polmontage", png]
+            })
+            .mix(thumbnail.out.flatMap { obsid, name, meta, png ->
+                suffix = meta.suffix
+                subobs = ''
+                if (multiinterval) {
+                    subobs = meta.suffix.split('-')[0]
+                    suffix = meta.suffix.split('-')[1..-1].join('-')
+                }
+                frames_ = []
+                if (meta.chan == -1) {
+                    frames_.push(["imgqa_${name}_${suffix}", png])
+                } else {
+                    // scan through channels for each obsid, pol
+                    if (params.frame_chan_scan) {
+                        frames_.push(["imgqa_${obsid}${subobs}_${name}_${meta.pol}-${meta.prod}", png])
+                    }
+                    // scan through obsids for each channel, pol
+                    if (params.frame_obs_scan) {
+                        frames_.push(["imgqa_${name}_${suffix}", png])
+                    }
+                }
+                frames_
             })
             .groupTuple()
 }
@@ -2389,24 +2525,24 @@ workflow {
 // given a channel of tuple (obs, metafits, vis), calibrate and analyse
 workflow qaPrep {
     take:
-        obsMetaVis
+        obsMetafitsVis
         obsFlags
         frame
     main:
         // get sourcelists for each obs (only currently used in subtraction, not calibration)
-        obsMetaVis.map { obsid, metafits, _ -> [obsid, metafits ] }
+        obsMetafitsVis.map { obsid, metafits, _ -> [obsid, metafits ] }
             | (hypSrclistAO & hypSrclistYaml)
 
         // obsMetaSrclist: channel of tuple(obsid, metafits, srclist)
         // cluster unless --nocluster
         if (params.nocluster) {
             channel.from([]) | rexCluster
-            obsMetaSrclist = obsMetaVis.join(hypSrclistAO.out)
+            obsMetaSrclist = obsMetafitsVis.join(hypSrclistAO.out)
                 .map { obsid, metafits, _, srclist ->
                     [obsid, metafits, srclist] }
         } else {
             hypSrclistAO.out | rexCluster
-            obsMetaSrclist = obsMetaVis.join(rexCluster.out)
+            obsMetaSrclist = obsMetafitsVis.join(rexCluster.out)
                 .map { obsid, metafits, _, cluster ->
                     [obsid, metafits, cluster] }
         }
@@ -2416,31 +2552,30 @@ workflow qaPrep {
             // empty channel disables a process
             channel.from([]) | cal
         } else {
-            obsMetaVis.join(obsFlags)
-                .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ?: [] ]}
+            obsMetafitsVis.join(obsFlags, remainder: true)
+                .filter { _, metafits, vis, __ -> metafits != null && vis != null}
+                .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ? flags : [] ]}
                 | cal
         }
 
         // channel of arguments for hypApply{UV,MS}
-        // - take tuple(obsid, cal_name, soln) from obsNameSoln
-        // - lookup [apply_name, apply_args] from params.apply_args on cal_name
+        // - take tuple(obsid, cal_name, soln) from cal.out.passCal
         // - match with tuple(obsid, metafits, prepUVFits) by obsid
         if (params.noapply) {
             allApply = channel.from([])
         } else {
-            allApply = obsMetaVis
-                .cross(
-                    cal.out.passCal
-                        .filter { obsid, cal_name, _ -> params.apply_args[cal_name] != null }
-                        .map { obsid, cal_name, soln ->
-                            def (apply_name, apply_args) = params.apply_args[cal_name]
-                            [obsid, soln, cal_name, apply_name, apply_args]
-                        }
-                )
+            allApply = obsMetafitsVis
+                .join(cal.out.passCal)
                 .map {
-                    def (obsid, metafits, prepUVFits) = it[0]
-                    def (_, soln, cal_name, apply_name, apply_args) = it[1]
-                    [obsid, metafits, prepUVFits, soln, cal_name, apply_name, apply_args]
+                    obsid, metafits, prepUVFits, meta, soln ->
+                    meta += [
+                        time_res: params.apply_time_res,
+                        freq_res: params.apply_freq_res,
+                        nodut1: params.nodut1,
+                        apply_args: params.apply_args,
+                    ]
+                    meta.apply_name = "${meta.time_res}s_${meta.freq_res}kHz"
+                    [obsid, meta, metafits, prepUVFits, soln]
                 }
         }
 
@@ -2457,16 +2592,20 @@ workflow qaPrep {
         }
         // get uvfits subtraction arguments from apply output.
         subArgsUV = obsMetaSrclist.cross(hypApplyUV.out)
-            .map {
-                def (obsid, metafits, srclist) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis, srclist]
+            .map { obsMetaSrclist_, hypApplyUV_ ->
+                def (obsid, metafits, srclist) = obsMetaSrclist_
+                def (__, meta, vis) = hypApplyUV_;
+                def newMeta = meta.collectEntries {e->e}
+                newMeta.sub_nsrcs = params.sub_nsrcs
+                [obsid, newMeta, metafits, vis, srclist]
             }
         subArgsMS = obsMetaSrclist.cross(hypApplyMS.out)
-            .map {
-                def (obsid, metafits, srclist) = it[0]
-                def (__, name, vis) = it[1];
-                [obsid, name, metafits, vis, srclist]
+            .map { obsMetaSrclist_, hypApplyUV_ ->
+                def (obsid, metafits, srclist) = obsMetaSrclist_
+                def (__, meta, vis) = hypApplyUV_;
+                def newMeta = meta.collectEntries {e->e}
+                newMeta.sub_nsrcs = params.sub_nsrcs
+                [obsid, newMeta, metafits, vis, srclist]
             }
         if (params.nosub) {
             channel.from([]) | (hypSubUV & hypSubMS)
@@ -2506,49 +2645,62 @@ workflow qaPrep {
             // visibilities for imaging
             // prefer measurement sets if availabe, otherwise importuvfits
             // filter by visibilities that pass uvfits QA if --nouv is not set
+            uvfits.out.passVis.view { it -> "passVis ${it}"}
             if (params.nouv) {
-                obsNameVisPass = obsNameMS
-            }
-            else if (params.noms) {
-                obsNameVisPass = uvfits.out.passVis
-                    .cross(obsNameUvfits) { it[0..1] }
-                    .map { it[1] }
+                obsMetaVisPass = obsMetaMS
             } else {
-                obsNameVisPass = uvfits.out.passVis
-                    .cross(obsNameMS) { it[0..1] }
-                    .map { it[1] }
+                obsMetaVisPass = obsMetaUVSmart
             }
+            // if (params.noms) {
+            //     obsMetaVisPass = uvfits.out.passVis
+            //         .cross(obsMetaUVSmart.map {
+            //             def (obs, meta, vis) = it
+            //             [obs, meta.name, meta, vis]
+            //         }) { it[0..1] }
+            //         .map { def (obs, _, meta, vis) = it[1]; [obs, meta, vis] }
+            //         .view { it -> "obsMetaVisPass ${it}"}
+            // } else {
+            //     obsMetaVisPass = uvfits.out.passVis
+            //         .cross(obsMetaMS.map {
+            //             def (obs, meta, vis) = it
+            //             [obs, meta.name, meta, vis]
+            //         }) { it[0..1] }
+            //         .map { def (obs, _, meta, vis) = it[1]; [obs, meta, vis] }
+            // }
             // group obsids by groupid and pointing for imaging
-            // imgEpochs = obsNameVisPass
-            //     .map { obs, name, vis ->
-            //         def epoch = obs[0..5]
-            //         ["e${epoch}X", "e_${name}", vis]
-            //     }
-            //     .groupTuple(by: [0, 1])
-            //     .map { group, name, viss -> [group, name, viss.unique()] }
-            //     .filter { _, __, viss -> viss.size() > 1 }
-            obsNameVisPass
-                .map { obs, name, vis -> [obs, name, [vis]]}
+            imgEpochs = obsMetaVisPass
+                .map { obs, meta, vis ->
+                    def epoch = obs[0..5]
+                    ["e${epoch}X", "e_${meta.name}", meta, vis]
+                }
+                .groupTuple(by: [0, 1])
+                .filter { _, __, ___, viss -> viss.size() > 1 }
+                .map { group, name, metas, viss ->
+                    def meta = metas[0]?:[:] + [name:name]
+                    meta.ntimes = meta.collect { it.ntimes }.sum()
+                    [group, meta, viss.unique()] }
+            obsMetaVisPass
+                .map { obs, meta, vis -> [obs, meta, [vis]]}
                 // .mix( imgEpochs )
                 | img
-            // imgEpochs
-            //     .map { group, name, viss -> ([group, name, viss.size()]).join("\t") }
-            //     .collectFile(
-            //         name: "img_epoch.tsv", newLine: true, sort: true,
-            //         seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
-            //         storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-            //     )
+            imgEpochs
+                .map { group, meta, viss -> ([group, meta.name, viss.size()]).join("\t") }
+                .collectFile(
+                    name: "img_epoch.tsv", newLine: true, sort: true,
+                    seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
+                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+                )
         }
 
         // archive data to object store
         if (params.archive) {
             if (params.archive_prep) {
-                prep_archive = obsMetaVis.map { _, __, vis -> ["prep", vis] }
+                prep_archive = obsMetafitsVis.map { _, __, vis -> ["prep", vis] }
             } else {
                 prep_archive = channel.from([])
             }
             if (params.archive_uvfits) {
-                vis_archive = obsNameUvfits.map { _, __, vis -> ["uvfits", vis]}
+                vis_archive = obsMetaUV.map { _, __, vis -> ["uvfits", vis]}
             } else {
                 vis_archive = channel.from([])
             }
@@ -2564,8 +2716,7 @@ workflow qaPrep {
         frame.mix(cal.out.frame)
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
-            .mix(cthulhuPlot.out.map {_, name, pngs -> ["cthulhuplot_${name}", pngs]})
-            // .mix(cthulhuPlot.out.flatMap {_, name, plots -> plots.collect {plot -> ["cthulhuplot_${name}", plot]}})
+            .mix(cthulhuPlot.out.map {_, meta, pngs -> ["cthulhuplot_${meta.name}", pngs]})
             .map { name, frames -> [name, frames.sort()] }
             | ffmpeg
             | view { [it, it.size()] }
