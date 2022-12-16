@@ -5,7 +5,7 @@ def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.parent}/${obsids_file.baseName}${params.obsids_suffix}.${obsids_file.extension}")
 }
-def results_dir = "${params.outdir}/results${params.obsids_suffix}${params.result_suffix}"
+def results_dir = "${params.resultsdir}/results${params.obsids_suffix}${params.result_suffix}"
 
 // whether imaging is configured for multiple channels
 def img_channels_out = (params.img_channels_out instanceof String ? \
@@ -1098,12 +1098,12 @@ process wscleanDConv {
                 (uv.extension == 'uvfits' ? \
                 """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
             }.join("\n")
-        ) + """
-        """ + (
-        // run chgcentre if params.chgcentre_args specified.
-        params.chgcentre_args ? \
-            vis_ms.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
-            ""
+    ) + """
+    """ + (
+            // run chgcentre if params.chgcentre_args specified.
+            params.chgcentre_args ? \
+                vis_ms.collect {"${params.chgcentre} ${params.chgcentre_args} ${it}"}.join("\n") : \
+                ""
     ) + """
     ${params.wsclean} \
         ${img_params.args} \
@@ -1527,7 +1527,7 @@ def decomposeImg = { img ->
     if (multichannel && (chan_tok = tokens.removeLast()) != "MFS") {
         meta.chan_tok = chan_tok
         meta.chan = (chan_tok as int)
-        }
+    }
     // suffix without interval
     meta.inter_suffix = [meta.chan_tok, meta.pol, meta.prod].join('-')
     meta.suffix = meta.inter_suffix
@@ -2319,7 +2319,7 @@ workflow img {
             }
         } else {
             splitObsMetaVis = obsMetaVis
-            }
+        }
         if (params.nodeconv) {
             splitObsMetaVis | wscleanDirty
             channel.from([]) | wscleanDConv
@@ -2392,11 +2392,11 @@ workflow img {
         allSuffs.subscribe { suffs ->
             imgLimits.map { obsid, name, limits ->
                     ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")}
-                .collectFile(
-                    name: "img_limits.tsv", newLine: true, sort: true,
-                    seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
-                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-                )
+            .collectFile(
+                name: "img_limits.tsv", newLine: true, sort: true,
+                seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
         }
 
         // value channel containing a map from img suffix to max limit
@@ -2471,7 +2471,7 @@ workflow img {
                 }
                 if (params.montage_by_pol) {
                     montages << [obsid, subobs, "${meta.name}-${meta.chan_tok}-${meta.prod}".toString(), png]
-            }
+                }
                 montages
             }
             .groupTuple(by: 0..2)

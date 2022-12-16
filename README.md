@@ -260,18 +260,6 @@ dical_args = [
 ]
 ```
 
-### apply args
-
-each calibration name can be associated with different apply arguments, by specifying a map of `[cal_name:[apply_name,apply_args]` in  `params.apply_args`, where cal_name can include a `poly_` prefix when using polyfit e.g. :
-
-```
-apply_args = [
-  "poly_30l_src4k": ["8s_80kHz", "--time-average 8s --freq-average 80kHz"],
-  "30l_src4k": ["8s_80kHz", "--time-average 8s --freq-average 80kHz"],
-  "50l_src1k": ["4s_80kHz", "--time-average 4s --freq-average 80kHz"],
-]
-```
-
 all other config is in `nextflow.config`. See: <https://www.nextflow.io/docs/latest/config.html>
 
 parameters can also be specified in the newflow command line for each run too. e.g. set `params.obsids_path` with `--obsids_path=...`
@@ -300,19 +288,24 @@ you can also modify any of the params in `nextflow.config` from the command line
 nextflow run main.nf --img_suffix='-briggs+0.5' --img_weight='briggs +0.5'
 ```
 
-### garrawarla quirks
+### pawsey quirks
 
-This pipeline requires Nextflow 21, but as of writing only nextflow/20 is available on Garrawarla. You can check with `module avail nextflow`. if Nextflow 21 is not yet available, you get around this with the silly hack below
+Running this pipeline on Pawsey requires the `cluster_edit` nextflow module. Get the available versions of nextflow with `module avail nextflow` and load the module with (e.g.)
 
 ```bash
-module load nextflow/20.07.1
-/pawsey/sles12sp3/tools/binary/nextflow/21.04.3/nextflow run main.nf -profile garrawarla
+module load nextflow_cluster_edit/22.04.3_cluster_edit
+```
+
+then run nextflow with
+
+```bash
+nextflow run main.nf -profile garrawarla
 ```
 
 architecture reference:
 - garra workq & gpuq: `Intel(R) Xeon(R) Gold 6230` (cascade lake)
 - garra head: `Intel(R) Xeon(R) Silver 4215` - (cascade lake)
-- hpc-data head: `AMD EPYC 7351`
+- hpc-data{1..6} (zeus): `AMD EPYC 7351`
 
 ### dug quirks
 
@@ -330,8 +323,8 @@ nextflow run main.nf -profile dug
 
 ```bash
 export run_name="$(nextflow log -q | tail -n 1)"
-export process="hypCalSol"
-nextflow log "${run_name}" -F 'process=="'${process}'"' -f "workdir,exit,status,process,tag,duration,realtime"
+export filter='process=~/.*hypCalSol/'
+nextflow log "${run_name}" -F "${filter}" -f "workdir,exit,status,process,tag,duration,realtime,memory,peak_vmem"
 ```
 
 ### get all lines matching pattern from all scripts executed recently
@@ -388,8 +381,16 @@ optional: update `profiles.<profile>.params.<container>_sif` in `nextflow.config
 ### Cancel all failed jobs
 
 ```bash
-squeue --states SE --format %A -h | sort | xargs scancel
+squeue -u $USER --format %A -h --states SE | sort | xargs scancel
 ```
+
+### get info for jobid: standard out
+
+```bash
+export jobid=3405303
+squeue --json | /pawsey/mwa/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid 3459463
+```
+
 ## Handy Giant Squid Commands
 
 ### get obsids that are ready to download
@@ -429,6 +430,12 @@ find $outdir -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]
 find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv | tee /dev/stderr | wc -l
 # images
 ls $outdir/*/img/*.fits | cut -d / -f 5 | sort | uniq | tee obsids-imgd.csv | tee /dev/stderr | wc -l
+```
+
+### get files not downloaded
+
+```bash
+comm -13 <(sort obsids-downloaded.csv) <(sort obsids-stage1.csv) > obsids-stage1-undownloaded.csv
 ```
 
 ### clear blank logs
@@ -632,6 +639,7 @@ results = tap.search("select obs_id, gpubox_files_archived, gpubox_files_total, 
 #### render prepvisqa
 
 ```bash
+# singularity exec /pawsey/mwa/singularity/ffmpeg/ffmpeg_latest.sif ffmpeg
 module load ffmpeg
 # ,crop=in_w-3600:in_h:800:in_h
 ffmpeg -y -framerate 5 -pattern_type glob \
@@ -710,7 +718,7 @@ for name in 30l_src4k_phases 30l_src4k_amps; do
 done
 ```
 
-#### kickstart obsid from acacia
+### kickstart obsid from acacia
 
 ```bash
 export obsid=...
@@ -804,4 +812,91 @@ wsclean \
   -niter 0 \
   -parallel-reordering 8 \
   ../../${range}???????/cal/hyp_${range}???????_sub_30l_src4k_8s_80kHz.ms
+```
+
+### quick apply MS with different res
+
+```bash
+salloc --nodes=1 --mem=350G --gres=gpu:1 --time=8:00:00 --clusters=garrawarla --partition=gpuq --account=mwaeor -c 18
+export obsid=1255528600
+export time_res=2
+export freq_res=80
+module load hyperdrive/peel
+mkdir /dev/shm/deleteme
+cd /dev/shm/deleteme
+cp /astro/mwaeor/dev/nfdata/${obsid}/prep/birli_${obsid}_2s_40kHz.uvfits .
+cp /astro/mwaeor/dev/nfdata/${obsid}/cal/hyp_soln_${obsid}_30l_src4k.fits .
+cp /astro/mwaeor/dev/nfdata/$obsid/raw/${obsid}.metafits .
+hyperdrive solutions-apply \
+  --time-average "${time_res}s" --freq-average "${freq_res}kHz" \
+  --data "${obsid}.metafits" "birli_${obsid}_2s_40kHz.uvfits" \
+  --solutions "hyp_soln_${obsid}_30l_src4k.fits" \
+  --outputs "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms"
+tar -zcvf "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms.tar.gz" \
+  "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms"
+cp "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms.tar.gz" /astro/mwaeor/dev/frbhopper/
+
+hyperdrive vis-sub \
+  --data "${obsid}.metafits" "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms" \
+  --beam "/pawsey/mwa/mwa_full_embedded_element_pattern.h5" \
+  --source-list "/astro/mwaeor/dev/calibration/srclist_pumav3_EoR0LoBESv2_fixedEoR1pietro+ForA_phase1+2_edit.txt" \
+  --invert --num-sources 4000 \
+  --outputs "hyp_${obsid}_sub_30l_src4k_${time_res}s_${freq_res}kHz.ms"
+
+hyperdrive peel \
+  --data "${obsid}.metafits" "hyp_${obsid}_30l_src4k_${time_res}s_${freq_res}kHz.ms" \
+  --beam "/pawsey/mwa/mwa_full_embedded_element_pattern.h5" \
+  --source-list "/astro/mwaeor/dev/calibration/srclist_pumav3_EoR0LoBESv2_fixedEoR1pietro+ForA_phase1+2_edit.txt" \
+  --iono-sub 1000 \
+  --sub 4000 \
+  --outputs "hyp_${obsid}_ionosub_30l_src4k_${time_res}s_${freq_res}kHz.ms"
+
+```
+
+### wsclean
+
+```bash
+salloc --nodes=1 --mem=350G --time=8:00:00 --clusters=garrawarla --partition=workq --account=mwaeor --ntasks=20 --tmp=500G
+module load singularity
+mkdir /dev/shm/deleteme
+cd /dev/shm/deleteme
+export obsid=1090012424
+# export suffix=""
+# export suffix="_sub"
+export suffix="_ionosub"
+singularity exec --bind /astro --bind /pawsey --bind $PWD:/tmp --writable-tmpfs --pwd /tmp --home $PWD --cleanenv \
+    /pawsey/mwa/singularity/casa/casa.img \
+    casa -c "importuvfits('/astro/mwaeor/dev/nfdata/${obsid}/cal/hyp_${obsid}${suffix}_30l_src4k_8s_80kHz.uvfits', 'hyp_${obsid}${suffix}_30l_src4k_8s_80kHz.ms')"
+export img_weight='briggs -1.0'
+export img_size=2048
+export img_scale='40asec'
+export img_pol='xx,yy,v'
+export img_channels_out=24
+export img_intervals_out=15
+wsclean \
+    -name hyp_${obsid}${suffix}_30l_src4k_8s_80kHz \
+    -weight ${img_weight} \
+    -size ${img_size} ${img_size} \
+    -scale ${img_scale} \
+    -pol ${img_pol} \
+    -channels-out ${img_channels_out} \
+    -niter 0 \
+    -intervals-out ${img_intervals_out} \
+    hyp_${obsid}${suffix}_30l_src4k_8s_80kHz.ms
+```
+
+### fits2png
+
+```bash
+salloc --nodes=1 --mem=350G --time=8:00:00 --clusters=garrawarla --partition=workq --account=mwaeor --ntasks=20 --tmp=500G
+module load singularity
+for fits in $(ls *.fits); do
+  singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome \
+    /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
+    /astro/mwaeor/dev/MWAEoR-Pipeline/templates/thumbnail.py \
+      --fits=${fits} \
+      --output_name=${fits%.fits}.png \
+      --plot_title=${fits%.fits} \
+      --cmap=plasma & \
+done
 ```
