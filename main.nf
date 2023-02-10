@@ -119,6 +119,10 @@ process asvoPrep {
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
+    if (params.pullPrep) {
+        label "rclone"
+    }
+
     maxForks 10
 
     // allow multiple retries
@@ -153,9 +157,17 @@ process asvoPrep {
 
     ${params.proxy_prelude} # ensure proxy is set if needed
 
+    """ + ( params.pullPrep ? """
+    # download if available in accacia
+    rclone copy "${params.bucket_prefix}.prep/${uvfits}" .
+    if [ -f "${uvfits}" ]; then
+        exit 0
+    fi
+    """ : "" ) + """
+
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-conv -v \
-        -p timeres=${params.prep_time_res_s},freqres=${params.prep_freq_res_khz},conversion=uvfits,preprocessor=birli \
+        -p avg_time_res=${params.prep_time_res_s},avg_freq_res=${params.prep_freq_res_khz},output=uvfits \
         ${obsid} || true
 
     # list pending conversion jobs
