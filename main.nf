@@ -1002,7 +1002,7 @@ process wscleanDirty {
     tag "${obsid}.${meta.name}"
     label "wsclean"
 
-    time { 10.minute * (1 + (multiplier * pix_mult * chan_mult * inter_mult)) }
+    time { 5.minute * (1 + (multiplier * pix_mult * chan_mult * inter_mult)) }
 
     beforeScript = 'pwd; hostname; df -h .'
 
@@ -2330,7 +2330,9 @@ workflow img {
                 }
             }
         } else {
-            splitObsMetaVis = obsMetaVis
+            splitObsMetaVis = obsMetaVis.map { obsid, meta, vis ->
+                [obsid, meta, vis, deepcopy(wscleanParams)]
+            }
         }
         if (params.nodeconv) {
             splitObsMetaVis | wscleanDirty
@@ -2540,7 +2542,7 @@ workflow img {
                 ["imgqa_${meta.name}_polmontage", png]
             })
             .mix(thumbnail.out.flatMap { obsid, meta, png ->
-                frames_ = []
+                def frames_ = []
                 if (meta.chan?:-1 == -1) {
                     frames_.push(["imgqa_${meta.name}_${meta.inter_suffix}", png])
                 } else {
