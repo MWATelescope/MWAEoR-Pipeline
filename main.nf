@@ -2240,8 +2240,9 @@ workflow uvfits {
             // collect psMetrics as a .tsv
             psMetrics.out
                 // form each row of tsv
-                .map { obsid, vis_name, dat ->
+                .map { obsid, meta, dat ->
                     def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
+                    def vis_name = meta.name
                     ([obsid, vis_name] + dat_values).join("\t")
                 }
                 .collectFile(
