@@ -288,7 +288,8 @@ process hypSrclistAO {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}"
-    label "hyperdrive"
+    label "hyperdrive_cpu"
+    time 15.minute
 
     script:
     reduced = "${obsid}_reduced_n${params.sub_nsrcs}.txt"
@@ -315,7 +316,8 @@ process hypSrclistYaml {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}"
-    label "hyperdrive"
+    label "hyperdrive_cpu"
+    time 15.minute
 
     script:
     reduced = "${obsid}_reduced_n${params.sub_nsrcs}.yaml"
@@ -824,6 +826,7 @@ process uvMeta {
     tag "${obsid}.${meta.name}"
 
     label 'python'
+    time 15.minute
 
     script:
     uvmeta = "uvmeta_${meta.cal_prog}_${obsid}_${meta.name}.json"
