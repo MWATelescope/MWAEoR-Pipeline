@@ -1764,9 +1764,15 @@ workflow prep {
             | asvoPrep
 
         if (params.noprepqa) {
-            channel.from([]) | prepVisQA & ssins
+            channel.from([]) | prepVisQA
         } else {
-            asvoPrep.out | prepVisQA & ssins
+            obsMetafits.join(asvoPrep.out) | prepVisQA
+        }
+
+        if (params.nossins) {
+            channel.from([]) | ssins
+        } else {
+            asvoPrep.out | ssins
         }
 
         // uncomment this to skip prep and flag QA
