@@ -2059,7 +2059,11 @@ workflow cal {
             | (plotSols & calQA)
 
         // plot each calQA result
-        calQA.out | plotCalQA
+        if (params.noplotcalqa) {
+            channel.from([]) | plotCalQA
+        } else {
+            calQA.out | plotCalQA
+        }
 
         // plot aggregate calQA results
         calQA.out
