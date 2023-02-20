@@ -407,9 +407,9 @@ process rexCalSol {
 // do multiple calibration solutions for each obs, depending on dical_args
 process hypCalSol {
     input:
-    tuple val(obsid), val(dical_args), path(metafits), path(uvfits), val(tile_flags)
+    tuple val(obsid), val(meta), path(metafits), path(uvfits), val(dical_args)
     output:
-    tuple val(obsid), path("hyp_soln_${obsid}_${name_glob}.fits"), path("hyp_di-cal_${obsid}_${name_glob}.log")
+    tuple val(obsid), val(meta), path("hyp_soln_${obsid}_${name_glob}.fits"), path("hyp_di-cal_${obsid}_${name_glob}.log")
     // todo: model subtract: path("hyp_model_${obsid}_${name_glob}.uvfits")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
@@ -426,7 +426,7 @@ process hypCalSol {
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
-    flag_args = tile_flags.size() > 0 ? "--tile-flags ${tile_flags.join(' ')}" : ""
+    flag_args = meta.prepflags.size() > 0 ? "--tile-flags ${meta.prepflags.join(' ')}" : ""
 
     """
     #!/bin/bash -eux
@@ -499,13 +499,12 @@ process polyFit {
     tuple val(obsid), val(meta), path(poly_soln), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
-    tag "${obsid}.${old_name}"
+    tag "${obsid}.${meta.dical_name}"
 
     label 'python'
 
     script:
-    old_name = meta.name
-    meta.name = "poly_${meta.name}"
+    meta = deepcopy(meta) + [name: "poly_${meta.name}"]
     poly_soln = "${meta.cal_prog}_soln_${obsid}_${meta.name}.fits"
     logs = "polyfit_${obsid}_${meta.name}.log"
     """
@@ -548,7 +547,7 @@ process hypApplyUV {
     label "hyperdrive"
 
     script:
-    meta.name = "${meta.name}_${meta.apply_name}"
+    meta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
     cal_vis = "hyp_${obsid}_${meta.name}.uvfits"
     logs = "hyp_apply_${meta.name}.log"
     """
@@ -584,7 +583,7 @@ process hypApplyMS {
     label "hyperdrive"
 
     script:
-    meta.name = "${meta.name}_${meta.apply_name}"
+    meta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
     cal_vis = "hyp_${obsid}_${meta.name}.ms"
     logs = "hyp_apply_${meta.name}_ms.log"
     """
@@ -620,8 +619,7 @@ process hypSubUV {
 
     script:
     old_name = meta.name
-    meta.sub = "sub"
-    meta.name = "sub_${meta.name}"
+    meta = deepcopy(meta) + [sub: "sub", name: "sub_${meta.name}"]
     sub_vis = "hyp_${obsid}_${meta.name}.uvfits"
     logs = "hyp_vis-${meta.name}_uv.log"
     """
@@ -651,13 +649,12 @@ process hypSubMS {
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${old_name}"
     label "hyperdrive"
 
     script:
     old_name = meta.name
-    meta.sub = "sub"
-    meta.name = "sub_${meta.name}"
+    meta = deepcopy(meta) + [sub: "sub", name: "sub_${meta.name}"]
     sub_vis = "hyp_${obsid}_${meta.name}.ms"
     logs = "hyp_vis-${meta.name}_ms.log"
     """
@@ -694,8 +691,7 @@ process hypIonoSubUV {
 
     script:
     old_name = meta.name
-    meta.sub = "ionosub"
-    meta.name = "ionosub_${meta.name}"
+    meta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
     sub_vis = "hyp_${obsid}_${meta.name}.uvfits"
     logs = "hyp_vis-${meta.name}_uv.log"
     json = "hyp_peel_${obsid}_${meta.name}_uv.json"
@@ -734,8 +730,7 @@ process hypIonoSubMS {
 
     script:
     old_name = meta.name
-    meta.sub = "ionosub"
-    meta.name = "ionosub_${meta.name}"
+    meta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
     sub_vis = "hyp_${obsid}_${meta.name}.ms"
     logs = "hyp_vis-${meta.name}_ms.log"
     json = "hyp_peel_${obsid}_${meta.name}_ms.json"
@@ -974,18 +969,18 @@ process plotVisQA {
 
 process delaySpec {
     input:
-    tuple val(obsid), val(name), path(uvfits)
+    tuple val(obsid), val(meta), path(uvfits)
     output:
-    tuple val(obsid), val(name), path(dlyspec)
+    tuple val(obsid), val(meta), path(dlyspec)
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    title = "${obsid}_${name}"
+    title = "${obsid}_${meta.name}"
     dlyspec = "dlyspec_${title}.png"
     vmin = 3e13
     vmax = 1e15
@@ -1209,18 +1204,18 @@ process psMetrics {
 // analyse images of V,XX,YY
 process imgQA {
     input:
-    tuple val(obsid), val(name), path(fits)
+    tuple val(obsid), val(meta), path(fits)
     output:
-    tuple val(obsid), val(name), path(json)
+    tuple val(obsid), val(meta), path(json)
 
     storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    json = "wsclean_hyp_${obsid}_${name}-MFS.json"
+    json = "wsclean_hyp_${obsid}_${meta.name}-MFS.json"
     """
     #!/bin/bash -eux
     run_imgqa.py ${fits.join(' ')} --out ${json}
@@ -1229,18 +1224,18 @@ process imgQA {
 
 process uvPlot {
     input:
-    tuple val(obsid), val(name), path(uvfits)
+    tuple val(obsid), val(meta), path(uvfits)
     output:
-    tuple val(obsid), val(name), path("uvplot_${title}_{XX,YY,XY,YX}.png")
+    tuple val(obsid), val(meta), path("uvplot_${title}_{XX,YY,XY,YX}.png")
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
-    tag "${obsid}.${name}"
+    tag "${obsid}.${meta.name}"
 
     label 'python'
 
     script:
-    title = "${obsid}_${name}"
+    title = "${obsid}_${meta.name}"
     uvplot = "uvplot_${title}"
     template "uvplot_3d.py"
 }
@@ -1286,7 +1281,7 @@ process polComp {
     label 'python'
 
     script:
-    meta.orderName = meta.order.join('')
+    meta = deepcopy(meta) + ['orderName': meta.order.join('')]
     polcomp = "${obsid}${meta.subobs?:''}_${meta.name}_polcomp_${meta.prod}_${meta.orderName}.png"
     title = "${obsid}${meta.subobs?:''} ${meta.name} ${meta.prod} ${meta.orderName}"
     args = ""
@@ -1957,56 +1952,61 @@ workflow cal {
     main:
         // hyperdrive di-calibrate on each obs
         obsMetaVis
-            .map { def (obsids, metafits, uvfits, antFlags) = it
-                [obsids, params.dical_args, metafits, uvfits, antFlags]
+            .map { def (obsids, meta, metafits, uvfits) = it
+                [obsids, meta, metafits, uvfits, params.dical_args]
             }
             | hypCalSol
 
         // hyperdrive dical log analysis
-        hypCalSol.out
-            .transpose()
-            .map { obsid, soln, diCalLog ->
-                def name = soln.getBaseName().split('_')[3..-1].join('_')
-                def (convergedDurationSec, convergedNumerator, convergedDenominator) = ['', '', '']
-                if (!diCalLog.isEmpty()) {
-                    def startMatch = diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/
-                    def startTime = null
-                    if (startMatch) {
-                        startTime = logDateFmt.parse(startMatch[0][1])
-                    }
-                    def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)
-                    if (startTime && convergedMatch) {
-                        def convergedTime = logDateFmt.parse(convergedMatch[0][1])
-                        convergedNumerator = convergedMatch[0][2] as int
-                        convergedDenominator = convergedMatch[0][3] as int
-                        convergedDurationSec = (convergedTime.time - startTime.time) / 1000
-                    }
-                }
-
-                [obsid, name, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
-            }
-            .collectFile(
-                name: "cal_timings${params.cal_suffix}.tsv", newLine: true, sort: true,
-                seed: [
-                    "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
-                ].join("\t"),
-                storeDir: "${results_dir}${params.cal_suffix}"
-            )
+        // hypCalSol.out
+        //     .flatMap { obsid, meta, solns, logs ->
+        //         [
+        //             (solns instanceof List ? solns : [solns]),
+        //             (logs instanceof List ? logs : [logs])
+        //         ].transpose().collect { soln, log ->
+        //             def name = soln.getBaseName().split('_')[3..-1].join('_')
+        //             def (convergedDurationSec, convergedNumerator, convergedDenominator) = ['', '', '']
+        //             if (!diCalLog.isEmpty()) {
+        //                 def startMatch = diCalLog.getText() =~ /([\d: -]+) INFO  hyperdrive di-calibrate/
+        //                 def startTime = null
+        //                 if (startMatch) {
+        //                     startTime = logDateFmt.parse(startMatch[0][1])
+        //                 }
+        //                 def convergedMatch = (diCalLog.getText() =~ /([\d: -]+) INFO  All timesteps: (\d+)\/(\d+)/)
+        //                 if (startTime && convergedMatch) {
+        //                     def convergedTime = logDateFmt.parse(convergedMatch[0][1])
+        //                     convergedNumerator = convergedMatch[0][2] as int
+        //                     convergedDenominator = convergedMatch[0][3] as int
+        //                     convergedDurationSec = (convergedTime.time - startTime.time) / 1000
+        //                 }
+        //             }
+        //             [obsid, name, convergedDurationSec, convergedNumerator, convergedDenominator].join("\t")
+        //         }
+        //     }
+        //     .collectFile(
+        //         name: "cal_timings${params.cal_suffix}.tsv", newLine: true, sort: true,
+        //         seed: [
+        //             "OBS", "CAL NAME", "CAL DUR", "CHS CONVERGED", "CHS TOTAL"
+        //         ].join("\t"),
+        //         storeDir: "${results_dir}${params.cal_suffix}"
+        //     )
+        //     | view { [it, it.readLines().size()] }
 
         // channel of individual dical solutions: tuple(obsid, meta, soln)
         // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
         eachCal = hypCalSol.out
-            .map { obsid, solutions, _ -> [obsid, solutions] } // ignore logs
-            .transpose()
-            .map { obsid, soln ->
-                // give each calibration a name from basename of solution fits.
-                // this is everything after the obsid
-                def meta = [
-                    dical_name: soln.baseName.split('_')[3..-1].join('_'),
-                    cal_prog: "hyp"
-                ]
-                meta.name = meta.dical_name
-                [obsid, meta, soln]
+            .flatMap { obsid, meta, solns, _ ->
+                (solns instanceof List ? solns : [solns]).collect { soln ->
+                    // give each calibration a name from basename of solution fits.
+                    // this is everything after the obsid
+                    def dical_name = soln.baseName.split('_')[3..-1].join('_');
+                    def newMeta = [
+                        dical_name: dical_name,
+                        name: dical_name,
+                        cal_prog: "hyp"
+                    ]
+                    [obsid, deepcopy(meta) + newMeta, soln]
+                }
             }
 
         // generate json from solns
@@ -2049,7 +2049,7 @@ workflow cal {
             | view { [it, it.readLines().size()] }
 
         // channel of metafits for each obsid: tuple(obsid, metafits)
-        obsMetafits = obsMetaVis.map { obsid, metafits, _, __ -> [obsid, metafits] }
+        obsMetafits = obsMetaVis.map { obsid, _, metafits, __ -> [obsid, metafits] }
         // calibration QA and plot solutions
         obsMetafits
             // join with solutions from eachCal and eachPolyCal
@@ -2066,22 +2066,17 @@ workflow cal {
             calQA.out | plotCalQA
         }
 
-        // plot aggregate calQA results
-        calQA.out
-            .map { _, __, json -> json }
-            .collect(sort: true)
-            | plotCalJsons
-
         // collect calQA results as .tsv
         calQA.out
             // form row of tsv from json fields we care about
-            .map { obsid, name, json ->
+            .map { obsid, meta, json ->
                 def stats = parseJson(json)
                 def convg_var = stats.CONVERGENCE_VAR
                 [
                     obsid,
-                    name,
+                    meta.name,
                     stats.STATUS?:'',
+                    displayInts(stats.BAD_ANTS?:[]),
                     (stats.UNUSED_BLS?:0) / 100,
                     (stats.UNUSED_CHS?:0) / 100,
                     (stats.UNUSED_ANTS?:0) / 100,
@@ -2130,25 +2125,41 @@ workflow cal {
     // - take tuple(obsid, cal_name, json) from calQA.out
     // - filter on json.STATUS == "PASS"
     // - take obsid and name
-    obsidNamePass = calQA.out
-        .filter { _, __, json -> parseJson(json).STATUS == "PASS" }
-        .map { obsid, meta, _ -> [obsid, meta] }
+    obsMetaPass = calQA.out
+        .map { obsid, meta, json ->
+            def stats = parseJson(json);
+            def newMeta = [:];
+            if (stats.BAD_ANTS) {
+                def prepflags = (meta.prepflags?:[]) as Set
+                def calflags = (stats.BAD_ANTS?:[]) as Set
+                def newflags = (calflags - prepflags) as int[]
+                if (newflags) {
+                    newMeta.calflags = newflags
+                }
+            }
+            [obsid, deepcopy(meta) + newMeta]
+        }
+        // TODO: reintroduce status filter
+        // .filter { _, __, stats -> stats.STATUS == "PASS" }
 
     emit:
         // channel of calibration solutions that pass qa. tuple(obsid, name, cal)
         // - take tuple(obsid, meta, soln) from allCal
-        // - match with obsidNamePass on (obsid, cal_name)
+        // - match with obsMetaPass on (obsid, cal_name)
         passCal = allCal
-            .cross(obsidNamePass) {it -> [it[0], it[1].name]}
-            .map{ allCal, _ -> allCal }
+            .cross(obsMetaPass) {it -> [it[0], it[1].name]}
+            .map{ allCal_, obsMetaPass_ ->
+                def (obsid, _, soln) = allCal_
+                def (__, meta) = obsMetaPass_
+                [obsid, meta, soln]
+            }
         // channel of files to archive, and their buckets
         archive = calQA.out.map { _, __, json -> ["calqa", json]}
         // channel of video name and frames to convert
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, meta, pngs ->
                 pngs.collect { png ->
-                    def png_name = png.baseName.split('_')[-1]
-                    ["calqa_${meta.name}_${png_name}", png]
+                    ["calqa_${meta.name}", png]
                 }
             }
             .groupTuple()
@@ -2228,7 +2239,7 @@ workflow uvfits {
         // write bands and fields to a file
         obsMetaVis.map { obsid, meta, vis ->
             [
-                obsid, meta.name, meta.config?:'', meta.eorband?:'', meta.eorfield?:'', 
+                obsid, meta.name, meta.config?:'', meta.eorband?:'', meta.eorfield?:'',
                 meta.nchans?:'', meta.lowfreq?:'', meta.freq_res?:'', vis
             ].join('\t') }
             .collectFile(
@@ -2242,7 +2253,7 @@ workflow uvfits {
             | view { [it, it.readLines().size()] }
 
         if (params.noplotvisqa) {
-        channel.from([]) | plotVisQA
+            channel.from([]) | plotVisQA
         } else {
             visQA.out | plotVisQA
         }
@@ -2319,7 +2330,7 @@ workflow uvfits {
 
         // delay spectrum
         if (params.nodelayspec) {
-        channel.from([]) | delaySpec
+            channel.from([]) | delaySpec
         } else {
             eorObsMetaVis | delaySpec
         }
@@ -2329,7 +2340,7 @@ workflow uvfits {
         archive = visQA.out.map { _, __, json -> ["visqa", json]}
         // channel of video name and frames to convert
         frame = plotVisQA.out
-            .map { _, name, png -> ["visqa_${name}_rms", png] }
+            .map { _, meta, png -> ["visqa_${meta.name}_rms", png] }
             .mix(uvPlot.out.flatMap {_, name, pngs -> pngs.collect { png ->
                 def pol = png.baseName.split('_')[-2..-1].join('_')
                 ["visqa_${name}_${pol}", png]
@@ -2408,9 +2419,7 @@ workflow img {
         obsMetaImg = wscleanDConv.out.mix(wscleanDirty.out)
             .flatMap { obsid, meta, imgs ->
                 imgs.collect { img ->
-                    imgMeta = deepcopy(meta)
-                    imgMeta += decomposeImg(img)
-                    [obsid, imgMeta, img] }}
+                    [obsid, deepcopy(meta) + decomposeImg(img), img] }}
         // obsMetaImg but only MFS images unless thumbnail_all_chans
         obsMetaImgMfs = obsMetaImg.filter { _, meta, img ->
                 meta.prod !=~ /uv-.*/ \
@@ -2468,7 +2477,6 @@ workflow img {
                 limits.collectEntries { k, v -> [k, [v, acc[k]?:v].max()] }
             }
             .collect()
-            .view { "suffLimits: ${it}" }
 
         // all valid pol orders for polComp
         polOrders = [
@@ -2504,36 +2512,30 @@ workflow img {
             .mix(obsMetaGrid) \
             | thumbnail
 
-        // imgQA and polComp for all groups of images
-        // obsNameMfsImgs | (imgQA & polComp)
-        channel.from([]) \
-            | imgQA
-
         // montage of polarizations
         thumbnail.out.flatMap { obs, meta, png ->
                 // visibility name, without sub*
-                meta.vis_name = meta.name
-                meta.sub = meta.sub?:'nosub'
-                if (m = meta.vis_name =~ /(sub|ionosub)_(.*)/) {
-                    meta.sub = m.group(1).toString()
-                    meta.vis_name = m.group(2).toString()
+                def newMeta = deepcopy(meta) + [vis_name: meta.name, sub: meta.sub?:'nosub']
+                if (m = newMeta.vis_name =~ /(sub|ionosub)_(.*)/) {
+                    newMeta.sub = m.group(1).toString()
+                    newMeta.vis_name = m.group(2).toString()
                 }
 
                 // suffix without interval (-t????)
-                // meta.subobs = meta.subobs?:''
-                // meta.inter_suffix = meta.suffix
-                // if (m = meta.inter_suffix =~ /(t????)-(.*)/) {
-                //     meta.subobs = m.group(1).toString() + meta.subobs
-                //     meta.inter_suffix = m.group(2).toString()
+                // newMeta.subobs = newMeta.subobs?:''
+                // newMeta.inter_suffix = newMeta.suffix
+                // if (m = newMeta.inter_suffix =~ /(t????)-(.*)/) {
+                //     newMeta.subobs = m.group(1).toString() + newMeta.subobs
+                //     newMeta.inter_suffix = m.group(2).toString()
                 // }
                 // def montage_name = [sub: suffix, pol: sub_name].get(params.montage_by)
-                subobs = "${meta.subobs?:''}${meta.inter_tok?:''}".toString()
+                subobs = "${newMeta.subobs?:''}${newMeta.inter_tok?:''}".toString()
                 montages = []
                 if (params.montage_by_sub) {
-                    montages << [obsid, subobs, "${meta.vis_name}-${meta.chan_tok}-${meta.pol}-${meta.prod}".toString(), png]
+                    montages << [obsid, subobs, "${newMeta.vis_name}-${newMeta.chan_tok}-${newMeta.pol}-${newMeta.prod}".toString(), png]
                 }
                 if (params.montage_by_pol) {
-                    montages << [obsid, subobs, "${meta.name}-${meta.chan_tok}-${meta.prod}".toString(), png]
+                    montages << [obsid, subobs, "${newMeta.name}-${newMeta.chan_tok}-${newMeta.prod}".toString(), png]
                 }
                 montages
             }
@@ -2549,14 +2551,32 @@ workflow img {
         //         [obs, name, thumbs.sort()]
         //     }
 
+        // imgQA for MFS images and groups of images
+        if (params.noimgqa) {
+            channel.from([]) | imgQA
+        } else {
+            obsMetaImgMfs
+                .filter { _, meta, __ -> meta.prod == 'image' }
+                .map { obsid, meta, img -> [obsid, meta.name, meta, img] }
+                .groupTuple(by: 0..1)
+                .map {obsid, name, metas, imgs -> [obsid, metas[0], imgs]}
+                | imgQA
+        }
+
+        if (params.noplotimgqa) {
+            channel.from([]) | plotImgQA
+        } else {
+            imgQA.out | plotImgQA
+        }
+
         // collect imgQA results as .tsv
         imgQA.out
             // form row of tsv from json fields we care about
-            .map { obsid, name, json ->
+            .map { obsid, meta, json ->
                 def stats = parseJson(json)
                 [
                     obsid,
-                    name,
+                    meta.name,
                     stats.XX?.RMS_ALL, stats.XX?.RMS_BOX, stats.XX?.PKS0023_026?.PEAK_FLUX, stats.XX?.PKS0023_026?.INT_FLUX,
                     stats.YY?.RMS_ALL, stats.YY?.RMS_BOX, stats.YY?.PKS0023_026?.PEAK_FLUX, stats.YY?.PKS0023_026?.INT_FLUX,
                     stats.V?.RMS_ALL, stats.V?.RMS_BOX, stats.V?.PKS0023_026?.PEAK_FLUX, stats.V?.PKS0023_026?.INT_FLUX,
@@ -2672,7 +2692,7 @@ workflow {
             ]).join("\t")
         }
         .collectFile(
-            name: "tile_flags.tsv", newLine: true, sort: true,
+            name: "prep_flags.tsv", newLine: true, sort: true,
             seed: ([ "OBS", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
             storeDir: "${results_dir}"
         )
@@ -2718,9 +2738,26 @@ workflow qaPrep {
         } else {
             obsMetafitsVis.join(obsFlags)
                 .filter { _, metafits, vis, __ -> metafits != null && vis != null}
-                .map { obs, metafits, vis, flags -> [obs, metafits, vis, flags ? flags : [] ]}
+                .map { obs, metafits, vis, flags ->
+                    def meta = [prepflags: []];
+                    if (flags != null && flags.size() > 0) {
+                        meta.prepflags = flags
+                    }
+                    [obs, meta, metafits, vis]
+                }
                 | cal
         }
+
+        cal.out.passCal
+            .map { it -> def (obsid, meta, soln) = it;
+                ([obsid, meta.name, displayInts(meta.prepflags?:[]), displayInts(meta.calflags?:[])]).join("\t")
+            }
+            .collectFile(
+                name: "passcal.tsv", newLine: true, sort: true,
+                seed: ([ "OBS", "NAME", "PREPFLAGS", "CALFLAGS" ]).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
+            | view { [it, it.readLines().size()] }
 
         // channel of arguments for hypApply{UV,MS}
         // - take tuple(obsid, cal_name, soln) from cal.out.passCal
@@ -2731,15 +2768,17 @@ workflow qaPrep {
             allApply = obsMetafitsVis
                 .join(cal.out.passCal)
                 .map { obsid, metafits, prepUVFits, meta, soln ->
-                    def newMeta = deepcopy(meta)
-                    newMeta += [
+                    def newMeta = [
                         time_res: params.apply_time_res,
                         freq_res: params.apply_freq_res,
                         nodut1: params.nodut1,
                         apply_args: params.apply_args,
                     ]
+                    if (meta.calflags) {
+                        newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${meta.calflags.join(' ')}"
+                    }
                     newMeta.apply_name = "${newMeta.time_res}s_${newMeta.freq_res}kHz"
-                    [obsid, newMeta, metafits, prepUVFits, soln]
+                    [obsid, deepcopy(meta) + newMeta, metafits, prepUVFits, soln]
                 }
         }
 
@@ -2830,10 +2869,10 @@ workflow qaPrep {
             .mix(hypSubMS.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] })
 
         // visibilities for imaging and power spectrum
-            // filter by visibilities that pass uvfits QA if --nouv is not set
-            if (params.nouv) {
-                obsMetaVisPass = obsMetaMS
-            } else {
+        // filter by visibilities that pass uvfits QA if --nouv is not set
+        if (params.nouv) {
+            obsMetaVisPass = obsMetaMS
+        } else {
             obsMetaVisPass = uvfits.out.passVis
                 .cross(obsMetaUVSmart.map {
                     def (obs, meta, vis) = it
@@ -2843,11 +2882,11 @@ workflow qaPrep {
                     def (obs, _, meta, vis) = it[1];
                     [obs, meta, vis]
                 }
-            }
+        }
 
         // group obsids by epoch, field and band for imaging
         groupMetaVisPass = obsMetaVisPass
-                .map { obs, meta, vis ->
+            .map { obs, meta, vis ->
                 // def group = "e${obs[0..5]}X"
                 def group = "jd${meta.first_jd.round()}"
                 def name = "e_${meta.name}"
@@ -2859,13 +2898,13 @@ workflow qaPrep {
                 }
                 // meta.nchan?
                 [group, name, meta, vis]
-                }
-                .groupTuple(by: [0, 1])
+            }
+            .groupTuple(by: [0, 1])
             // .map { group, name, metas, _ ->
             // }
-            .filter { _, __, ___, viss -> viss.size() > 5 }
-                .map { group, name, metas, viss ->
-                    def ntimes = metas.collect { it.ntimes?:0 }.sum()
+            .filter { _, __, ___, viss -> viss.size() > 1 }
+            .map { group, name, metas, viss ->
+                def ntimes = metas.collect { it.ntimes?:0 }.sum()
                 def newMeta = [ntimes: ntimes, name: name]
                 [group, deepcopy(metas[0]) + newMeta, viss.unique()]
             }
