@@ -221,7 +221,7 @@ process flagQA {
     output:
     tuple val(obsid), path(metrics)
 
-    storeDir "${params.outdir}/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${obsid}"
 
@@ -244,7 +244,7 @@ process ssins {
         // todo: path("ssins_VDH.png"),
         // todo: path("match_events.json"),
 
-    storeDir "${params.outdir}/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${obsid}"
 
