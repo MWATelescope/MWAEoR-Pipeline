@@ -1181,7 +1181,7 @@ process imgQuantiles {
 // power spectrum metrics via chips
 process psMetrics {
     input:
-    tuple val(obsid), val(meta), path("vis.uvfits")
+    tuple val(obsid), val(meta), path("${uvbase}.uvfits")
     output:
     tuple val(obsid), val(meta), path(out_metrics)
 
@@ -1192,16 +1192,17 @@ process psMetrics {
     label "chips"
 
     script:
-    band = 0
-    uv_base = "vis"
-    out_metrics = "output_metrics_${meta.cal_prog}_${obsid}_${meta.name}.dat"
+    uvbase = "${meta.cal_prog}_${obsid}_${meta.name}"
+    nchans = meta.nchans
+    eorband = meta.eorband
+    out_metrics = "output_metrics_${uvbase}.dat"
     """
     #!/bin/bash -eux
     export DATADIR="\$PWD"
     export OUTPUTDIR="\$PWD/"
-    ${params.ps_metrics} "${uv_base}" "${band}" "${meta.nchan?:384}" "${uv_base}" 2>&1 \
-        | tee "${uv_base}.log"
-    mv "output_metrics_vis.dat" "${out_metrics}"
+    export OMP_NUM_THREADS=${task.cpus}
+    ${params.ps_metrics} "${uvbase}" "${eorband}" "${nchans}" "${uvbase}" 2>&1 \
+        | tee "${uvbase}.log"
     """
 }
 
@@ -2158,9 +2159,9 @@ workflow uvfits {
     take:
         obsMetaVis
     main:
-        // vis QA
+        // vis QA on each phase2 obsid, no subtractions
         obsMetaVis
-            .filter { _, meta, __ -> !meta.sub }
+            .filter { obsid, meta, __ -> meta.sub && meta.config == "phase2a" }
             | visQA
         channel.from([]) | uvPlot
 
@@ -2224,17 +2225,38 @@ workflow uvfits {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        // TODO: plotVisQA isn't working
+        // write bands and fields to a file
+        obsMetaVis.map { obsid, meta, vis ->
+            [
+                obsid, meta.name, meta.config?:'', meta.eorband?:'', meta.eorfield?:'', 
+                meta.nchans?:'', meta.lowfreq?:'', meta.freq_res?:'', vis
+            ].join('\t') }
+            .collectFile(
+                name: "eor_params.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBSID", "NAME", "CONFIG", "BAND", "FIELD", "NCHAN", "LOWFREQ", "FREQRES", "VIS"
+                ].join('\t'),
+                storeDir: "${results_dir}${params.cal_suffix}"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
+        if (params.noplotvisqa) {
         channel.from([]) | plotVisQA
-        // visQA.out | plotVisQA
+        } else {
+            visQA.out | plotVisQA
+        }
+
+        eorObsMetaVis = obsMetaVis
+            .filter { _, meta, __ -> (meta.eorband != null && meta.eorfield != null) }
 
         // ps_metrics
         if (params.nopsmetrics) {
-            passVis = obsMetaVis
+            passVis = eorObsMetaVis
                 .map { obsid, meta, __ -> [obsid, meta.name] }
                 .unique()
         } else {
-            obsMetaVis | psMetrics
+            eorObsMetaVis | psMetrics
 
             // collect psMetrics as a .dat
             psMetrics.out
@@ -2270,24 +2292,37 @@ workflow uvfits {
             // TODO: this is a dirty hack until we get proper vis metrics filtering
             passVis = psMetrics.out
                 // form each row of tsv
-                .map { obsid, vis_name, dat ->
+                .map { obsid, meta, dat ->
                     def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
-                    [obsid, vis_name, p_wedge, p_window]
+                    try {
+                        p_wedge = p_wedge.toFloat()
+                    } catch (java.lang.NumberFormatException e) {
+                        p_wedge = java.lang.Float.NaN
+                    }
+                    try {
+                        p_window = p_window.toFloat()
+                    } catch (java.lang.NumberFormatException e) {
+                        p_window = java.lang.Float.NaN
+                    }
+                    [obsid, meta, p_wedge, p_window]
                 }
-                // .filter { obsid, vis_name, p_wedge, p_window ->
-                //     if (vis_name.contains("sub")) {
-                //         return p_wedge.toFloat() < 100 && p_window.toFloat() < 50
-                //     } else {
-                //         return p_wedge.toFloat() < 500 && p_window.toFloat() < 500
-                //     }
-                // }
-                .map { obsid, vis_name, p_wedge, p_window -> [obsid, vis_name] }
+                .filter { obsid, meta, p_wedge, p_window ->
+                    if (meta.sub != null) {
+                        return p_wedge < 100 && p_window < 50
+                    } else {
+                        return p_wedge < 500 && p_window < 500
+                    }
+                }
+                .map { obsid, meta, _, __ -> [obsid, meta.name] }
                 .unique()
         }
 
-        // delayspectrum
-        // obsMetaVis | delaySpec
+        // delay spectrum
+        if (params.nodelayspec) {
         channel.from([]) | delaySpec
+        } else {
+            eorObsMetaVis | delaySpec
+        }
 
     emit:
         // channel of files to archive, and their buckets
@@ -2299,7 +2334,7 @@ workflow uvfits {
                 def pol = png.baseName.split('_')[-2..-1].join('_')
                 ["visqa_${name}_${pol}", png]
             }})
-            .mix(delaySpec.out.map { _, name, png -> ["visqa_dlyspec_${name}", png] })
+            .mix(delaySpec.out.map { _, meta, png -> ["visqa_dlyspec_${meta.name}", png] })
             .groupTuple()
 
         passVis = passVis
@@ -2724,17 +2759,15 @@ workflow qaPrep {
             .map { obsMetaSrclist_, hypApplyUV_ ->
                 def (obsid, metafits, srclist) = obsMetaSrclist_
                 def (__, meta, vis) = hypApplyUV_;
-                def newMeta = deepcopy(meta)
-                newMeta.sub_nsrcs = params.sub_nsrcs
-                [obsid, newMeta, metafits, vis, srclist]
+                def newMeta = [sub_nsrcs: params.sub_nsrcs]
+                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
         subArgsMS = obsMetaSrclist.cross(hypApplyMS.out)
             .map { obsMetaSrclist_, hypApplyUV_ ->
                 def (obsid, metafits, srclist) = obsMetaSrclist_
                 def (__, meta, vis) = hypApplyUV_;
-                def newMeta = deepcopy(meta)
-                newMeta.sub_nsrcs = params.sub_nsrcs
-                [obsid, newMeta, metafits, vis, srclist]
+                def newMeta = [sub_nsrcs: params.sub_nsrcs]
+                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
         if (params.nosub) {
             channel.from([]) | (hypSubUV & hypSubMS)
@@ -2746,14 +2779,12 @@ workflow qaPrep {
             channel.from([]) | (hypIonoSubUV & hypIonoSubMS)
         } else {
             subArgsUV.map {obsid, meta, metafits, vis, srclist ->
-                def newMeta = deepcopy(meta)
-                newMeta.ionosub_nsrcs = params.ionosub_nsrcs
-                [obsid, newMeta, metafits, vis, srclist]}
+                def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
+                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
                 | hypIonoSubUV
             subArgsMS.map {obsid, meta, metafits, vis, srclist ->
-                def newMeta = deepcopy(meta);
-                newMeta.ionosub_nsrcs = params.ionosub_nsrcs
-                [obsid, newMeta, metafits, vis, srclist]}
+                def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
+                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
                 | hypIonoSubMS
         }
         // make cthulhu plots
@@ -2776,11 +2807,19 @@ workflow qaPrep {
             .map { obsMetaUV_, uvMeta_ ->
                 def (obsid, meta, vis) = obsMetaUV_; def (_, __, json) = uvMeta_;
                 def jsonMeta = parseJson(json)
-                def meta2 = [
+                def newMeta = [
+                    lowfreq:jsonMeta.freqs[0],
+                    first_lst: jsonMeta.times[0]['lst_rad'],
+                    first_jd: jsonMeta.times[0]['jd1'],
                     nchans:jsonMeta.freqs.size(),
                     ntimes:jsonMeta.times.size()
                 ];
-                [obsid, meta + meta2, vis] }
+                ['eorband', 'eorfield', 'config'].each { key ->
+                    if (jsonMeta[key] != null) {
+                        newMeta[key] = jsonMeta[key]
+                    }
+                }
+                [obsid, deepcopy(meta) + newMeta, vis] }
 
         // QA uvfits visibilities
         obsMetaUVSmart | uvfits
@@ -2790,59 +2829,68 @@ workflow qaPrep {
             .mix(hypIonoSubMS.out.map { obsid, meta, vis, _, __ -> [obsid, meta, vis] })
             .mix(hypSubMS.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] })
 
-        // image and qa measurementsets or uvfits unless --noimage
-        if (params.noimg) {
-            channel.from([]) | img
-        } else {
-            // visibilities for imaging
-            // prefer measurement sets if availabe, otherwise importuvfits
+        // visibilities for imaging and power spectrum
             // filter by visibilities that pass uvfits QA if --nouv is not set
             if (params.nouv) {
                 obsMetaVisPass = obsMetaMS
             } else {
-                obsMetaVisPass = obsMetaUVSmart
+            obsMetaVisPass = uvfits.out.passVis
+                .cross(obsMetaUVSmart.map {
+                    def (obs, meta, vis) = it
+                    [obs, meta.name, meta, vis]
+                }) { it[0..1] }
+                .map {
+                    def (obs, _, meta, vis) = it[1];
+                    [obs, meta, vis]
+                }
             }
-            // if (params.noms) {
-            //     obsMetaVisPass = uvfits.out.passVis
-            //         .cross(obsMetaUVSmart.map {
-            //             def (obs, meta, vis) = it
-            //             [obs, meta.name, meta, vis]
-            //         }) { it[0..1] }
-            //         .map { def (obs, _, meta, vis) = it[1]; [obs, meta, vis] }
-            //         .view { it -> "obsMetaVisPass ${it}"}
-            // } else {
-            //     obsMetaVisPass = uvfits.out.passVis
-            //         .cross(obsMetaMS.map {
-            //             def (obs, meta, vis) = it
-            //             [obs, meta.name, meta, vis]
-            //         }) { it[0..1] }
-            //         .map { def (obs, _, meta, vis) = it[1]; [obs, meta, vis] }
-            // }
-            // group obsids by groupid and pointing for imaging
-            imgEpochs = obsMetaVisPass
+
+        // group obsids by epoch, field and band for imaging
+        groupMetaVisPass = obsMetaVisPass
                 .map { obs, meta, vis ->
-                    def epoch = obs[0..5]
-                    ["e${epoch}X", "e_${meta.name}", meta, vis]
+                // def group = "e${obs[0..5]}X"
+                def group = "jd${meta.first_jd.round()}"
+                def name = "e_${meta.name}"
+                if (meta.eorfield != null) {
+                    name += "_eor${meta.eorfield}"
+                }
+                if (meta.eorband != null) {
+                    name += (meta.eorband == 0 ? "low" : "high")
+                }
+                // meta.nchan?
+                [group, name, meta, vis]
                 }
                 .groupTuple(by: [0, 1])
-                .filter { _, __, ___, viss -> viss.size() > 1 }
+            // .map { group, name, metas, _ ->
+            // }
+            .filter { _, __, ___, viss -> viss.size() > 5 }
                 .map { group, name, metas, viss ->
                     def ntimes = metas.collect { it.ntimes?:0 }.sum()
-                    def newMeta = deepcopy(metas[0])
-                    newMeta.name = name
-                    newMeta.ntimes = ntimes
-                    [group, newMeta, viss.unique()] }
+                def newMeta = [ntimes: ntimes, name: name]
+                [group, deepcopy(metas[0]) + newMeta, viss.unique()]
+            }
+
+        groupMetaVisPass
+            .map { group, meta, viss ->
+                ([group, meta.name, viss.size(), viss[0]]).join("\t")
+            }
+            .collectFile(
+                name: "obs_groups.tsv", newLine: true, sort: true,
+                seed: ([ "EPOCH", "NAME", "NVIS", "VIS0" ]).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
+            | view { [it, it.readLines().size()] }
+
+        // image and qa measurementsets or uvfits unless --noimage
+        if (params.noimg) {
+            channel.from([]) | img
+        } else {
             obsMetaVisPass
                 .map { obs, meta, vis -> [obs, meta, [vis]]}
-                // .mix( imgEpochs )
+                .mix( groupMetaVisPass )
                 | img
-            imgEpochs
-                .map { group, meta, viss -> ([group, meta.name, viss.size()]).join("\t") }
-                .collectFile(
-                    name: "img_epoch.tsv", newLine: true, sort: true,
-                    seed: ([ "EPOCH", "NAME", "VISS" ]).join("\t"),
-                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-                )
+
+            // groupMetaVisPass | img
         }
 
         // archive data to object store
