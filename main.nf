@@ -770,11 +770,11 @@ process cthulhuPlot {
 // QA tasks that can be run on preprocessed visibility files.
 process prepVisQA {
     input:
-    tuple val(obsid), path(uvfits)
+    tuple val(obsid), path(metafits), path(uvfits)
     output:
     tuple val(obsid), path(metrics)
 
-    storeDir "${params.outdir}/${obsid}/vis_qa"
+    storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${obsid}"
 
@@ -784,7 +784,7 @@ process prepVisQA {
     metrics = "birli_${obsid}_prepvis_metrics.json"
     """
     #!/bin/bash -eux
-    run_prepvisqa.py "${uvfits}" --out "${metrics}"
+    run_prepvisqa.py "${uvfits}" "${metafits}" --out "${metrics}"
     """
 }
 
@@ -870,19 +870,19 @@ process plotPrepVisQA {
     input:
     tuple val(obsid), path(metrics)
     output:
-    tuple val(obsid), path(img)
+    tuple val(obsid), path("${plot_base}_{rms,modz}.png")
 
-    storeDir "${params.outdir}/${obsid}/prep"
+    storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${obsid}"
 
     label 'python'
 
     script:
-    img = "prepvis_metrics_${obsid}_rms.png"
+    plot_base = "prepvis_metrics_${obsid}"
     """
     #!/bin/bash -eux
-    plot_prepvisqa.py "${metrics}" --out "${img}" --save
+    plot_prepvisqa.py "${metrics}" --out "${plot_base}.png" --save
     """
 }
 
@@ -909,7 +909,7 @@ process plotCalQA {
     input:
     tuple val(obsid), val(meta), path(metrics)
     output:
-    tuple val(obsid), val(meta), path(plots_glob)
+    tuple val(obsid), val(meta), path("${plot_base}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -918,18 +918,18 @@ process plotCalQA {
     label 'python'
 
     script:
-    plots_glob = "calmetrics_${obsid}_${meta.name}_{fft,variance,dlyspectrum}.png"
+    plot_base = "calmetrics_${obsid}_${meta.name}"
     """
     #!/bin/bash -eux
-    plot_calqa.py "${metrics}" --out "calmetrics_${obsid}_${meta.name}.png" --save
+    plot_calqa.py "${metrics}" --out "${plot_base}" --save
     """
 }
 
 process plotVisQA {
     input:
-    tuple val(obsid), val(name), path(metrics)
+    tuple val(obsid), val(meta), path(metrics)
     output:
-    tuple val(obsid), val(name), path("${cal_prog}_${obsid}_${name}_vis_metrics_rms.png")
+    tuple val(obsid), val(meta), path("${meta.cal_prog}_${obsid}_${meta.name}_vis_metrics_rms.png")
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
@@ -940,32 +940,31 @@ process plotVisQA {
     script:
     """
     #!/bin/bash -eux
-    plot_visqa.py "${metrics}" --out "${cal_prog}_${obsid}_${name}_vis_metrics_rms.png" --save
+    plot_visqa.py "${metrics}" --out "${meta.cal_prog}_${obsid}_${meta.name}_vis_metrics_rms.png" --save
     """
 }
 
-// process plotImgQA {
-//     input:
-//     tuple val(obsid), val(name), path("wsclean_hyp_${obsid}_${name}-MFS.json")
-//     output:
-//     tuple val(obsid), val(name), \
-//         path("wsclean_hyp_${obsid}_${name}-MFS_rms.png"), \
-//         path("wsclean_hyp_${obsid}_${name}-MFS_pks.png")
+process plotImgQA {
+    input:
+    tuple val(obsid), val(meta), path("wsclean_hyp_${obsid}_${meta.name}-MFS.json")
+    output:
+    tuple val(obsid), val(meta), \
+        path("wsclean_hyp_${obsid}_${meta.name}-MFS_rms.png"), \
+        path("wsclean_hyp_${obsid}_${meta.name}-MFS_pks.png")
 
-//     storeDir "${params.outdir}/${obsid}/img_qa"
+    storeDir "${params.outdir}/${obsid}/img_qa"
 
-//     tag "${obsid}"
+    tag "${obsid}"
 
-//     label 'python'
-//     conda "${params.astro_conda}"
+    label 'python'
 
-//     script:
-//     """
-//     #!/bin/bash
-//     set -ex
-//     plot_imgqa.py "wsclean_hyp_${obsid}_${name}-MFS.json" --out "wsclean_hyp_${obsid}_${name}-MFS" --save
-//     """
-// }
+    script:
+    """
+    #!/bin/bash
+    set -ex
+    plot_imgqa.py "wsclean_hyp_${obsid}_${meta.name}-MFS.json" --out "wsclean_hyp_${obsid}_${meta.name}-MFS" --save
+    """
+}
 
 process delaySpec {
     input:
@@ -1414,23 +1413,23 @@ process polMontage {
     """
 }
 
-process plotCalJsons {
-    input:
-        val jsons
-    output:
-        path("cal_qa_{convergence,fft,rms,unused}.png")
+// process plotCalJsons {
+//     input:
+//         val jsons
+//     output:
+//         path("cal_qa.png")
 
-    storeDir "${results_dir}"
-    stageInMode "symlink"
+//     storeDir "${results_dir}"
+//     stageInMode "symlink"
 
-    label 'python'
+//     label 'python'
 
-    script:
-    """
-    #!/bin/bash -eux
-    plot_caljsons.py ${jsons.join(' ')} --save
-    """
-}
+//     script:
+//     """
+//     #!/bin/bash -eux
+//     plot_calqa.py --out cal_qa --save ${jsons.join(' ')}
+//     """
+// }
 
 process ffmpeg {
     input:
@@ -1882,44 +1881,26 @@ workflow prep {
                 def stats = parseJson(json);
                 [
                     obsid,
+                    stats.STATUS?:'',
                     stats.NANTS?:'',
                     stats.NTIMES?:'',
                     stats.NFREQS?:'',
                     stats.NPOLS?:'',
-                    stats.XX?.MXRMS_AMP_ANT?:'',
-                    stats.XX?.MNRMS_AMP_ANT?:'',
-                    stats.XX?.MXRMS_AMP_FREQ?:'',
-                    stats.XX?.MNRMS_AMP_FREQ?:'',
-                    stats.XX?.NPOOR_ANTENNAS?:'',
-                    displayInts(stats.XX?.POOR_ANTENNAS?:[]),
-                    stats.YY?.MXRMS_AMP_ANT?:'',
-                    stats.YY?.MNRMS_AMP_ANT?:'',
-                    stats.YY?.MXRMS_AMP_FREQ?:'',
-                    stats.YY?.MNRMS_AMP_FREQ?:'',
-                    stats.YY?.NPOOR_ANTENNAS?:'',
-                    displayInts(stats.YY?.POOR_ANTENNAS?:[]),
+                    (stats.ANNUMBERS?:[]).size(),
+                    displayInts(stats.BAD_ANTS?:[]),
                 ].join("\t")
             }
             .collectFile(
                 name: "prepvis_metrics.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS",
+                    "STATUS",
                     "NANTS",
                     "NTIMES",
                     "NFREQS",
                     "NPOLS",
-                    "XX MXRMS_AMP_ANT",
-                    "XX MNRMS_AMP_ANT",
-                    "XX MXRMS_AMP_FREQ",
-                    "XX MNRMS_AMP_FREQ",
-                    "XX NPOOR_ANTENNAS",
-                    "XX POOR_ANTENNAS",
-                    "YY MXRMS_AMP_ANT",
-                    "YY MNRMS_AMP_ANT",
-                    "YY MXRMS_AMP_FREQ",
-                    "YY MNRMS_AMP_FREQ",
-                    "YY NPOOR_ANTENNAS",
-                    "YY POOR_ANTENNAS",
+                    "NANTS",
+                    "BAD_ANTS",
                 ].join("\t"),
                 storeDir: "${results_dir}"
             )
@@ -1942,7 +1923,7 @@ workflow prep {
         flagQA.out
             // form row of tsv from json fields we care about
             .map { obsid, json ->
-                def stats = jslurp.parse(json)
+                def stats = parseJson(json)
                 def flagged_sky_chans = stats.flagged_sky_chans?:[]
                 def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.non_preflagged_bl_occupancy?:'' }
                 ([
@@ -1979,8 +1960,9 @@ workflow prep {
             obsMetafits.join(asvoPrep.out) : \
             // filter
             flagQA.out
-                .filter { obsid, json ->
-                    params.flag_occupancy_threshold && jslurp.parse(json).total_occupancy < params.flag_occupancy_threshold
+                .map { obsid, json -> [obsid, parseJson(json)] }
+                .filter { obsid, flagStats ->
+                    params.flag_occupancy_threshold && flagStats.total_occupancy < params.flag_occupancy_threshold
                 }
                 .map { obsid, _ -> obsid }
                 .join(obsMetafits)
@@ -1993,10 +1975,16 @@ workflow prep {
             prepVisQA.out
                 .join(flagQA.out)
                 .map { obsid, prepJson, flagJson ->
-                    def flagStats = parseJson(flagJson);
-                    def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
                     def prepStats = parseJson(prepJson);
-                    def prepAntennas = ((prepStats.XX?.POOR_ANTENNAS?:[]) + (prepStats.YY?.POOR_ANTENNAS?:[])) as Set
+                    def flagStats = parseJson(flagJson);
+                    [obsid, prepStats, flagStats]
+                }
+                .filter { obsid, prepStats, _ ->
+                    prepStats.STATUS == "GOOD"
+                }
+                .map { obsid, prepStats, flagStats ->
+                    def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
+                    def prepAntennas = (prepStats.BAD_ANTS?:[]) as Set
                     def manualAntennas = ([]) as Set
                     tileUpdates.each {
                         def (firstObsid, lastObsid, tileIdxs, comment) = it
@@ -2020,7 +2008,12 @@ workflow prep {
                     ]
                 })
         // channel of video name and frames to convert
-        frame = plotPrepVisQA.out.map { _, png -> ["prepvisqa_rms", png] }
+        frame = plotPrepVisQA.out.flatMap { _, imgs ->
+                imgs.collect { img ->
+                    suffix = img.baseName.split('_')[-1]
+                    ["prepvisqa_${suffix}", img]
+                }
+            }
             .mix(ssins.out.flatMap { _, __, imgs, ___ ->
                 imgs.collect { img ->
                     tokens = img.baseName.split('_')
@@ -2163,49 +2156,42 @@ workflow cal {
             // form row of tsv from json fields we care about
             .map { obsid, meta, json ->
                 def stats = parseJson(json)
-                def convg_var = stats.CONVERGENCE_VAR
+                // def convg_var = stats.CONVERGENCE_VAR
                 [
                     obsid,
                     meta.name,
                     stats.STATUS?:'',
                     displayInts(stats.BAD_ANTS?:[]),
-                    (stats.UNUSED_BLS?:0) / 100,
-                    (stats.UNUSED_CHS?:0) / 100,
-                    (stats.UNUSED_ANTS?:0) / 100,
-                    (stats.NON_CONVERGED_CHS?:0) / 100,
-                    convg_var,
-                    (convg_var instanceof BigDecimal) ? convg_var * 1e14 : "NaN",
-                    stats.XX?.SKEWNESS_UVCUT?:'',
-                    stats.XX?.RMS_AMPVAR_ANT?:'',
-                    stats.XX?.RMS_AMPVAR_FREQ?:'',
-                    stats.XX?.DFFT_POWER?:'',
-                    stats.XX?.RECEIVER_CHISQVAR?:'',
-                    stats.YY?.SKEWNESS_UVCUT?:'',
-                    stats.YY?.RMS_AMPVAR_ANT?:'',
-                    stats.YY?.RMS_AMPVAR_FREQ?:'',
-                    stats.YY?.DFFT_POWER?:'',
-                    stats.YY?.RECEIVER_CHISQVAR?:'',
+                    (stats.PERCENT_UNUSED_BLS?:0) / 100,
+                    (stats.PERCENT_NONCONVERGED_CHS?:0) / 100,
+                    // convg_var,
+                    // (convg_var instanceof BigDecimal) ? convg_var * 1e14 : "NaN",
+                    stats.RMS_CONVERGENCE?:'',
+                    stats.SKEWNESS?:'',
+                    stats.RECEIVER_VAR?:'',
+                    stats.DFFT_POWER?:'',
+                    // stats.XX?.SKEWNESS?:'',
+                    // stats.XX?.DFFT_POWER?:'',
+                    // stats.YY?.SKEWNESS?:'',
+                    // stats.YY?.DFFT_POWER?:'',
                     stats.FAILURE_REASON,
                 ].join("\t")
             }
             .collectFile(
                 name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME", "STATUS",
-                    "BL UNUSED FRAC", "CH UNUSED FRAC", "ANT UNUSED FRAC",
-                    "NON CONVG CHS FRAC",
-                    "CONVG VAR",
-                    "CONVG VAR e14",
-                    "XX SKEW UVCUT",
-                    "XX RMS AMPVAR ANT",
-                    "XX RMS AMPVAR FREQ",
-                    "XX DFFT POWER",
-                    "XX RECEIVER CHISQVAR",
-                    "YY SKEW UVCUT",
-                    "YY RMS AMPVAR ANT",
-                    "YY RMS AMPVAR FREQ",
-                    "YY DFFT POWER",
-                    "YY RECEIVER CHISQVAR",
+                    "OBS", "CAL NAME", "STATUS", "BAD ANTS",
+                    "BL UNUSED FRAC", "NON CONVG CHS FRAC",
+                    "RMS CONVG",
+                    "SKEW",
+                    "RECV VAR",
+                    "DFFT POW",
+                    // "CONVG VAR",
+                    // "CONVG VAR e14",
+                    // "XX SKEW",
+                    // "XX DFFT POWER",
+                    // "YY SKEW",
+                    // "YY DFFT POWER",
                     "FAILURE_REASON"
                 ].join("\t"),
                 storeDir: "${results_dir}${params.cal_suffix}"
@@ -2229,10 +2215,11 @@ workflow cal {
                     newMeta.calflags = newflags
                 }
             }
-            [obsid, deepcopy(meta) + newMeta]
+            [obsid, deepcopy(meta) + newMeta, stats]
         }
         // TODO: reintroduce status filter
-        // .filter { _, __, stats -> stats.STATUS == "PASS" }
+        .filter { _, __, stats -> stats.STATUS == null || stats.STATUS == "PASS" }
+        .map { obsid, meta, stats -> [obsid, meta] }
 
     emit:
         // channel of calibration solutions that pass qa. tuple(obsid, name, cal)
