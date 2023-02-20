@@ -1201,6 +1201,98 @@ process psMetrics {
     """
 }
 
+// power spectrum with chips
+process chipsSpec {
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(newMeta), \
+        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_${pol}_${bias_mode}.iter.${ext}.dat")
+
+    storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}/${ext}"
+
+    tag "${obsid}.${meta.name}"
+
+    label "chips"
+
+    script:
+    nchans = meta.nchans
+    eorband = meta.eorband
+    eorfield = meta.eorfield
+    lowfreq = "${meta.lowfreq?:167075000}"
+    period = "8.0"
+    freq_res = "${(meta.freq_res?:80) * 1000}"
+    pol = "xx"
+    nbins = 80
+    maxu = 300
+    freq_idx_start = 0
+    bias_mode = 0
+    bandwidth = 0
+    ext = "grid_${meta.name}_eor${eorfield}" + (eorband == 1 ? "high" : "low")
+    newMeta = deepcopy(meta) + [ext: ext]
+
+    """
+    #!/bin/bash -eux
+
+    export DATADIR="\$PWD"
+    export INPUTDIR="\$PWD/"
+    export OUTPUTDIR="\$PWD/"
+    export OBSDIR="\$PWD/"
+    export OMP_NUM_THREADS=${task.cpus}
+
+    echo "meta=${meta}"
+
+    # copy data files
+    for f in present_vals.dat missing_vals.dat krig_weights.dat; do
+        [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
+    done
+
+    gridvisdiff "${uvfits}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
+        2>&1 > syslog_gridvisdiff.txt
+    # produces {bv,bvdiff,noise,noisediff,weights}_freq*_${pol}.${ext}.dat
+
+    prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
+        2>&1 > syslog_prepare_diff.txt
+    # produces {vis_tot,vis_diff,noise_tot,noise_diff,weights}_freq*_${pol}.${ext}.dat
+
+    lssa_fg_thermal "${ext}" "${nchans}" "${nbins}" "${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" "${bandwidth}" \
+        2>&1 > syslog_lssa_fg_thermal.txt
+    # produces {crosspower,fg_num,flagpower,outputweights,residpower,residpowerimag,totpower}_${pol}_${bias_mode}.iter.grid.dat
+    #   output{power,resid,weights}cube_${pol}_${bias_mode}.bias.grid.dat
+    #   lperp.dat, params.grid.txt syslog_lssa.txt
+    """
+
+}
+
+process chipsPlot {
+    input:
+    tuple val(obsid), val(meta), path(chipsfiles)
+    output:
+    tuple val(obsid), val(meta), path("*.png")
+
+    storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}/${ext}"
+
+    tag "${obsid}.${meta.name}"
+
+    label 'python'
+
+    script:
+    nchans = meta.nchans
+    eorband = meta.eorband
+    eorfield = meta.eorfield
+    ext = meta.ext
+    lowfreq = "${meta.lowfreq?:167075000}"
+    period = "8.0"
+    freq_res = "${(meta.freq_res?:80) * 1000}"
+    pol = "xx"
+    nbins = "80"
+    maxu = "300"
+    basedir = "./"
+    title = "Crosspower\\n${obsid}"
+
+    template "jline_plotchips.py"
+}
+
 // analyse images of V,XX,YY
 process imgQA {
     input:
@@ -2335,6 +2427,24 @@ workflow uvfits {
             eorObsMetaVis | delaySpec
         }
 
+        // power spectrum
+        if (params.nopowerspec) {
+            channel.from([]) | chipsSpec | chipsPlot
+        } else {
+            eorObsMetaVis
+                // TODO: chips only works with even timesteps
+                .filter { _, meta, __ ->
+                    def isEven = meta.ntimes % 2 == 0;
+                    if (!isEven) {
+                        println "can't run chips on ${meta.name} because it has an odd number of timesteps"
+                    }
+                    isEven
+                }
+                | chipsSpec
+                | chipsPlot
+        }
+
+
     emit:
         // channel of files to archive, and their buckets
         archive = visQA.out.map { _, __, json -> ["visqa", json]}
@@ -2346,6 +2456,7 @@ workflow uvfits {
                 ["visqa_${name}_${pol}", png]
             }})
             .mix(delaySpec.out.map { _, meta, png -> ["visqa_dlyspec_${meta.name}", png] })
+            .mix(chipsPlot.out.map { _, meta, png -> ["chips_${meta.name}", png] })
             .groupTuple()
 
         passVis = passVis
