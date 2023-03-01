@@ -897,7 +897,7 @@ process plotSols {
 
     tag "${obsid}.${meta.name}"
 
-    label "hyperdrive"
+    label "hyperdrive_cpu"
 
     script:
     plots_glob = "${meta.cal_prog}_soln_${obsid}*_${meta.name}_{phases,amps}.png"
@@ -947,23 +947,23 @@ process plotVisQA {
 
 process plotImgQA {
     input:
-    tuple val(obsid), val(meta), path("wsclean_hyp_${obsid}_${meta.name}-MFS.json")
+    tuple val(name), path(jsons)
     output:
-    tuple val(obsid), val(meta), \
-        path("wsclean_hyp_${obsid}_${meta.name}-MFS_rms.png"), \
-        path("wsclean_hyp_${obsid}_${meta.name}-MFS_pks.png")
+    tuple val(name), path("${base}_*.png")
 
-    storeDir "${params.outdir}/${obsid}/img_qa"
+    storeDir "${results_dir}"
+    stageInMode "symlink"
 
     tag "${obsid}"
 
     label 'python'
 
     script:
+    base = "wsclean_hyp_${name}-MFS"
     """
     #!/bin/bash
     set -ex
-    plot_imgqa.py "wsclean_hyp_${obsid}_${meta.name}-MFS.json" --out "wsclean_hyp_${obsid}_${meta.name}-MFS" --save
+    plot_imgqa.py --out "${base}" --save ${jsons.join(' ')}
     """
 }
 
@@ -2805,13 +2805,10 @@ workflow img {
                 // .groupTuple(by: 0..1)
                 // .map {obsid, name, metas, imgs -> [obsid, metas[0], imgs]}
                 | imgQA
-        }
 
-        if (params.noplotimgqa) {
-            channel.from([]) | plotImgQA
-        } else {
-            imgQA.out | plotImgQA
-        }
+            imgQA.out.map { _, meta, json -> [meta.name, json] }
+                .groupTuple(by: 0)
+                | plotImgQA
 
             // collect imgQA results as .tsv
             imgQA.out
