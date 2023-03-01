@@ -1655,10 +1655,10 @@ process stackThumbnail {
 
 process ffmpeg {
     input:
-        tuple val(name), path("??????????.png")
+        tuple val(name), path("??????????.png"), val(cachebust)
 
     output:
-        path("${name}.mp4")
+        tuple path("${name}.mp4"), path("${dot_cachebust}")
 
     storeDir "${results_dir}${params.img_suffix}${params.cal_suffix}"
     stageInMode "symlink"
@@ -1668,8 +1668,10 @@ process ffmpeg {
     label 'ffmpeg'
 
     script:
+    dot_cachebust = ".${name}.${cachebust}.cachebust"
     """
     #!/bin/bash -eux
+    touch ${dot_cachebust}
     ffmpeg -y -framerate 5 \
         -pattern_type glob -i "??????????.png" \
         -vcodec libx264 \
@@ -3911,10 +3913,17 @@ workflow qaPrep {
         frame.mix(cal.out.frame)
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
-            .mix(cthulhuPlot.out.flatMap {_, meta, pngs -> pngs.collect{ png -> ["cthulhuplot_${meta.name}", png]}}.groupTuple())
-            .map { name, frames -> [name, frames.sort()] }
+            .mix(chips.out.frame)
+            .mix(cthulhuPlot.out.flatMap {_, meta, pngs ->
+                pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
+            }.groupTuple())
+            .map { name, frames ->
+                def latest = frames.collect { frame -> frame.lastModified() }.max()
+                def cachebust = "${latest}_x" + sprintf("%04d", frames.size())
+                [name, frames.sort(), cachebust]
+            }
             | ffmpeg
-            | view { [it, it.size()] }
+            | view { video, cachebust -> [video, video.size()] }
 }
 
 // entrypoint: get externally preprocessed uvfits files from csv file and run qa
