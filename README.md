@@ -196,6 +196,60 @@ graph TD;
   end
 ```
 
+### Power Spectra
+
+```mermaid
+%%{init:{'theme':'base','themeVariables':{'primaryBorderColor':'#002b36','secondaryColor':'#eee8d5','tertiaryColor':'#fdf6e3','tertiaryBorderColor':'#002b36','lineColor':'#002b36','textColor':'#002b36'}}}%%
+graph TD;
+  classDef in fill:#2aa198;
+  classDef out fill:#d33682;
+  classDef file fill:#268bd2;
+  classDef proc fill:#b58900;
+  classDef decision fill:#cb4b16;
+
+  subgraph "chipsSpec"
+    uvfits --> gridvisdiff
+    gridvisdiff --> bv_freq.dat & bvdiff_freq.dat & noise_freq.dat & noisediff_freq.dat & weights_freq.dat --> prepare_diff
+    prepare_diff --> vis_tot.dat & vis_diff.dat & noise_tot.dat & noise_diff.dat & weights.dat --> combine
+    combine --> c_vis_tot.dat & c_vis_diff.dat & c_noise_tot.dat & c_noise_diff.dat & c_weights.dat --> lssa_fg_simple
+    lssa_fg_simple --> crosspower.iter.dat & fg_num.iter.dat & flagpower.iter.dat
+    lssa_fg_simple --> outputweights.iter.dat & residpower.iter.dat & residpowerimag.iter.dat & totpower.iter.dat
+
+    class uvfits file;
+    class gridvisdiff proc;
+    class prepare_diff proc;
+    class lssa_fg_simple proc;
+    class combine proc;
+
+    class bv_freq.dat file;
+    class bvdiff_freq.dat file;
+    class noise_freq.dat file;
+    class noisediff_freq.dat file;
+    class weights_freq.dat file;
+
+    class vis_tot.dat file;
+    class vis_diff.dat file;
+    class noise_tot.dat file;
+    class noise_diff.dat file;
+    class weights.dat file;
+
+    class c_vis_tot.dat file;
+    class c_vis_diff.dat file;
+    class c_noise_tot.dat file;
+    class c_noise_diff.dat file;
+    class c_weights.dat file;
+
+    class crosspower.iter.dat file;
+    class fg_num.iter.dat file;
+    class flagpower.iter.dat file;
+    class outputweights.iter.dat file;
+    class residpower.iter.dat file;
+    class residpowerimag.iter.dat file;
+    class totpower.iter.dat file;
+
+  end
+```
+
 Calibrated and residual visibilities from the calibrated visibility analysis stage are analysed in measurement set format. [wsclean](https://gitlab.com/aroffringa/wsclean) is used to make dirty (non-deconvolved) images of Stokes XX,YY and V polarisations, which are used by [`imgQA`](https://github.com/Chuneeta/mwa_qa/blob/main/scripts/run_imgqa.py) to obtain polarimetric power measurements.
 
 ## Output Directory Structure:
@@ -389,6 +443,18 @@ squeue -u $USER --format %A -h --states SE | sort | xargs scancel
 ```bash
 export jobid=3405303
 squeue --json | /pawsey/mwa/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid 3459463
+```
+
+### live updating queue for current user
+
+```bash
+while true; do echo ""; date -Is; squeue -u $USER -t R --format "%.7i %.9P %60j %.2t %.8M %.8L %.3c %.4m %.4d %.34Z"; squeue -u $USER -t PD --format "%.7i %.9P %60j %.2t %.8M %.8L %.3c %.4m %.4d %.34Z" | head -n 20; sleep 15; done
+```
+
+### get job directory
+
+```bash
+squeue -u $USER -t R --format "%.7i %.9P %30j %.2t %.8M %.8L %.36Z"
 ```
 
 ## Handy Giant Squid Commands
@@ -634,6 +700,36 @@ results = tap.search("select obs_id, gpubox_files_archived, gpubox_files_total, 
   where obs_id IN (1087250776)")
 ```
 
+### combine images
+
+```bash
+module load singularity
+mkdir -p "${outdir}/combined"
+for name in sub_30l ionosub_30l; do
+  for pol in XX YY V; do
+    for prefix in 109; do
+      export result="${outdir}/combined/wsclean_hyp_${prefix}_${name}_src4k_8s_80kHz-MFS-${pol}-image.fits"
+      singularity exec /pawsey/mwa/singularity/imagemagick/imagemagick_latest.sif convert \
+        ${outdir}/${prefix}???????/img/wsclean_hyp_??????????_${name}_src4k_8s_80kHz-MFS-${pol}-image.fits \
+        -average -auto-gamma -auto-level $result
+      echo $result
+    done
+  done
+done
+
+for name in sub_30l ionosub_30l; do
+  for pol in XX YY V; do
+    for prefix in 10; do
+    export result="${outdir}/combined/avg_hyp_${prefix}_${name}_src4k_8s_80kHz_MFS-${pol}-image.png";
+    singularity exec /pawsey/mwa/singularity/imagemagick/imagemagick_latest.sif convert \
+      ${outdir}/${prefix}????????/img_qa/??????????_${name}_src4k_8s_80kHz_MFS-${pol}-image.png \
+      -average -auto-gamma -auto-level $result;
+    echo $result;
+    done;
+  done;
+done
+```
+
 ### manually render movies
 
 #### render prepvisqa
@@ -749,6 +845,22 @@ export name="sub_30l_src4k_8s_80kHz"
 while read -r obsid; do rclone copy mwaeor:high0.imgqa/wsclean_hyp_${obsid}_${name}.json .; jq -r '['${obsid}',"'${name}'",.XX.RMS_ALL,.XX.RMS_BOX,.XX.PKS0023_026?.PEAK_FLUX,.XX.PKS0023_026?.INT_FLUX,.YY.RMS_ALL,.YY.RMS_BOX,.YY.PKS0023_026.PEAK_FLUX,.YY.PKS0023_026.INT_FLUX,.V.RMS_ALL,.V.RMS_BOX,.V.PKS0023_026?.PEAK_FLUX,.V.PKS0023_026?.INT_FLUX,.V_XX.RMS_RATIO,.V_XX.RMS_RATIO_BOX]|@csv' wsclean_hyp_${obsid}_${name}.json; done < obsids-stage2imgqa.csv | tee img_metrics.csv
 ```
 
+#### copy from backup
+
+```bash
+for o in ??????????; do
+  f=cal/hyp_soln_${o}_30l_src4k.fits;
+  # f=raw/${o}.metafits;
+  [ -f $o/$f ] && echo $o | tee -a /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/obsids-calib.csv
+
+  # echo -n $f - ;
+  # && [ -f $o/$f ] && echo -n e \
+  # && [ ! -f ../nfdata/$o/$f ] && echo -n r \
+  # && mkdir -p ../nfdata/$o/${f%/*} && mv $o/$f ../nfdata/$o/$f && echo -n m; \
+  # echo '';
+done
+```
+
 #### Fast flagged vs unflagged
 
 ```bash
@@ -760,6 +872,13 @@ for name in 30l_src4_fast_variance 30l_src4_fast_fft 30l_src4_fast_dlyspectrum; 
   ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
   ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
 done
+```
+
+### sinfo get available resources
+
+```bash
+# name, partition, state, cpus (avail/idle/other/total), tmp(mb), free mem
+sinfo --Node --format="%9N %10P %6t %14C %5d %e" | tee sinfo_idle.txt
 ```
 
 ### ionpeel?
