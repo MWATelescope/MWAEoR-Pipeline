@@ -1205,37 +1205,39 @@ process psMetrics {
 }
 
 // power spectrum with chips
-process chipsSpec {
+process chipsGrid {
     input:
-    tuple val(obsid), val(meta), path(uvfits)
+    tuple val(group), val(meta), val(obsids), path(viss)
     output:
-    tuple val(obsid), val(newMeta), \
-        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_${pol}_${bias_mode}.iter.${ext}.dat")
+    tuple val(group), val(newMeta), \
+        path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${ext}.dat")
 
-    storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}/${ext}"
+    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
 
-    tag "${obsid}.${meta.name}"
+    tag "${group}.${meta.name}"
 
     label "chips"
 
+    time { 30.minute * obsids.size() }
+
     script:
+    ext = meta.ext
     nchans = meta.nchans
     eorband = meta.eorband
     eorfield = meta.eorfield
-    lowfreq = "${meta.lowfreq?:167075000}"
+    lowfreq = meta.lowfreq
     period = "8.0"
     freq_res = "${(meta.freq_res?:80) * 1000}"
-    pol = "xx"
-    nbins = 80
-    maxu = 300
+    // pol = meta.pol?:"xx"
     freq_idx_start = 0
-    bias_mode = 0
-    bandwidth = 0
-    ext = "grid_${meta.name}_eor${eorfield}" + (eorband == 1 ? "high" : "low")
-    newMeta = deepcopy(meta) + [ext: ext]
+
+    newMeta = deepcopy(meta) + [lowfreq: lowfreq]
 
     """
     #!/bin/bash -eux
+
+    echo "meta=${meta}"
+    """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 68" : "" ) + """
 
     export DATADIR="\$PWD"
     export INPUTDIR="\$PWD/"
@@ -1243,55 +1245,237 @@ process chipsSpec {
     export OBSDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
 
-    echo "meta=${meta}"
-
     # copy data files
     for f in present_vals.dat missing_vals.dat krig_weights.dat; do
         [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
     done
 
-    gridvisdiff "${uvfits}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
-        2>&1 > syslog_gridvisdiff.txt
-    # produces {bv,bvdiff,noise,noisediff,weights}_freq*_${pol}.${ext}.dat
+    """ + (
+        [
+            (obsids instanceof List ? obsids : [obsids]),
+            (viss instanceof List ? viss : [viss])
+        ].transpose().collect { obsid, vis ->
+            """gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
+                2>&1 > syslog_gridvisdiff_${obsid}.txt """
+        }.join("\n")
+    ) + """
 
-    prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
-        2>&1 > syslog_prepare_diff.txt
-    # produces {vis_tot,vis_diff,noise_tot,noise_diff,weights}_freq*_${pol}.${ext}.dat
-
-    lssa_fg_thermal "${ext}" "${nchans}" "${nbins}" "${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" "${bandwidth}" \
-        2>&1 > syslog_lssa_fg_thermal.txt
-    # produces {crosspower,fg_num,flagpower,outputweights,residpower,residpowerimag,totpower}_${pol}_${bias_mode}.iter.grid.dat
-    #   output{power,resid,weights}cube_${pol}_${bias_mode}.bias.grid.dat
-    #   lperp.dat, params.grid.txt syslog_lssa.txt
+    for pol in xx yy; do
+        prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "\${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
+            2>&1 > syslog_prepare_diff_\${pol}.txt
+    done
     """
-
 }
+
+// process chipsCombine {
+//     input:
+//     tuple val(group), val(meta), val(exts), path(grid)
+
+//     output:
+//     tuple val(group), val(meta), path("combine_${group}_${meta.name}_{xx,yy}.txt"),
+//         path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${ext}.dat")
+
+//     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+
+//     tag "${group}.${meta.name}"
+
+//     combine = "combine_${group}_${meta.name}.txt"
+
+//     """
+//     #!/bin/bash -eux
+
+//     echo "meta=${meta}"
+//     """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 68" : "" ) + """
+
+//     export DATADIR="\$PWD"
+//     export INPUTDIR="\$PWD/"
+//     export OUTPUTDIR="\$PWD/"
+//     export OBSDIR="\$PWD/"
+//     export OMP_NUM_THREADS=${task.cpus}
+
+//     # copy data files
+//     for f in present_vals.dat missing_vals.dat krig_weights.dat; do
+//         [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
+//     done
+
+//     combine_data "${combine}" 384 "${ext}" 1
+
+//     """ + (
+//         [
+//             (obsids instanceof List ? obsids : [obsids]),
+//             (viss instanceof List ? viss : [viss])
+//         ].transpose().collect { obsid, vis ->
+//             """gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
+//                 2>&1 > syslog_gridvisdiff_${obsid}.txt """
+//         }.join("\n")
+//     ) + """
+
+//     for pol in xx yy; do
+//         prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "\${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
+//             2>&1 > syslog_prepare_diff_\${pol}.txt
+//     done
+//     """
+// }
+
+process chipsLssa {
+    input:
+    tuple val(group), val(meta), path(grid)
+
+    output:
+    tuple val(group), val(newMeta),
+        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_{xx,yy}_${bias_mode}.iter.${ext}.dat")
+
+    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+
+    tag "${group}.${meta.name}"
+
+    label "chips"
+
+    time 20.minute
+
+    script:
+    ext = meta.ext
+    nchans = meta.nchans
+    eorband = meta.eorband
+    // pol = meta.pol?:"xx"
+    maxu = 300
+    nbins = 80
+    freq_idx_start = 0
+    bias_mode = 0
+
+    newMeta = deepcopy(meta) + [nbins: nbins, maxu: maxu]
+
+    """
+    #!/bin/bash -eux
+    echo "meta=${meta}"
+    """ + (eorband == null || !nchans || nbins == null || !ext || maxu == null || bias_mode == null ? "exit 68" : "" ) + """
+
+    export DATADIR="\$PWD"
+    export INPUTDIR="\$PWD/"
+    export OUTPUTDIR="\$PWD/"
+    export OBSDIR="\$PWD/"
+    export OMP_NUM_THREADS=${task.cpus}
+
+    for pol in xx yy; do
+        lssa_fg_simple "${ext}" "${nchans}" "${nbins}" "\${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
+            2>&1 > syslog_lssa_simple_\${pol}.txt
+
+        export cross_size="\$(stat -c%s crosspower_\${pol}_${bias_mode}.iter.${ext}.dat)"
+        if (( cross_size < 4097 )); then
+            echo "crosspower_\${pol}_${bias_mode}.iter.${ext}.dat is too small (\$cross_size), exiting"
+            exit 69
+        fi
+    done
+    """
+}
+
+// TODO: process chipsCombine
 
 process chipsPlot {
     input:
-    tuple val(obsid), val(meta), path(chipsfiles)
+    tuple val(group), val(meta), path(grid)
     output:
-    tuple val(obsid), val(meta), path("*.png")
+    tuple val(group), val(meta), path("chips${dims}D_${pol}_${suffix}.png")
 
-    storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}/${ext}"
+    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
 
-    tag "${obsid}.${meta.name}"
+    tag "${group}.${meta.name}.${ptype}"
 
     label 'python'
 
+    time 15.minute
+
     script:
-    nchans = meta.nchans
-    eorband = meta.eorband
-    eorfield = meta.eorfield
-    ext = meta.ext
-    lowfreq = "${meta.lowfreq?:167075000}"
-    period = "8.0"
-    freq_res = "${(meta.freq_res?:80) * 1000}"
-    pol = "xx"
-    nbins = "80"
-    maxu = "300"
+    // nchans = meta.nchans
+    // eorband = meta.eorband
+    // eorfield = meta.eorfield
+    // ext = meta.name
+    // diff_ext = ""
+    // lowfreq = "${meta.lowfreq?:167075000}"
+    // freq_res = "${(meta.freq_res?:80) * 1000}"
+    pol = meta.pol?:"both"
+    if (pol == "both") {
+        pol = "xx+yy"
+    }
+    ptype = meta.ptype?:""
+    dims = ptype[0]?:2
+    suffix = ""
+    if (ptype =~ /.*comp/) {
+        suffix = "_comparison"
+    } else if (ptype =~ /.*diff/) {
+        suffix = "_diff"
+    } else if (ptype =~ /.*ratio/) {
+        suffix = "_ratio"
+    } else if (ptype[0] == "2") {
+        suffix = "_crosspower"
+    }
+    if ((meta.tags?:[])[1]) {
+        suffix = "_${meta.tags[1]}${suffix}"
+    }
+    if ((meta.tags?:[])[0]) {
+        suffix = "${meta.tags[0]}${suffix}"
+    } else {
+        suffix = "${meta.ext}${suffix}"
+    }
     basedir = "./"
-    title = "Crosspower\\n${obsid}"
+    // title = "${group}\\n${ext}"
+    // ptypes = "1D 2D"
+    args = [
+        title: meta.title,
+        // file group
+        basedir: "./",
+        chips_tag: meta.ext,
+        chips_tag_one: (meta.tags?:[])[0],
+        chips_tag_two: (meta.tags?:[])[1],
+        chips_tag_three: (meta.tags?:[])[2],
+        // plot group
+        plot_type: ptype,
+        polarisation: meta.pol,
+        min_power: meta.min_power,
+        max_power: meta.max_power,
+        // plot group 2D
+        colourscale: meta.colourscale,
+        max_neg_power: meta.max_neg_power,
+        min_neg_power: meta.min_neg_power,
+        // plot group 1D
+        wedge_factor: meta.wedge_factor,
+        low_k_edge: meta.low_k_edge,
+        high_k_edge: meta.high_k_edge,
+        num_k_edges: meta.nbins,
+        kperp_max: meta.kperp_max,
+        kperp_min: meta.kperp_min,
+        kparra_min: meta.kparra_min,
+        plot_wedge_cut_2D: meta.plot_wedge_cut_2D,
+        chips_tag_one_label: (meta.labels?:[])[0],
+        chips_tag_two_label: (meta.labels?:[])[1],
+        chips_tag_three_label: (meta.labels?:[])[2],
+        // chips group
+        // N_kperp: meta.N_kperp,
+        // N_chan: meta.N_chan,
+        lowerfreq: meta.lowfreq,
+        chan_width: meta.freq_res,
+        umax: meta.maxu,
+        // density_correction: meta.density_correction,
+        // omega_matter: meta.omega_matter,
+        // omega_baryon: meta.omega_baryon,
+        // omega_lambda: meta.omega_lambda,
+        // hubble: meta.hubble,
+
+    ].findAll { _, v -> v != null }
+        .collect { k, v -> """--${k} "${v}" """ }
+        .join(" ")
+    if (meta.plot_delta) {
+        args += " --plot_delta"
+    }
+    if (meta.plot_wedge_cut) {
+        args += " --plot_wedge_cut_2D"
+    }
+    if (meta.nchans) {
+        args += " --N_chan ${meta.nchans}"
+    }
+    if (meta.kperp) {
+        args += " --K_perp ${meta.kperp}"
+    }
 
     template "jline_plotchips.py"
 }
