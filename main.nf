@@ -1641,17 +1641,26 @@ process stackThumbnail {
     template "thumbnail.py"
 }
 
-//     storeDir "${results_dir}"
-//     stageInMode "symlink"
+process tarchive {
+    input:
+        tuple val(name), path(files), val(cachebust)
+    output:
+        tuple path(out), path("${dot_cachebust}")
 
-//     label 'python'
+    storeDir "${results_dir}${params.img_suffix}${params.cal_suffix}"
+    stageInMode "copy"
 
-//     script:
-//     """
-//     #!/bin/bash -eux
-//     plot_calqa.py --out cal_qa --save ${jsons.join(' ')}
-//     """
-// }
+    tag "${name}"
+
+    script:
+    dot_cachebust = ".${name}.${cachebust}.cachebust"
+    out = "${name}.tar.gz"
+    """
+    #!/bin/bash -eux
+    touch ${dot_cachebust}
+    tar cvzf ${name}.tar.gz ${files.join(' ')}
+    """
+}
 
 process ffmpeg {
     input:
@@ -3511,7 +3520,7 @@ workflow {
         .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
     frame = ws.out.frame
             .mix(prep.out.frame)
-    qaPrep(prep.out.obsMetaVis, obsFlags, frame)
+    qaPrep(prep.out.obsMetaVis, obsFlags, frame, prep.out.zip)
 }
 
 // given a channel of tuple (obs, metafits, vis), calibrate and analyse
@@ -3520,6 +3529,7 @@ workflow qaPrep {
         obsMetafitsVis
         obsFlags
         frame
+        zip
     main:
         // get sourcelists for each obs (only currently used in subtraction, not calibration)
         obsMetafitsVis.map { obsid, metafits, _ -> [obsid, metafits ] }
@@ -3907,6 +3917,25 @@ workflow qaPrep {
                 .mix(uvfits.out.archive)
                 .mix(img.out.archive)
                 | archive
+        }
+
+        // make zips
+        if (params.archive) {
+            zip
+                .mix(cal.out.zip)
+                .mix(uvfits.out.zip)
+                .mix(img.out.zip)
+                .mix(
+                    hypIonoSubUV.out.map { it -> def (obsid, meta, _, offsets) = it; ["offsets_${meta.name}", offsets]}
+                    .groupTuple()
+                )
+                .map { name, files ->
+                    def latest = files.collect { file -> file.lastModified() }.max()
+                    def cachebust = "${latest}_x" + sprintf("%04d", files.size())
+                    [name, files.sort(), cachebust]
+                }
+                | tarchive
+                | view { zip_, cachebust -> [zip_, zip_.size()] }
         }
 
         // make videos
