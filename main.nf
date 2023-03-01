@@ -1204,6 +1204,26 @@ process psMetrics {
     """
 }
 
+process storeManifest {
+    input:
+    tuple val(group), val(obsids)
+    output:
+    path(manifest)
+
+    tag "${group}"
+
+    time 5.minutes
+
+    storeDir "${params.outdir}/${group}"
+
+    script:
+    manifest = "manifest_${group}.csv"
+    """
+    cat <<EOF > ${manifest}
+${obsids.join('\n')}
+EOF"""
+}
+
 // power spectrum with chips
 process chipsGrid {
     input:
@@ -1601,6 +1621,23 @@ process polMontage {
     """
 }
 
+process plotCalJsons {
+    input:
+        path(jsons)
+    output:
+        path("cal_qa.png")
+
+    storeDir "${results_dir}"
+    stageInMode "symlink"
+
+    label 'python'
+
+    script:
+    """
+    #!/bin/bash -eux
+    plot_calqa.py --out cal_qa --save ${jsons.join(' ')}
+    """
+}
 
 process stackImgs {
     input:
