@@ -2934,6 +2934,287 @@ workflow img {
                 frames_
             })
             .groupTuple()
+        // channel of tuple (obsid, imgMeta, img) that pass qa
+        obsMetaImgPass = obsMetaImgPass_
+}
+
+workflow chips {
+    take:
+        // tuple of (obsid, meta, uvfits)
+        obsMetaUV
+        // tuple of (chunk, chunkMeta, obsids) for grouping
+        chunkMetaObs
+
+    main:
+
+        // power spectrum
+        if (params.nopowerspec) {
+            channel.from([]) | chipsGrid
+        } else {
+            obsMetaUV
+                .map { obsid, meta, viss ->
+                    [obsid, deepcopy(meta) + [nobs: 1, ext: "${obsid}_${meta.name}"], [obsid], viss]
+                }
+                | chipsGrid
+        }
+
+        // obsMetaUV.cross(
+        //     chunkMetaObs.flatMap { group, groupMeta, obsids ->
+        //             obsids.collect { obsid -> [obsid, groupMeta, group] }
+        //         }
+        //         .mix(obsMetaPass.map { obsid, meta -> [obsid, meta, obsid]})
+        // ) { def (obsid, meta) = it; [obsid, meta.name] }
+        //     .map { obsMetaUV_, chunkMetaObs_ ->
+        //         def (_, __, uvfits) = obsMetaUV_
+        //         def (chunk, chunkMeta, obsids) = chunkMetaObs_
+        //         [obsids, chunkMeta, uvfits]
+        //     }
+        //     .groupTuple(by: 0)
+        //     .map { obsids, meta, uvfits ->
+        //         [obsids, meta, uvfits]
+        //     }
+        //     | chipsGrid
+
+        // uvfits.out.obsMetaUVPass.cross(
+        //         chunkMetaPass.flatMap { group, groupMeta, obsids ->
+        //                 obsids.collect { obsid -> [obsid, groupMeta, group] }
+        //             }
+        //             .mix(obsMetaPass.map { obsid, meta -> [obsid, meta, obsid]})
+        //     ) { def (obsid, meta) = it; [obsid, meta.name] }
+        //     .map { obsMetaUVPass_, obsMetaPass_ ->
+        //         def (obsid, _, uvfits) = obsMetaUVPass_;
+        //         def (__, meta, group) = obsMetaPass_;
+        //         [group, meta.name, obsid, meta, uvfits]
+        //     }
+        //     .groupTuple(by: 0..1)
+        //     .map { group, name, obsids, metas, viss -> [group, metas[0], obsids, viss]}
+        //     .view { group, meta, obsids, viss -> "\n -> prechips:\n\tg:${group}\n\tm:${meta}\n\to:${obsids}\n\tv:${viss}" }
+        //     | chips
+
+        chipsGrid.out | chipsLssa
+
+        def singles1D = chipsLssa.out.map { chunk, meta, grid ->
+                def newMeta = [
+                    ptype: '1D',
+                    pol: 'both',
+                    title: "crosspower\\n${chunk}\\n${meta.name}",
+                    plot_name: 'chips1d',
+                    max_power: 1e15,
+                    min_power: 1e3,
+                    tags: [],
+                ]
+                [chunk, deepcopy(meta) + newMeta, grid]
+            }
+
+        def singles2D = chipsLssa.out.map { chunk, meta, grid ->
+                def newMeta = [
+                    ptype: '2D',
+                    pol: 'both',
+                    title: "crosspower\\n${chunk}\\n${meta.name}",
+                    plot_name: 'chips2d',
+                    max_power: 1e15,
+                    min_power: 1e3,
+                    tags: [],
+                ]
+                [chunk, deepcopy(meta) + newMeta, grid]
+            }
+
+        def comps1D = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            // .view { chunk, metas, _ -> "\n -> comps1D metas: \n${metas.join('\n')}"}
+            .filter { _, metas, __ -> metas.size() >= 3 }
+            .map { chunk, metas, grids ->
+                def nosubMeta = metas.find { it.sub == null} ?: [:]
+                def subMeta = metas.find { it.sub == 'sub'} ?: [:]
+                def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
+                def newMeta = [
+                    ptype: '1D_comp',
+                    pol: 'both',
+                    title: "crosspower\\n${chunk}",
+                    plot_name: 'chips1d_comp',
+                    name: nosubMeta.name,
+                    ext: nosubMeta.ext,
+                    tags: [
+                        nosubMeta.ext,
+                        subMeta.ext,
+                        ionosubMeta.ext,
+                    ],
+                    labels: [
+                        nosubMeta.name,
+                        subMeta.name,
+                        ionosubMeta.name,
+                    ],
+                    max_power: 1e15,
+                    min_power: 1e3,
+                ]
+                [chunk, deepcopy(nosubMeta) + newMeta, grids.flatten()]
+            }
+        def diffs2D_sub = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            .filter { _, metas, __ -> metas.size() >= 2 }
+            .map { chunk, metas, grids ->
+                def nosubMeta = metas.find { it.sub == null} ?: [:]
+                def subMeta = metas.find { it.sub == 'sub'} ?: [:]
+                def newMeta = [
+                    ptype: '2D_diff',
+                    pol: 'both',
+                    title: "crosspower diff (nosub-sub)\\n${chunk}",
+                    plot_name: 'chips2d_diff_nosub_sub',
+                    name: subMeta.name,
+                    ext: subMeta.ext,
+                    tags: [
+                        nosubMeta.ext,
+                        subMeta.ext,
+                    ],
+                    labels: [
+                        nosubMeta.name,
+                        subMeta.name,
+                    ],
+                ]
+                [chunk, deepcopy(nosubMeta) + newMeta, grids.flatten()]
+            }
+        def diffs2D_iono = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            .filter { _, metas, __ -> metas.size() >= 2 }
+            .map { chunk, metas, grids ->
+                def nosubMeta = metas.find { it.sub == null} ?: [:]
+                def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
+                def newMeta = [
+                    ptype: '2D_diff',
+                    pol: 'both',
+                    title: "crosspower diff (nosub-ionosub)\\n${chunk}",
+                    plot_name: 'chips2d_diff_nosub_ionosub',
+                    name: ionosubMeta.name,
+                    ext: ionosubMeta.ext,
+                    tags: [
+                        nosubMeta.ext,
+                        ionosubMeta.ext,
+                    ],
+                    labels: [
+                        nosubMeta.name,
+                        ionosubMeta.name,
+                    ],
+                ]
+                [chunk, deepcopy(nosubMeta) + newMeta, grids.flatten()]
+            }
+
+        def diffs2D_sub_ionosub = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            .filter { _, metas, __ -> metas.size() >= 2 }
+            .map { chunk, metas, grids ->
+                def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
+                def subMeta = metas.find { it.sub == 'sub'} ?: [:]
+                def newMeta = [
+                    ptype: '2D_diff',
+                    pol: 'both',
+                    title: "crosspower diff (ionosub-sub)\\n${chunk}",
+                    plot_name: 'chips2d_diff_ionosub_sub',
+                    name: ionosubMeta.name,
+                    ext: ionosubMeta.ext,
+                    tags: [
+                        ionosubMeta.ext,
+                        subMeta.ext,
+                    ],
+                    labels: [
+                        ionosubMeta.name,
+                        subMeta.name,
+                    ],
+                ]
+                [chunk, deepcopy(ionosubMeta) + newMeta, grids.flatten()]
+            }
+
+        def ratios2D_sub = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            .filter { _, metas, __ -> metas.size() >= 2 }
+            .map { chunk, metas, grids ->
+                def nosubMeta = metas.find { it.sub == null} ?: [:]
+                def subMeta = metas.find { it.sub == 'sub'} ?: [:]
+                def newMeta = [
+                    ptype: '2D_ratio',
+                    pol: 'both',
+                    title: "crosspower ratio (nosub:sub)\\n${chunk}",
+                    plot_name: 'chips2d_ratio_nosub_sub',
+                    name: subMeta.name,
+                    ext: subMeta.ext,
+                    tags: [
+                        nosubMeta.ext,
+                        subMeta.ext,
+                    ],
+                    labels: [
+                        nosubMeta.name,
+                        subMeta.name,
+                    ],
+                    max_power: 1e2,
+                    min_power: 1e-2,
+                ]
+                [chunk, deepcopy(nosubMeta) + newMeta, grids.flatten()]
+            }
+
+        def ratios2D_ionosub = chipsLssa.out
+            // group grids from vis name together
+            .groupTuple(by: 0)
+            .filter { _, metas, __ -> metas.size() >= 2 }
+            .map { chunk, metas, grids ->
+                def nosubMeta = metas.find { it.sub == null} ?: [:]
+                def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
+                def newMeta = [
+                    ptype: '2D_ratio',
+                    pol: 'both',
+                    title: "crosspower ratio (nosub:ionosub)\\n${chunk}",
+                    plot_name: 'chips2d_ratio_nosub_ionosub',
+                    name: ionosubMeta.name,
+                    ext: ionosubMeta.ext,
+                    tags: [
+                        nosubMeta.ext,
+                        ionosubMeta.ext,
+                    ],
+                    labels: [
+                        nosubMeta.name,
+                        ionosubMeta.name,
+                    ],
+                    max_power: 1e2,
+                    min_power: 1e-2,
+                ]
+                [chunk, deepcopy(nosubMeta) + newMeta, grids.flatten()]
+            }
+
+        singles1D
+            .mix(singles2D)
+            .mix(comps1D)
+            .mix(diffs2D_sub)
+            .mix(diffs2D_iono)
+            .mix(diffs2D_sub_ionosub)
+            .mix(ratios2D_sub)
+            .mix(ratios2D_ionosub)
+            .filter { chunk, meta, __ ->
+                if (meta.name == null) {
+                    print("\n -> meta.name is null in ${chunk}: ${meta}")
+                    return false
+                }
+                if (meta.tags == null || meta.tags.contains(null)) {
+                    print("\n -> meta.tags contains null in ${chunk}: ${meta}")
+                    return false
+                }
+                return true
+            }
+            | chipsPlot
+
+    emit:
+        frame = chipsPlot.out
+            .flatMap { _, meta, pngs ->
+                def suffix = ""
+                if (meta.nobs > 1) {
+                    suffix = "_x" + sprintf("%04d", meta.nobs)
+                }
+                (pngs instanceof List ? pngs : [pngs]).collect { png ->
+                    ["${meta.plot_name}_${meta.name}${suffix}", png]
+                }
+            }.groupTuple()
 }
 
 // entrypoint: move unfiltered preprocessed uvfits from asvo accacia to mwaeor accacia
@@ -3195,50 +3476,174 @@ workflow qaPrep {
             obsMetaImgPass = img.out.obsMetaImgPass
         }
 
-        // group obsids by epoch, field and band for imaging
-        groupMetaVisPass = obsMetaVisPass
-            .map { obs, meta, vis ->
-                // def group = "e${obs[0..5]}X"
-                def group = "jd${meta.first_jd.round()}"
-                def name = "e_${meta.name}"
-                if (meta.eorfield != null) {
-                    name += "_eor${meta.eorfield}"
-                }
-                if (meta.eorband != null) {
-                    name += (meta.eorband == 0 ? "low" : "high")
-                }
-                // meta.nchan?
-                [group, name, meta, vis]
-            }
-            .groupTuple(by: [0, 1])
-            // .map { group, name, metas, _ ->
-            // }
-            .filter { _, __, ___, viss -> viss.size() > 1 }
-            .map { group, name, metas, viss ->
-                def ntimes = metas.collect { it.ntimes?:0 }.sum()
-                def newMeta = [ntimes: ntimes, name: name]
-                [group, deepcopy(metas[0]) + newMeta, viss.unique()]
-            }
+        // tuple of (obsid, meta) for all visibilities that pass imgQA
+        obsMetaPass = obsMetaImgPass.map { it -> def (obsid, meta) = it; [obsid, meta] }
 
-        groupMetaVisPass
-            .map { group, meta, viss ->
-                ([group, meta.name, viss.size(), viss[0]]).join("\t")
+        // Apologies in advance for anyone who has to debug this.
+        //
+        // We want a tuple of (chunk, chunkMeta obsids[G]) for imaging and power spectrum.
+        //
+        // The pipeline can produce multiple visibilities for a given obsid. `meta` keys can be used to differentiate these. e.g.
+        // - `sub` - type of subtraction (`null` means no subtraction)
+        // - `cal_prog` - the program used to calibrate the visibility
+        // - `poly` - whether a polyfit was applied
+        //
+        // We want to compare results between visibilities of different types within a single obsid, and within compatible groups of obsids.
+        // Within the set of visibilities for each obsid, one is the "primary" visibility that others are compared to, e.g. the one with no subtractions.
+        // A group of obsids is compatible if they have the same field, band and telescope configuration.
+        // The metadata for each group of obsids comes from primary meta
+        // Within each group of obsids, we sort by some metric in the primary meta  (e.g. window : wedge power ratio)
+        // Then we split that group into chunks of size G.
+        chunkMetaPass = obsMetaPass
+            // TODO: chips only works with even timesteps ?
+            // .filter { obsid, meta, vis ->
+            //     def isEven = meta.ntimes % 2 == 0;
+            //     if (!isEven) {
+            //         println "can't run chips on ${obsid} ${meta.name} because it has an odd number of timesteps"
+            //     }
+            //     isEven
+            // }
+            // group metas by obsid
+            .groupTuple(by: 0)
+            // ensure metas are a list, even when there is only one meta
+            .map { obsid, metas -> [ obsid, (metas instanceof List ? metas : [metas]) ]}
+            // determine how to group each obsid, and how to sort that obsid within each group.
+            .map { obsid, metas ->
+                // find the meta of the primary subobservation (in this case, the unsubtracted visibilities)
+                def metaPrime = metas.find { meta -> meta.sub == null }
+                // determine the value to sort obsids by
+                def sort = Float.NaN
+                if (metaPrime.p_window?:Float.NaN != Float.NaN && metaPrime.p_wedge?:Float.NaN != Float.NaN) {
+                    sort = metaPrime.p_window / metaPrime.p_wedge
+                }
+                // group by field, band, config
+                def group_tokens = []
+                def first_token = ""
+                if (metaPrime.eorfield != null) {
+                    first_token += "eor${metaPrime.eorfield}"
+                }
+                if (metaPrime.eorband != null) {
+                    first_token += (metaPrime.eorband == 0 ? "low" : "high")
+                }
+                if (first_token.size() > 0) {
+                    group_tokens << first_token
+                }
+                if (metaPrime.config != null) {
+                    group_tokens << metaPrime.config
+                }
+                // if (metaPrime.lst != null) {
+                //     def nearest_lst = (metaPrime.lst / 1).round() * 1
+                //     group_tokens << "lst${metaPrime.lst}"
+                // }
+                def group = group_tokens.join('_')
+
+                if (metas.size() > 1) {
+                    [
+                        "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
+                        "eorband", "eorfield", "config"
+                    ].each { key ->
+                        assert metas[1..-1].every { meta -> meta[key] == metas[0][key] }, \
+                            "meta key ${key} not consistent across subtractions for obsid ${obsid}: ${metas}"
+                    }
+                }
+                [group, sort, obsid, metas]
+            }
+            .groupTuple(by: 0)
+            // only keep groups with more than one obsid
+            .filter { it -> it[1] instanceof List }
+            // .view { it -> "\n -> grouped by obsid: ${it}"}
+            // chunk obsid groups into subgroups of 20
+            .flatMap { group, all_sorts, all_obsids, all_metas ->
+                def groupMeta = [group: group]
+
+                [all_sorts, all_obsids, all_metas].transpose()
+                    .sort { it -> it[0] }
+                    .collate(20, false)
+                    // .collate(2)
+                    // .take(3)
+                    .collect { chunk ->
+                        def (sorts, obsids, metas) = chunk.transpose()
+                        def obs_list = obsids.sort()
+                        def hash = obs_list.join(' ').md5()[0..7]
+                        def chunkMeta = [
+                            // ntimes: metas.collect { meta -> meta[0].ntimes?:0 }
+                            sort_bounds: [sorts[0], sorts[-1]],
+                            hash: hash,
+                        ]
+                        ["${group}_${hash}", deepcopy(groupMeta) + chunkMeta, obs_list, metas]
+                    }
+            }
+            // .view { it -> "\n -> chunked by obsid: ${it}"}
+            .tap { groupChunkMetaPass }
+            // flatten obsids out of each chunk
+            .flatMap { chunk, _, obsids, all_metas ->
+                [obsids, all_metas].transpose().collect { obsid, metas ->
+                    [chunk, obsid, metas]
+                }
+            }
+            // .view { it -> "\n -> flattened obsid: ${it}"}
+            // flatten visibilities out of each obsid
+            .flatMap { chunk, obsid, metas ->
+                metas.collect { meta ->
+                    [chunk, meta.name, obsid, meta]
+                }
+            }
+            // .view { it -> "\n -> flattened vis type: ${it}"}
+            // group by both obs group and visibility type name
+            .groupTuple(by: 0..1)
+            .map { chunk, name, obsids, metas ->
+                def groupMeta = [name: name]
+                [
+                    "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
+                    "eorband", "eorfield", "config", "sub"
+                ].each { key ->
+                    if (metas[0][key]) {
+                        groupMeta[key] = metas[0][key]
+                    }
+                }
+                [chunk, groupMeta, obsids]
+            }
+            // finally, we have a channel of visibilities from the same obs group and vis type
+            // .view { it -> "\n -> chunkMetaPass: ${it}"}
+
+        groupChunkMetaPass
+            .map { chunk, chunkMeta, obsids, all_metas ->
+                def sort_bounds = chunkMeta.sort_bounds?:[Float.NaN, Float.NaN]
+                (
+                    sort_bounds.collect { sprintf("%5.4f", it) }
+                    + [chunk, obsids.size(), obsids.join(' ')]
+                ).join("\t")
             }
             .collectFile(
-                name: "obs_groups.tsv", newLine: true, sort: true,
-                seed: ([ "EPOCH", "NAME", "NVIS", "VIS0" ]).join("\t"),
+                name: "obs_group_chunks.tsv", newLine: true, sort: true,
+                seed: ([ "SORT LEFT", "SORT RIGHT", "GROUP CHUNK", "NOBS", "OBSIDS" ]).join("\t"),
                 storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
             | view { [it, it.readLines().size()] }
 
-        // image and qa measurementsets or uvfits unless --noimage
-        if (params.noimg) {
-            channel.from([]) | img
-        } else {
-            obsMetaVisPass
-                .map { obs, meta, vis -> [obs, meta, [vis]]}
-                .mix( groupMetaVisPass )
-                | img
+        chunkMetaPass.map { group, _, obsids -> [group, obsids] }
+            | storeManifest
+
+        chunkMetaPass
+            .map { group, meta, obsids ->
+                [group, meta.name, obsids.size(), obsids.join(' ')].join("\t")
+            }
+            .collectFile(
+                name: "obs_groups.tsv", newLine: true, sort: true,
+                seed: ([ "GROUP", "NAME", "NVIS", "VISS" ]).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
+            | view { [it, it.readLines().size()] }
+
+        // TODO: filter uvfits.out.obsMetaUVPass to only include obsids that pass imgQA
+        obsMetaUVPass = uvfits.out.obsMetaUVPass.cross(obsMetaPass) { def (obsid, meta) = it; [obsid, meta.name] }
+            .map { obsMetaUVPass_, obsMetaPass_ ->
+                def (obsid, _, uvfits) = obsMetaUVPass_;
+                def (__, meta) = obsMetaPass_;
+                [obsid, meta, uvfits]
+            }
+
+        chips(obsMetaUVPass, chunkMetaPass)
 
             // groupMetaVisPass | img
         }
