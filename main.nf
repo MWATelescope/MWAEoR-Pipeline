@@ -2024,14 +2024,48 @@ workflow ws {
                     dec_phase_center = stats.metadata.dec_pointing
                 }
 
+                def eorfield = null;
+                if (ra_phase_center.round() == 0) {
+                    def nearest_dec = dec_phase_center.round()
+                    if (dec_phase_center.round() == -27) {
+                        eorfield = 0
+                    } else if (dec_phase_center.round() == 30) {
+                        eorfield = 1
+                    }
+                }
+
+                def coarse_chans = ((stats.rfstreams?:[:])["0"]?:[:]).frequencies?:[]
+                def center_chan = coarse_chans[coarse_chans.size()/2]
+                def eorband = null;
+                if (center_chan == 143) {
+                    eorband = 1
+                } else if (center_chan == 108) {
+                    eorband = 0
+                }
+
                 def pointing = stats.metadata.gridpoint_number
                 def nscans = ((stats.stoptime?:0) - (stats.starttime?:0)) / (stats.int_time?:1)
                 def delays = (stats.alldelays?:[:]).values().flatten()
                 def quality = stats.quality?:[:]
                 def tiles = stats.tdict?:[:]
+                def tile_nums = tiles.collect { k, _ -> k as int }
+                def tile_names = tiles.collect { _, v -> v[0] }
+                def n_tiles = tile_names.size()
+                def n_lb = tile_names.count { it =~ /(?i)lb/ }
+                def n_hex = tile_names.count { it =~ /(?i)hex/ }
+                def config = "ph1"
+                if (n_tiles > 128) {
+                    config = "ph3"
+                } else if (n_lb > 50) {
+                    config = "ph2b"
+                } else if (n_hex > 50) {
+                    config = "ph2a"
+                }
+                config += "-${n_tiles}T"
+
                 def bad_tiles = stats.bad_tiles?:[:]
                 def n_bad_tiles = bad_tiles.size()
-                def bad_tile_frac = n_bad_tiles / tiles.size()
+                def bad_tile_frac = n_bad_tiles / n_tiles
                 def n_dead_dipoles = delays.count { it == 32 }
                 def dead_dipole_frac = n_dead_dipoles / delays.size()
                 def quality_update = quality_updates[obsid]?:[:]
@@ -2058,6 +2092,12 @@ workflow ws {
                 if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
                     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
                 }
+                if (params.filter_eorfield && eorfield != params.filter_eorfield) {
+                    fail_reasons += ["phase_radec=(${ra_phase_center}, ${dec_phase_center})"]
+                }
+                if (params.filter_eorband && eorband != params.filter_eorband) {
+                    fail_reasons += ["center_chan=${center_chan}"]
+                }
                 // if (ra_phase_center != 0.0) {
                 //     fail_reasons += ["ra_phase_center=${ra_phase_center}"]
                 // }
@@ -2069,16 +2109,32 @@ workflow ws {
                     // obs metadata
                     obs_name: obs_name,
                     groupid: groupid,
-                    nscans: nscans,
+                    corrmode: stats.mode,
+                    delaymode: stats.delaymode_name,
+
+                    // pointing
                     ra_pointing: stats.metadata.ra_pointing,
                     dec_pointing: stats.metadata.dec_pointing,
+                    az_pointing: stats.metadata.azimuth_pointing,
+                    el_pointing: stats.metadata.elevation_pointing,
                     ra_phase_center: ra_phase_center,
                     dec_phase_center: dec_phase_center,
                     pointing: pointing,
                     lst: stats.metadata.local_sidereal_time_deg,
+                    eorfield: eorfield,
+
+                    // channels
                     freq_res: stats.freq_res,
+                    coarse_chans: coarse_chans,
+                    eorband: eorband,
+
+                    // times
                     int_time: stats.int_time,
-                    tiles: tiles,
+                    nscans: nscans,
+
+                    // tiles
+                    config: config,
+                    tile_nums: tile_nums,
                     bad_tiles: bad_tiles,
                     // iono quality
                     iono_magnitude: quality.iono_magnitude?:'',
@@ -2106,6 +2162,7 @@ workflow ws {
                     num_data_files: fileStats.num_data_files,
                     num_data_files_archived: fileStats.num_data_files_archived,
                 ]
+
                 [obsid, summary]
             }
 
@@ -2114,36 +2171,52 @@ workflow ws {
                 [
                     obsid,
                     summary.fail_reasons.join('|'),
-
                     summary.groupid,
+                    summary.corrmode,
+                    summary.delaymode,
+
+                    // pointing
                     summary.ra_pointing,
                     summary.dec_pointing,
+                    summary.az_pointing,
+                    summary.el_pointing,
                     summary.ra_phase_center,
                     summary.dec_phase_center,
                     summary.pointing,
                     summary.lst,
                     summary.obs_name,
+                    summary.eorfield?:'',
 
+                    // channels
                     summary.freq_res,
+                    displayInts(summary.coarse_chans.sort()),
+                    summary.eorband?:'',
+
+                    // times
                     summary.int_time,
                     summary.nscans,
 
-                    summary.num_data_files,
-                    summary.num_data_files_archived,
-
-                    summary.dataquality,
-                    summary.dataqualitycomment,
-
+                    // config
+                    summary.config,
                     summary.n_dead_dipoles,
                     summary.dead_dipole_frac,
                     summary.n_bad_tiles,
                     summary.bad_tile_frac,
-                    displayInts(summary.bad_tiles),
+                    displayInts(summary.tile_nums.sort()),
+                    displayInts(summary.bad_tiles.sort()),
 
+                    // iono quality
                     summary.iono_magnitude,
                     summary.iono_pca,
                     summary.iono_qa,
 
+                    // archive
+                    summary.num_data_files,
+                    summary.num_data_files_archived,
+
+                    // errors
+                    summary.dataquality,
+                    summary.dataqualitycomment,
                     summary.badstates,
                     summary.badpointings,
                     summary.badfreqs,
@@ -2155,12 +2228,15 @@ workflow ws {
             .collectFile(
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "FAIL REASON", "GROUP ID", "RA POINT", "DEC POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME",
-                    "FREQ RES", "TIME RES","N SCANS",
+                    "OBS", "FAIL REASON",
+                    "GROUP ID", "CORR MODE", "DELAY MODE",
+                    "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME", "EOR FIELD",
+                    "FREQ RES", "COARSE CHANS", "EOR BAND",
+                    "TIME RES", "N SCANS",
+                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "TILE NUMS", "FLAG TILES",
+                    "IONO MAG", "IONO PCA", "IONO QA",
                     "N FILES", "N ARCHIVED",
                     "QUALITY", "QUALITY COMMENT",
-                    "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "FLAG TILES",
-                    "IONO MAG", "IONO PCA", "IONO QA",
                     "STATE FAULTS", "POINTING FAULTS", "FREQ FAULTS", "GAIN FAULTS", "BEAM FAULTS", "FAULT STR"
                 ].join("\t"),
                 storeDir: "${results_dir}",
@@ -2172,7 +2248,12 @@ workflow ws {
             .filter { _, summary -> summary.fail_reasons == [] }
             .map { obsid, _ -> obsid }
 
-        pass | wsMetafits & wsSkyMap & wsPPDs
+        pass | wsMetafits & wsSkyMap
+        if (params.noppds) {
+            channel.from([]) | wsPPDs
+        } else {
+            pass | wsPPDs
+        }
 
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
@@ -2184,9 +2265,15 @@ workflow ws {
             .mix( wsPPDs.out.map { _, png -> ["ppd", png] } )
             .groupTuple()
 
-        // channel of (obsid, groupid, pointing)
-        obsGroupPoint = wsSummary.map { obsid, summary ->
-            [obsid, summary.groupid, summary.pointing]
+        // channel of (obsid, metadata hashmap)
+        obsMeta = wsSummary.map { obsid, summary ->
+            def meta = [:]
+            ["groupid", "pointing", "obs_name", "bad_tiles", "eorband", "eorfield"].each { key ->
+                if (summary[key] != null) {
+                    meta[key] = summary[key]
+                }
+            }
+            [obsid, meta]
         }
 }
 
@@ -2352,10 +2439,10 @@ workflow prep {
                     }
                     [
                         obsid,
-                        flagAntennas as int[],
-                        prepAntennas as int[],
-                        manualAntennas as int[],
-                        (newAntennas - flagAntennas) as int[]
+                        (flagAntennas as ArrayList).sort(),
+                        (prepAntennas as ArrayList).sort(),
+                        (manualAntennas as ArrayList).sort(),
+                        ((newAntennas - flagAntennas) as ArrayList).sort()
                     ]
                 })
         // channel of video name and frames to convert
@@ -2378,6 +2465,9 @@ workflow prep {
                 }
             })
             .mix(autoplot.out.map {_, img -> ["prepvisqa_autoplot", img]})
+            .groupTuple()
+
+        zip = prepVisQA.out.map { _, json -> ["prepvisqa", json]}
             .groupTuple()
 }
 
@@ -2595,6 +2685,9 @@ workflow cal {
                 }
             }
             .groupTuple()
+        // channel of files to zip
+        zip = calQA.out.map { _, meta, json -> ["calqa_${meta.name}", json] }
+            .groupTuple()
 }
 
 // process uvfits visibilities
@@ -2804,8 +2897,10 @@ workflow uvfits {
             }})
             .mix(delaySpec.out.map { _, meta, png -> ["visqa_dlyspec_${meta.name}", png] })
             .groupTuple()
-
-        passVis = passVis
+        // channel of files to zip
+        zip = visQA.out.map { _, meta, json -> ["visqa_${meta.name}", json] }
+            .groupTuple()
+        obsMetaUVPass = obsMetaUVPass_
 }
 
 // image measurement sets and QA images
@@ -3162,6 +3257,9 @@ workflow img {
                 }
                 frames_
             })
+            .groupTuple()
+        // channel of files to zip
+        zip = imgQA.out.map { _, meta, json -> ["imgqa_${meta.name}", json] }
             .groupTuple()
         // channel of tuple (obsid, imgMeta, img) that pass qa
         obsMetaImgPass = obsMetaImgPass_
