@@ -1601,11 +1601,45 @@ process polMontage {
     """
 }
 
-// process plotCalJsons {
-//     input:
-//         val jsons
-//     output:
-//         path("cal_qa.png")
+
+process stackImgs {
+    input:
+        tuple val(chunk), val(meta), path(imgs)
+    output:
+        tuple val(chunk), val(meta), path(stack)
+    storeDir "${params.outdir}/${chunk}/img_qa${params.img_suffix}${params.cal_suffix}"
+
+    tag "${chunk}${meta.subobs?:''}.${meta.name}"
+
+    label 'imagemagick'
+
+    script:
+    stack = "stack_${meta.name}_${meta.pol}.fits"
+    """
+    #!/bin/bash -eux
+    convert ${imgs.join(' ')} -average -auto-gamma -auto-level ${stack}
+    """
+}
+
+process stackThumbnail {
+    input:
+    tuple val(chunk), val(meta), path(img)
+    output:
+    tuple val(chunk), val(meta), path(thumb)
+
+    storeDir "${params.outdir}/${chunk}/img_qa${params.img_suffix}${params.cal_suffix}"
+
+    tag "${chunk}.${meta.name}.${meta.suffix}"
+
+    label 'python'
+    time {10.min * task.attempt}
+
+    script:
+    thumb = "${chunk}_${meta.name}_${meta.suffix}.png"
+    title = "${chunk} ${meta.name} ${meta.suffix}"
+    args = "${params.thumbnail_args} --vmin_quantile=0.3 --vmax_quantile=0.99"
+    template "thumbnail.py"
+}
 
 //     storeDir "${results_dir}"
 //     stageInMode "symlink"
@@ -3829,8 +3863,29 @@ workflow qaPrep {
 
         chips(obsMetaUVPass, chunkMetaPass)
 
-            // groupMetaVisPass | img
-        }
+        // stack images from chunks
+        obsMetaImgPass
+            .view { "img pass\n\t${it.join('\n\t')}"}
+            .cross(
+                chunkMetaPass.flatMap { group, groupMeta, obsids ->
+                    obsids.collect { obsid -> [obsid, groupMeta, group] }
+                }
+            ) { def (obsid, meta) = it; [obsid, meta.name] }
+            .view { "pre flat\n\t${it.join('\n\t')}"}
+            .flatMap { obsMetaImgPass_, obsMetaPass_ ->
+                def (obsid, _, imgMetas, imgs) = obsMetaImgPass_;
+                def (__, groupMeta, group) = obsMetaPass_;
+                [imgMetas, imgs].transpose().collect { imgMeta, img ->
+                    [group, groupMeta.name, imgMeta.suffix, imgMeta, img]
+                }
+            }
+            .groupTuple(by: 0..2)
+            .view { "cross group\n\t${it.join('\n\t')}"}
+            .map { group, _, __, imgMetas, imgs ->
+                [group, imgMetas[0], imgs]
+            }
+            | stackImgs
+            // | stackThumbnail
 
         // archive data to object store
         if (params.archive) {
