@@ -102,12 +102,13 @@ def autoplot(args):
     )[0]
 
     freqs = (uv.freq_array * u.Hz).to(u.MHz)
+    nchans = len(freqs)
 
     with fits.open(uv.uvfits_path) as hdus:
         vis_hdu = hdus['PRIMARY']
         ncplx = vis_hdu.data.data.shape[-1]
         data = vis_hdu.data.data[blt_idxs, 0, 0, :, :, :].reshape(
-            (uv.Ntimes, -1, uv.Nfreqs, uv.Npols, ncplx))
+            (uv.Ntimes, -1, nchans, uv.Npols, ncplx))
 
         print(data.shape, file=sys.stderr)
 
@@ -131,7 +132,7 @@ def autoplot(args):
         cchan_bandwidth = bandwidth / num_cchans
         # number of fine chans per coarse
         num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
-        num_cchans = uv.Nfreqs // num_fchans
+        num_cchans = nchans // num_fchans
         center_fine_chan = ceil(num_fchans/2)
         chan_flags = np.full((num_cchans, num_fchans), True)
         chan_flags[:, edge_chans:-edge_chans] = False
