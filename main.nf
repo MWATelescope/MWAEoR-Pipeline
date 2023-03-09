@@ -407,6 +407,12 @@ process rexCalSol {
             -a 1e-4 1e-8 \
             ${vis_ms} \
             \${soln_name} | tee \${log_name}
+        ps=("\${PIPESTATUS[@]}")
+        if [ \${ps[0]} -ne 0 ]; then
+            echo "mwa_reduce failed. status=\${ps[0]}"
+            exit \${ps[0]}
+        fi
+    fi
     """
 }
 
@@ -474,12 +480,17 @@ process hypCalSol {
         # hyperdrive di-cal backgrounded in a subshell
         (
             ${params.hyperdrive} di-calibrate \${args} \
-                --data "${metafits}" "${uvfits}" \
+                --data "${metafits}" ${uvfits} \
                 --beam "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
                 --outputs \$soln_name \
                 ${flag_args} \
                 | tee \$log_name
+            ps=("\${PIPESTATUS[@]}")
+            if [ \${ps[0]} -ne 0 ]; then
+                echo "hyperdrive failed. status=\${ps[0]}"
+                exit \${ps[0]}
+            fi
         ) &
         # TODO: model subtract: --model-filenames "hyp_model_${obsid}_\${name}.uvfits"
         # increment the target device mod num_gpus
@@ -521,6 +532,11 @@ process polyFit {
     """
     #!/bin/bash -eux
     run_polyfit.py "${soln}" --outfile "${poly_soln}" | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "run_polyfit.py failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -563,6 +579,7 @@ process hypApplyUV {
     cal_vis = "hyp_${obsid}_${newMeta.name}.uvfits"
     logs = "hyp_apply_${newMeta.name}.log"
     """
+    #!/bin/bash -eux
     ${params.hyperdrive} solutions-apply ${newMeta.apply_args} \
         --time-average=${newMeta.time_res}s \
         --freq-average=${newMeta.freq_res}kHz \
@@ -571,6 +588,11 @@ process hypApplyUV {
         --outputs "${cal_vis}" \
         ${newMeta.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -600,6 +622,7 @@ process hypApplyMS {
     cal_vis = "hyp_${obsid}_${newMeta.name}.ms"
     logs = "hyp_apply_${newMeta.name}_ms.log"
     """
+    #!/bin/bash -eux
     # hyperdrive solutions apply ms
     ${params.hyperdrive} solutions-apply ${newMeta.apply_args} \
         --time-average=${newMeta.time_res}s \
@@ -609,6 +632,11 @@ process hypApplyMS {
         --outputs "${cal_vis}" \
         ${params.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -638,6 +666,7 @@ process hypSubUV {
     sub_vis = "hyp_${obsid}_${newMeta.name}.uvfits"
     logs = "hyp_vis-${newMeta.name}_uv.log"
     """
+    #!/bin/bash -eux
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
@@ -645,7 +674,11 @@ process hypSubUV {
         --invert --num-sources ${newMeta.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
-    # TODO: ^ num sources is hardcoded twice, would be better to re-use model from cal
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -675,6 +708,7 @@ process hypSubMS {
     sub_vis = "hyp_${obsid}_${newMeta.name}.ms"
     logs = "hyp_vis-${newMeta.name}_ms.log"
     """
+    #!/bin/bash -eux
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
@@ -682,6 +716,11 @@ process hypSubMS {
         --invert --num-sources ${newMeta.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -715,6 +754,7 @@ process hypIonoSubUV {
     logs = "hyp_vis-${newMeta.name}_uv.log"
     json = "hyp_peel_${obsid}_${newMeta.name}_uv.json"
     """
+    #!/bin/bash -eux
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
@@ -723,6 +763,11 @@ process hypIonoSubUV {
         --sub ${newMeta.sub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
         | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -754,7 +799,7 @@ process hypIonoSubMS {
     logs = "hyp_vis-${newMeta.name}_ms.log"
     json = "hyp_peel_${obsid}_${newMeta.name}_ms.json"
     """
-    echo nproc \$(nproc)
+    #!/bin/bash -eux
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
         --beam "${params.beam_path}" \
@@ -764,6 +809,11 @@ process hypIonoSubMS {
         --outputs "${sub_vis}" "${json}" \
         -v \
         | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "Hyperdrive failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
@@ -1227,6 +1277,11 @@ process psMetrics {
     export OMP_NUM_THREADS=${task.cpus}
     ${params.ps_metrics} "${uvbase}" "${eorband}" "${nchans}" "${uvbase}" 2>&1 \
         | tee "${uvbase}.log"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "ps_metrics failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
     """
 }
 
