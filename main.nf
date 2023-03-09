@@ -2422,11 +2422,6 @@ workflow prep {
             asvoPrep.out | ssins
         }
 
-        // uncomment this to skip prep and flag QA
-        // emit:
-        //     obsMetaVis = obsMetafits.join(asvoPrep.out)
-        //     obsFlags = asvoPrep.out.map { obsid, _ -> [obsid, []]}
-
         def tileUpdates = file(params.tile_updates_path)
             .readLines()
             .collect { line ->
@@ -2466,6 +2461,32 @@ workflow prep {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        [
+            ["XX_RMS", { stats -> (stats.XX?:[:]).RMS?:[] }],
+            ["YY_RMS", { stats -> (stats.YY?:[:]).RMS?:[] }],
+            ["XX_MODZ0", { stats -> ((stats.XX?:[:]).MODZ_SCORE?:[:])["0"]?:[] }],
+            ["XX_MODZ1", { stats -> ((stats.XX?:[:]).MODZ_SCORE?:[:])["1"]?:[] }],
+            ["YY_MODZ0", { stats -> ((stats.YY?:[:]).MODZ_SCORE?:[:])["0"]?:[] }],
+            ["YY_MODZ1", { stats -> ((stats.YY?:[:]).MODZ_SCORE?:[:])["1"]?:[] }],
+        ].each { metric, getMetric ->
+            prepVisQA.out
+                // form row of tsv from json fields we care about
+                .map { obsid, json ->
+                    def stats = parseJson(json);
+                    ([ obsid ] + getMetric(stats)).join("\t")
+                }
+                .collectFile(
+                    name: "prepvis_${metric}.tsv", newLine: true, sort: true,
+                    seed: [
+                        "OBS",
+                        metric,
+                    ].join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+        }
 
         // plot prepvisQA
         prepVisQA.out | plotPrepVisQA
@@ -2763,6 +2784,30 @@ workflow cal {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        [
+            ["XX_RMS", { stats -> (stats.XX?:[:]).RMS?:[] }],
+            ["YY_RMS", { stats -> (stats.YY?:[:]).RMS?:[] }],
+            ["XX_MODZ", { stats -> (stats.XX?:[:]).RMS_MODZ?:[] }],
+            ["YY_MODZ", { stats -> (stats.YY?:[:]).RMS_MODZ?:[] }],
+        ].each { metric, getMetric ->
+            calQA.out
+                // form row of tsv from json fields we care about
+                .map { obsid, meta, json ->
+                    def stats = parseJson(json);
+                    ([ obsid, meta.name ] + getMetric(stats)).join("\t")
+                }
+                .collectFile(
+                    name: "calqa_${metric}.tsv", newLine: true, sort: true,
+                    seed: [
+                        "OBS",
+                        metric,
+                    ].join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+        }
 
         // channel of obsids and names that pass qa. tuple(obsid, name)
         // - take tuple(obsid, cal_name, json) from calQA.out
