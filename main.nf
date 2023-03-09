@@ -297,7 +297,7 @@ process hypSrclistAO {
     #!/bin/bash -eux
 
     # Reduce a sky-model source list to the top N brightest sources, given pointing information
-    ${params.hyperdrive} srclist-by-beam \
+    ${params.hyperdrive} srclist-by-beam ${params.hyp_srclist_args} \
         --metafits "${metafits}" \
         --number ${params.sub_nsrcs} \
         --beam-file "${params.beam_path}" \
@@ -325,7 +325,7 @@ process hypSrclistYaml {
     #!/bin/bash -eux
 
     # Reduce a sky-model source list to the top N brightest sources, given pointing information
-    ${params.hyperdrive} srclist-by-beam \
+    ${params.hyperdrive} srclist-by-beam ${params.hyp_srclist_args} \
         --metafits "${metafits}" \
         --number ${params.sub_nsrcs} \
         --beam-file "${params.beam_path}" \
@@ -902,7 +902,7 @@ process plotSols {
     script:
     plots_glob = "${meta.cal_prog}_soln_${obsid}*_${meta.name}_{phases,amps}.png"
     """
-    hyperdrive solutions-plot -m "${metafits}" ${soln}
+    hyperdrive solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
     """
 }
 
