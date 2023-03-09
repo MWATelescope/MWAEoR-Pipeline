@@ -2689,7 +2689,10 @@ workflow cal {
                 def newMeta = [:];
                 if (stats.BAD_ANTS) {
                     def prepflags = (meta.prepflags?:[]) as Set
-                    def calflags = (stats.BAD_ANTS?:[]) as Set
+                    def calflags = ([]) as Set
+                    if (!params.noCalFlags) {
+                        calflags.addAll(stats.BAD_ANTS?:[])
+                    }
                     def newflags = (calflags - prepflags) as ArrayList
                     if (newflags) {
                         newMeta.calflags = newflags.sort()
