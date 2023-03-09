@@ -2455,7 +2455,7 @@ workflow prep {
                     [obsid, prepStats, flagStats]
                 }
                 .filter { obsid, prepStats, _ ->
-                    prepStats.STATUS == "GOOD"
+                    params.noprepqafilter || prepStats.STATUS == "GOOD"
                 }
                 .map { obsid, prepStats, flagStats ->
                     def flagAntennas = (flagStats.preflagged_ants?:[]) as Set
