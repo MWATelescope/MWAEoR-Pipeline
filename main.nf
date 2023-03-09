@@ -123,8 +123,9 @@ process asvoPrep {
         label "rclone"
     }
 
-    maxForks 10
+    label "nvme"
 
+    time { 8.hour }
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
@@ -225,7 +226,8 @@ process flagQA {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
+    label "nvme"
 
     script:
     metrics = "${obsid}_occupancy.json"
@@ -249,6 +251,7 @@ process ssins {
     tag "${obsid}"
 
     label "ssins"
+    label "nvme"
 
     // errorStrategy "terminate"
 
@@ -269,7 +272,8 @@ process autoplot {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
+    label "nvme"
 
     script:
     autoplot = "${obsid}_autoplot.png"
@@ -288,7 +292,8 @@ process hypSrclistAO {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}"
-    label "hyperdrive_cpu"
+    label "hyperdrive"
+    label "cpu_full"
     time 15.minute
 
     script:
@@ -316,7 +321,8 @@ process hypSrclistYaml {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}"
-    label "hyperdrive_cpu"
+    label "hyperdrive"
+    label "cpu_full"
     time 15.minute
 
     script:
@@ -376,6 +382,7 @@ process rexCalSol {
     tag "${obsid}"
 
     label "mwa_reduce"
+    label "nvme"
 
     script:
     dical_names = dical_args.keySet().collect()
@@ -419,9 +426,12 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
+    label "gpu_big"
     if (params.pullCalSol) {
         label "rclone"
     }
+
+    time { 2.hour }
 
     script:
     dical_names = dical_args.keySet().collect()
@@ -502,7 +512,7 @@ process polyFit {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}.${meta.dical_name}"
 
-    label 'python'
+    label "python"
 
     script:
     meta = deepcopy(meta) + [name: "poly_${meta.name}"]
@@ -544,8 +554,9 @@ process hypApplyUV {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
     tag "${obsid}.${meta.name}"
-    label "cpu"
     label "hyperdrive"
+    label "cpu_half"
+    label "nvme"
 
     script:
     newMeta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
@@ -580,8 +591,9 @@ process hypApplyMS {
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
     tag "${obsid}.${meta.name}"
-    label "cpu"
     label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
 
     script:
     newMeta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
@@ -617,6 +629,8 @@ process hypSubUV {
 
     tag "${obsid}.${old_name}"
     label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
 
     script:
     old_name = meta.name
@@ -652,6 +666,8 @@ process hypSubMS {
 
     tag "${obsid}.${old_name}"
     label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
 
     script:
     old_name = meta.name
@@ -687,6 +703,8 @@ process hypIonoSubUV {
 
     tag "${obsid}.${old_name}"
     label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
 
     time 45.minute
 
@@ -726,6 +744,8 @@ process hypIonoSubMS {
 
     tag "${obsid}.${old_name}"
     label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
 
     script:
     old_name = meta.name
@@ -757,7 +777,7 @@ process cthulhuPlot {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     time 10.minute
 
@@ -779,7 +799,8 @@ process prepVisQA {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
+    label "nvme"
 
     script:
     metrics = "birli_${obsid}_prepvis_metrics.json"
@@ -800,7 +821,7 @@ process visQA {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     // TODO: json = "vis_metrics_${meta.cal_prog}_${obsid}_${meta.name}.json"
@@ -821,7 +842,7 @@ process uvMeta {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
     time 15.minute
 
     script:
@@ -840,7 +861,7 @@ process calQA {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     metrics = "${meta.cal_prog}_soln_${obsid}_${meta.name}_X.json"
@@ -860,7 +881,7 @@ process solJson {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     metrics = "${meta.cal_prog}_soln_${obsid}_${meta.name}.fits.json"
@@ -877,7 +898,7 @@ process plotPrepVisQA {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
 
     script:
     plot_base = "prepvis_metrics_${obsid}"
@@ -897,7 +918,7 @@ process plotSols {
 
     tag "${obsid}.${meta.name}"
 
-    label "hyperdrive_cpu"
+    label "hyperdrive"
 
     script:
     plots_glob = "${meta.cal_prog}_soln_${obsid}*_${meta.name}_{phases,amps}.png"
@@ -916,7 +937,7 @@ process plotCalQA {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     plot_base = "calmetrics_${obsid}_${meta.name}"
@@ -936,7 +957,7 @@ process plotVisQA {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
 
     script:
     """
@@ -956,7 +977,7 @@ process plotImgQA {
 
     tag "${obsid}"
 
-    label 'python'
+    label "python"
 
     script:
     base = "wsclean_hyp_${name}-MFS"
@@ -977,7 +998,7 @@ process delaySpec {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     title = "${obsid}_${meta.name}"
@@ -999,6 +1020,8 @@ process wscleanDirty {
 
     tag "${obsid}.${meta.name}"
     label "wsclean"
+    label "cpu_half"
+    label "mem_half"
 
     time { 1.8.minute * (1 + (multiplier * pix_mult * chan_mult * inter_mult)) }
 
@@ -1073,6 +1096,8 @@ process wscleanDConv {
 
     tag "${obsid}.${meta.name}"
     label "wsclean"
+    label "cpu_half"
+    label "mem_half"
 
     time { 5.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
 
@@ -1146,7 +1171,7 @@ process imgQuantiles {
 
     tag "${obsid}.${meta.name}.${meta.suffix}"
 
-    label 'python'
+    label "python"
 
     time {5.min * task.attempt}
 
@@ -1186,6 +1211,7 @@ process psMetrics {
     tag "${obsid}.${meta.name}"
 
     label "chips"
+    label "cpu_half"
 
     time 20.minute
 
@@ -1237,6 +1263,8 @@ process chipsGrid {
     tag "${group}.${meta.name}"
 
     label "chips"
+    label "cpu_full"
+    label "mem_full"
 
     time { 30.minute * obsids.size() }
 
@@ -1350,6 +1378,8 @@ process chipsLssa {
     tag "${group}.${meta.name}"
 
     label "chips"
+    label "cpu_full"
+    label "mem_full"
 
     time 20.minute
 
@@ -1401,7 +1431,7 @@ process chipsPlot {
 
     tag "${group}.${meta.name}.${ptype}"
 
-    label 'python'
+    label "python"
 
     time 15.minute
 
@@ -1511,7 +1541,7 @@ process imgQA {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     json = "wsclean_hyp_${obsid}_${meta.name}-MFS.json"
@@ -1531,7 +1561,7 @@ process uvPlot {
 
     tag "${obsid}.${meta.name}"
 
-    label 'python'
+    label "python"
 
     script:
     title = "${obsid}_${meta.name}"
@@ -1550,7 +1580,7 @@ process thumbnail {
 
     tag "${obsid}.${meta.name}.${meta.suffix}"
 
-    label 'python'
+    label "python"
     time {10.min * task.attempt}
 
     script:
@@ -1577,7 +1607,7 @@ process polComp {
 
     tag "${obsid}${meta.subobs?:''}.${meta.name}.${meta.prod}.${meta.orderName}"
 
-    label 'python'
+    label "python"
 
     script:
     meta = deepcopy(meta) + ['orderName': meta.order.join('')]
@@ -1630,7 +1660,7 @@ process plotCalJsons {
     storeDir "${results_dir}"
     stageInMode "symlink"
 
-    label 'python'
+    label "python"
 
     script:
     """
@@ -1668,7 +1698,7 @@ process stackThumbnail {
 
     tag "${chunk}.${meta.name}.${meta.suffix}"
 
-    label 'python'
+    label "python"
     time {10.min * task.attempt}
 
     script:
