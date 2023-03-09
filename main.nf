@@ -4061,8 +4061,26 @@ workflow qaPrep {
                 | archive
         }
 
+        // make videos
+        def allframes = frame.mix(cal.out.frame)
+            .mix(uvfits.out.frame)
+            .mix(img.out.frame)
+            .mix(chips.out.frame)
+            .mix(cthulhuPlot.out.flatMap {_, meta, pngs ->
+                pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
+            }.groupTuple())
+
+        allframes.map { name, frames ->
+                def latest = frames.collect { frame -> frame.lastModified() }.max()
+                def cachebust = "${latest}_x" + sprintf("%04d", frames.size())
+                def sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort()
+                [name, sorted, cachebust]
+            }
+            | ffmpeg
+            | view { video, _ -> [video, video.size()] }
+
         // make zips
-        if (params.archive) {
+        if (params.tarchive) {
             zip
                 .mix(cal.out.zip)
                 .mix(uvfits.out.zip)
@@ -4071,30 +4089,16 @@ workflow qaPrep {
                     hypIonoSubUV.out.map { it -> def (obsid, meta, _, offsets) = it; ["offsets_${meta.name}", offsets]}
                     .groupTuple()
                 )
+                .mix(allframes)
                 .map { name, files ->
                     def latest = files.collect { file -> file.lastModified() }.max()
                     def cachebust = "${latest}_x" + sprintf("%04d", files.size())
-                    [name, files.sort(), cachebust]
+                    // def sorted = files.collect { path -> file(deepcopy(path.toString())) }.sort()
+                    [name, files, cachebust]
                 }
                 | tarchive
                 | view { zip_, cachebust -> [zip_, zip_.size()] }
         }
-
-        // make videos
-        frame.mix(cal.out.frame)
-            .mix(uvfits.out.frame)
-            .mix(img.out.frame)
-            .mix(chips.out.frame)
-            .mix(cthulhuPlot.out.flatMap {_, meta, pngs ->
-                pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
-            }.groupTuple())
-            .map { name, frames ->
-                def latest = frames.collect { frame -> frame.lastModified() }.max()
-                def cachebust = "${latest}_x" + sprintf("%04d", frames.size())
-                [name, frames.sort(), cachebust]
-            }
-            | ffmpeg
-            | view { video, cachebust -> [video, video.size()] }
 }
 
 // entrypoint: get externally preprocessed uvfits files from csv file and run qa
