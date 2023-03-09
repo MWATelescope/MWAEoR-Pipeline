@@ -2828,8 +2828,12 @@ workflow uvfits {
             visQA.out | plotVisQA
         }
 
-        obsMetaUVEoR = obsMetaUV
-            .filter { _, meta, __ -> (meta.eorband != null && meta.eorfield != null) }
+        if (params.noeor) {
+            obsMetaUVEoR = obsMetaUV
+        } else {
+            obsMetaUVEoR = obsMetaUV
+                .filter { _, meta, __ -> (meta.eorband != null && meta.eorfield != null) }
+        }
 
         // ps_metrics
         if (params.nopsmetrics) {
