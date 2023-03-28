@@ -2497,9 +2497,8 @@ workflow prep {
                     stats.STATUS?:'',
                     stats.NANTS?:'',
                     stats.NTIMES?:'',
-                    stats.NFREQS?:'',
+                    stats.NCHAN?:'',
                     stats.NPOLS?:'',
-                    (stats.ANNUMBERS?:[]).size(),
                     displayInts(stats.BAD_ANTS?:[]),
                 ].join("\t")
             }
@@ -2510,9 +2509,8 @@ workflow prep {
                     "STATUS",
                     "NANTS",
                     "NTIMES",
-                    "NFREQS",
+                    "NCHAN",
                     "NPOLS",
-                    "NANTS",
                     "BAD_ANTS",
                 ].join("\t"),
                 storeDir: "${results_dir}"
