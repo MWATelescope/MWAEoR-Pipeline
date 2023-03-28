@@ -3238,63 +3238,63 @@ workflow img {
             obsMetaGrid = channel.from([])
         }
 
-        // calculate quantiles (what values are at nth percentile)
-        obsMetaImgMfs \
-            // .mix(obsMetaGrid) \
-            | imgQuantiles
-
-        // limits are used to set the color scale of each type of image.
-        imgLimits = imgQuantiles.out
-            .map { obsid, meta, hist ->
-                limit = parseCsv(hist, true, 2)
-                    // get 90th percentile
-                    .find { row -> Float.compare(row.quantile as float, 0.90) == 0 }
-                [obsid, meta.name, meta.inter_suffix, limit.value as float]
-            }
-            .groupTuple(by: 0..2)
-            .map { obsid, name, suff, limits ->
-                [obsid, name, suff, limits.max()]
-            }
-            .groupTuple(by: 0..1)
-            .map { obsid, name, suffs, limits ->
-                suffLimits = [suffs, limits].transpose().collectEntries()
-                [obsid, name, suffLimits]
-            }
-
-        allSuffs = imgLimits.flatMap { obsid, name, limits -> limits.keySet()}
-            .unique()
-            .collect(sort: true)
-            .toList()
-
-        // write img limits to file
-        allSuffs.subscribe { suffs ->
-            imgLimits.map { obsid, name, limits ->
-                    ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")}
-            .collectFile(
-                name: "img_limits.tsv", newLine: true, sort: true,
-                seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
-            )
-        }
-
-        // value channel containing a map from img suffix to max limit
-        suffLimits = imgLimits.map{ _, __, limits -> limits }
-            .reduce([:]) { acc, limits ->
-                limits.collectEntries { k, v -> [k, [v, acc[k]?:v].max()] }
-            }
-            .collect()
-
-        // all valid pol orders for polComp
-        polOrders = [
-            // ["I", "V", "Q"],
-            ["XX", "V", "YY"],
-            // ["XX", "XY", "YY"]
-        ]
-
         // do a polcomp for each allowed prod
         if (params.nopolcomp) {
             channel.from([]) | polComp
         } else {
+            // calculate quantiles (what values are at nth percentile)
+            obsMetaImgMfs \
+                // .mix(obsMetaGrid) \
+                | imgQuantiles
+
+            // limits are used to set the color scale of each type of image.
+            imgLimits = imgQuantiles.out
+                .map { obsid, meta, hist ->
+                    limit = parseCsv(hist, true, 2)
+                        // get 90th percentile
+                        .find { row -> Float.compare(row.quantile as float, 0.90) == 0 }
+                    [obsid, meta.name, meta.inter_suffix, limit.value as float]
+                }
+                .groupTuple(by: 0..2)
+                .map { obsid, name, suff, limits ->
+                    [obsid, name, suff, limits.max()]
+                }
+                .groupTuple(by: 0..1)
+                .map { obsid, name, suffs, limits ->
+                    suffLimits = [suffs, limits].transpose().collectEntries()
+                    [obsid, name, suffLimits]
+                }
+
+            allSuffs = imgLimits.flatMap { obsid, name, limits -> limits.keySet()}
+                .unique()
+                .collect(sort: true)
+                .toList()
+
+            // write img limits to file
+            allSuffs.subscribe { suffs ->
+                imgLimits.map { obsid, name, limits ->
+                        ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")}
+                .collectFile(
+                    name: "img_limits.tsv", newLine: true, sort: true,
+                    seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
+                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+                )
+            }
+
+            // value channel containing a map from img suffix to max limit
+            suffLimits = imgLimits.map{ _, __, limits -> limits }
+                .reduce([:]) { acc, limits ->
+                    limits.collectEntries { k, v -> [k, [v, acc[k]?:v].max()] }
+                }
+                .collect()
+
+            // all valid pol orders for polComp
+            polOrders = [
+                // ["I", "V", "Q"],
+                ["XX", "V", "YY"],
+                // ["XX", "XY", "YY"]
+            ]
+
             obsMetaImgMfs
                 .map { obsid, meta, img -> [obsid, meta.name, meta.prod, meta, img] }
                 .groupTuple(by: 0..2)
@@ -3370,7 +3370,6 @@ workflow img {
             }
             .groupTuple(by: 0..1)
             .map { obsid, _, metas, imgMetas, imgs -> [obsid, metas[0], imgMetas, imgs] }
-            .view { "obsMetaImgGroup\n\t${it}"}
 
         // imgQA for MFS images and groups of images
         //  - imgs need to be deconvolved for QA
