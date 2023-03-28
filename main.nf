@@ -1698,9 +1698,25 @@ process thumbnail {
     time {10.min * task.attempt}
 
     script:
-    thumb = "${obsid}_${meta.name}_${meta.suffix}.png"
     title = "${obsid} ${meta.name} ${meta.suffix}"
-    args = "${params.thumbnail_args}"
+    thumb = "${obsid}_${meta.name}_${meta.suffix}.png"
+    args = [
+        fits: img,
+        title: title,
+        output_name: thumb,
+    ]
+    // argstr = "${params.thumbnail_args}"
+    argstr = (args + meta).findAll { k, v ->
+            v != null && [
+                'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
+                'vmax_quantile', 'transparent', 'symmetric', 'cmap'
+            ].contains(k)
+        }
+        .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
+        .flatten()
+        .collect { token -> "\"${token}\"" }
+        .join(' ')
+
     template "thumbnail.py"
 }
 
@@ -1806,7 +1822,7 @@ process stackThumbnail {
     input:
     tuple val(chunk), val(meta), path(img)
     output:
-    tuple val(chunk), val(meta), path(thumb)
+    tuple val(chunk), val(meta), path("${chunk}_${meta.name}_${meta.suffix}.png")
 
     storeDir "${params.outdir}/${chunk}/img_qa${params.img_suffix}${params.cal_suffix}"
 
@@ -1816,9 +1832,24 @@ process stackThumbnail {
     time {10.min * task.attempt}
 
     script:
-    thumb = "${chunk}_${meta.name}_${meta.suffix}.png"
     title = "${chunk} ${meta.name} ${meta.suffix}"
-    args = "${params.thumbnail_args} --vmin_quantile=0.3 --vmax_quantile=0.99"
+    args = [
+        fits: img,
+        title: title,
+        output_name: "${chunk}_${meta.name}_${meta.suffix}.png",
+        vmin_quantile: 0.3,
+        vmax_quantile: 0.99
+    ]
+    argstr = (args + meta).findAll { k, v ->
+            v != null && [
+                'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
+                'vmax_quantile', 'transparent', 'symmetric', 'cmap'
+            ].contains(k)
+        }
+        .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
+        .flatten()
+        .join(' ')
+
     template "thumbnail.py"
 }
 
