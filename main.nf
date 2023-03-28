@@ -3273,8 +3273,8 @@ workflow img {
         // - exclude dirty if deconv is enabled
         obsMetaImgMfs = obsMetaImg.filter { _, meta, img ->
                 meta.prod !=~ /uv-.*/ \
-                && (params.thumbnail_all_chans || meta.chan?:-1 == -1) \
-                && (!params.nodeconv || !meta.prod == "dirty" )
+                && (meta.chan?:-1 == -1 || params.thumbnail_all_chans) \
+                && (meta.prod == (params.nodeconv ? "dirty" : "image"))
             }
         // obsMetaImg but only gridded uv images
         if (params.thumbnail_uvs) {
