@@ -309,21 +309,22 @@ process ssins {
 
 process autoplot {
     input:
-    tuple val(obsid), path(metafits), path(uvfits)
+    tuple val(obsid), val(meta), path(metafits), path(uvfits)
     output:
-    tuple val(obsid), path(autoplot)
+    tuple val(obsid), val(meta), path(autoplot)
 
     storeDir "${params.outdir}/${obsid}/vis_qa"
 
-    tag "${obsid}"
+    tag "${obsid}${suffix}"
 
     label "python"
     label "nvme"
+    label "mem_half"
 
     script:
-    autoplot = "${obsid}_autoplot.png"
-    title = "${obsid}"
-    args = "${params.autoplot_args}"
+    suffix = meta.suffix?:""
+    autoplot = "autoplot_${obsid}${suffix}.png"
+    args = "${meta.autoplot_args}"
     template "autoplot.py"
 }
 
