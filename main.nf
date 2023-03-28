@@ -40,6 +40,51 @@ process wsMeta {
     """
 }
 
+process tapMeta {
+    input:
+    val(obsid)
+    output:
+    tuple val(obsid), path(tapmeta)
+
+    label "tap"
+
+    // persist results in outdir, process will be skipped if files already present.
+    storeDir "${params.outdir}/meta"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    script:
+    tapmeta = "${obsid}_tapmeta.json"
+    obs_fields = [
+        'starttime_mjd',
+        'starttime_utc',
+        'mwa_array_configuration'
+    ]
+    """
+    #!/usr/bin/env python3
+    from pyvo.dal import TAPService
+    import json
+    # import numpy as np
+    #
+    # class NpEncoder(json.JSONEncoder):
+    #     def default(self, obj):
+    #         if isinstance(obj, np.integer):
+    #             return int(obj)
+    #         if isinstance(obj, np.floating):
+    #             return float(obj)
+    #         if isinstance(obj, np.ndarray):
+    #             return obj.tolist()
+    #         return super(NpEncoder, self).default(obj)
+
+    tap = TAPService("http://vo.mwatelescope.org/mwa_asvo/tap")
+    table = tap.search("SELECT obs_id,${obs_fields.join(',')} FROM mwa.observation WHERE obs_id = ${obsid}").table
+    row = table[0]
+
+    with open("${tapmeta}", "w") as f:
+        json.dump(dict(row), f, indent=4, default=str)
+    """
+}
+
 // download observation metadata from webservices in metafits format
 process wsMetafits {
     input:
@@ -2121,7 +2166,7 @@ workflow ws {
         obsids
 
     main:
-        obsids | wsMeta
+        obsids | wsMeta & tapMeta
 
         quality_updates = file(params.quality_updates_path)
             .readLines()
@@ -2130,7 +2175,7 @@ workflow ws {
                 [obsid, [dataquality: quality, dataqualitycomment: comment]]
             }
 
-        wsSummary = wsMeta.out.map { obsid, json, filesJson ->
+        wsSummary = wsMeta.out.join(tapMeta.out).map { obsid, json, filesJson, tapJson ->
                 // parse json
                 def stats = parseJson(json)
 
@@ -2172,6 +2217,7 @@ workflow ws {
                 def tiles = stats.tdict?:[:]
                 def tile_nums = tiles.collect { k, _ -> k as int }
                 def tile_names = tiles.collect { _, v -> v[0] }
+                def tile_rxs = tiles.collect { _, v -> v[1] }
                 def n_tiles = tile_names.size()
                 def n_lb = tile_names.count { it =~ /(?i)lb/ }
                 def n_hex = tile_names.count { it =~ /(?i)hex/ }
@@ -2226,6 +2272,9 @@ workflow ws {
                 // if (dec_phase_center != -27.0) {
                 //     fail_reasons += ["dec_phase_center=${dec_phase_center}"]
                 // }
+
+                def tapStats = parseJson(tapJson)
+
                 def summary = [
                     fail_reasons: fail_reasons,
                     // obs metadata
@@ -2233,6 +2282,8 @@ workflow ws {
                     groupid: groupid,
                     corrmode: stats.mode,
                     delaymode: stats.delaymode_name,
+                    starttime_mjd: tapStats.starttime_mjd,
+                    starttime_utc: tapStats.starttime_utc,
 
                     // pointing
                     ra_pointing: stats.metadata.ra_pointing,
@@ -2257,6 +2308,7 @@ workflow ws {
                     // tiles
                     config: config,
                     tile_nums: tile_nums,
+                    tile_rxs: tile_rxs,
                     bad_tiles: bad_tiles,
                     // iono quality
                     iono_magnitude: quality.iono_magnitude?:'',
@@ -2293,9 +2345,11 @@ workflow ws {
                 [
                     obsid,
                     summary.fail_reasons.join('|'),
+                    summary.starttime_mjd?:'',
+                    summary.starttime_utc?:'',
                     summary.groupid,
                     summary.corrmode,
-                    summary.delaymode,
+                    summary.delaymode?:'',
 
                     // pointing
                     summary.ra_pointing,
@@ -2350,7 +2404,7 @@ workflow ws {
             .collectFile(
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "FAIL REASON",
+                    "OBS", "FAIL REASON", "START MJD", "START UTC",
                     "GROUP ID", "CORR MODE", "DELAY MODE",
                     "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME", "EOR FIELD",
                     "FREQ RES", "COARSE CHANS", "EOR BAND",
@@ -2390,7 +2444,10 @@ workflow ws {
         // channel of (obsid, metadata hashmap)
         obsMeta = wsSummary.map { obsid, summary ->
             def meta = [:]
-            ["groupid", "pointing", "obs_name", "bad_tiles", "eorband", "eorfield"].each { key ->
+            [
+                "groupid", "pointing", "obs_name", "starttime_utc", "starttime_mjd",
+                "bad_tiles", "eorband", "eorfield", "tile_names", "tile_rxs"
+            ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
                 }
@@ -2404,6 +2461,7 @@ workflow prep {
     take:
         // channel of obsids with their metafits: tuple(obsid, metafits)
         obsMetafits
+        obsMeta
     main:
         // download preprocessed uvfits
         obsMetafits
@@ -2495,7 +2553,24 @@ workflow prep {
         if (params.noprepqa) {
             channel.from([]) | flagQA & autoplot
         } else {
-            obsMetafits.join(asvoPrep.out) | flagQA & autoplot
+            obsMetafits.join(asvoPrep.out) | flagQA
+            obsMetafits.join(asvoPrep.out).join(obsMeta).flatMap { obsid, metafits, uvfits, meta ->
+                    def rxTiles = meta.tile_rxs
+                        .withIndex()
+                        .collect { rx, tile -> [rx as Integer, tile] }
+                        .groupBy { rx, tile -> rx }
+                        .collect { rx, rx_tiles -> [rx, rx_tiles.collect { it[1] }] };
+                    println("rxTiles: ${rxTiles}");
+                    rxTiles.collect { rx, tiles ->
+                        def suffix = sprintf("_rx%02d", rx);
+                        def plotMeta = [
+                            suffix: suffix,
+                            "autoplot_args": "${params.autoplot_args} --sel_ants ${tiles.join(' ')} --plot_title '${obsid}${suffix}'"
+                        ]
+                        [obsid, plotMeta, metafits, uvfits]
+                    }
+                }
+                | autoplot
         }
 
         // collect flagQA results
@@ -2607,7 +2682,7 @@ workflow prep {
                     }
                 }
             })
-            .mix(autoplot.out.map {_, img -> ["prepvisqa_autoplot", img]})
+            .mix(autoplot.out.map {_, meta, img -> ["prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
 
         zip = prepVisQA.out.map { _, json -> ["prepvisqa", json]}
@@ -3755,9 +3830,9 @@ workflow {
 
     // download preprocessed, unless noprep is set
     if (params.noprep) {
-        channel.from([]) | prep
+        prep(channel.from([]), channel.from([]))
     } else {
-        ws.out.obsMetafits | prep
+        prep(ws.out.obsMetafits, ws.out.obsMeta)
     }
 
     // channel of obsids that pass the flag gate
