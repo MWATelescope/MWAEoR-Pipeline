@@ -1038,7 +1038,7 @@ process plotCalQA {
     input:
     tuple val(obsid), val(meta), path(metrics)
     output:
-    tuple val(obsid), val(meta), path("${plot_base}.png")
+    tuple val(obsid), val(meta), path("${plot_base}_{rms,fft}.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -1082,7 +1082,7 @@ process plotImgQA {
     storeDir "${results_dir}"
     stageInMode "symlink"
 
-    tag "${obsid}"
+    tag "${name}"
 
     label "python"
 
@@ -1159,6 +1159,13 @@ process wscleanDirty {
         // img_glob += "-*"
     }
     img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}-{dirty,uv-real,uv-imag}.fits"
+    img_args = img_params.args
+    if (img_params.weight) {
+        img_args += " -weight ${img_params.weight}"
+    }
+    if (img_params.pol) {
+        img_args += " -pol ${img_params.pol}"
+    }
     """
     #!/bin/bash -eux
     """ + (
@@ -1175,12 +1182,10 @@ process wscleanDirty {
             ""
     ) + """
     ${params.wsclean} \
-        ${img_params.args} \
-        -weight ${img_params.weight} \
+        ${img_args} \
         -name wsclean_${img_name} \
         -size ${img_params.size} ${img_params.size} \
         -scale ${img_params.scale} \
-        -pol ${img_params.pol} \
         -channels-out ${img_params.channels_out} \
         -save-uv \
         -niter 0 \
@@ -1229,6 +1234,13 @@ process wscleanDConv {
         img_glob += "-MFS"
     }
     img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}-image.fits"
+    img_args = img_params.args
+    if (img_params.weight) {
+        img_args += " -weight ${img_params.weight}"
+    }
+    if (img_params.pol) {
+        img_args += " -pol ${img_params.pol}"
+    }
     """
     #!/bin/bash -eux
     """ + (
@@ -1245,14 +1257,12 @@ process wscleanDConv {
                 ""
     ) + """
     ${params.wsclean} \
-        ${img_params.args} \
+        ${img_args} \
         -name wsclean_${img_name} \
         """ + (dirtyImgs?"-reuse-dirty wsclean_${img_name}":"") +
         """ \
-        -weight ${img_params.weight} \
         -size ${img_params.size} ${img_params.size} \
         -scale ${img_params.scale} \
-        -pol ${img_params.pol} \
         -channels-out ${img_params.channels_out} \
         -intervals-out ${img_params.intervals_out} \
         -niter ${img_params.niter} \
