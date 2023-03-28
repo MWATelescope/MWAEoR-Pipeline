@@ -1423,55 +1423,60 @@ process chipsGrid {
     """
 }
 
-// process chipsCombine {
-//     input:
-//     tuple val(group), val(meta), val(exts), path(grid)
+process chipsCombine {
+    input:
+    tuple val(group), val(meta), val(exts), path(grids)
 
-//     output:
-//     tuple val(group), val(meta), path("combine_${group}_${meta.name}_{xx,yy}.txt"),
-//         path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${ext}.dat")
+    output:
+    tuple val(group), val(meta), path("combine_{xx,yy}.${combined_ext}.txt"),
+        path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${combined_ext}.dat")
 
-//     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
 
-//     tag "${group}.${meta.name}"
+    tag "${group}.${meta.name}"
 
-//     combine = "combine_${group}_${meta.name}.txt"
+    label "chips"
+    label "cpu_full"
+    label "mem_full"
+    label "nvme"
 
-//     """
-//     #!/bin/bash -eux
+    time { 1.hour }
 
-//     echo "meta=${meta}"
-//     """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 68" : "" ) + """
+    script:
+    // ext = "${group}_${meta.name}"
+    combined_ext = meta.ext
+    nchans = meta.nchans
+    """
+    #!/bin/bash -eux
 
-//     export DATADIR="\$PWD"
-//     export INPUTDIR="\$PWD/"
-//     export OUTPUTDIR="\$PWD/"
-//     export OBSDIR="\$PWD/"
-//     export OMP_NUM_THREADS=${task.cpus}
+    echo "meta=${meta}"
+    """ + (!nchans || !combined_ext || exts.size() == 0 ? "exit 68" : "" ) + """
 
-//     # copy data files
-//     for f in present_vals.dat missing_vals.dat krig_weights.dat; do
-//         [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
-//     done
+    export DATADIR="\$PWD"
+    export INPUTDIR="\$PWD/"
+    export OUTPUTDIR="\$PWD/"
+    export OBSDIR="\$PWD/"
+    export OMP_NUM_THREADS=${task.cpus}
 
-//     combine_data "${combine}" 384 "${ext}" 1
+    # copy data files
+    for f in present_vals.dat missing_vals.dat krig_weights.dat; do
+        [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
+    done
 
-//     """ + (
-//         [
-//             (obsids instanceof List ? obsids : [obsids]),
-//             (viss instanceof List ? viss : [viss])
-//         ].transpose().collect { obsid, vis ->
-//             """gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
-//                 2>&1 > syslog_gridvisdiff_${obsid}.txt """
-//         }.join("\n")
-//     ) + """
+    for pol in xx yy; do
+        echo -n "" > combine_\${pol}.${combined_ext}.txt
+        """ + (
+            exts.collect { ext ->
+                """echo "\${pol}.${ext}" >> combine_\${pol}.${combined_ext}.txt"""
+            }.join("\n")
+        ) + """
 
-//     for pol in xx yy; do
-//         prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "\${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
-//             2>&1 > syslog_prepare_diff_\${pol}.txt
-//     done
-//     """
-// }
+        combine_data "combine_\${pol}.${combined_ext}.txt" ${nchans} "\${pol}.${combined_ext}" 1
+
+        # todo: check first bytes not null
+    done
+    """
+}
 
 process chipsLssa {
     input:
@@ -3541,40 +3546,30 @@ workflow chips {
                 | chipsGrid
         }
 
-        // obsMetaUV.cross(
-        //     chunkMetaObs.flatMap { group, groupMeta, obsids ->
-        //             obsids.collect { obsid -> [obsid, groupMeta, group] }
-        //         }
-        //         .mix(obsMetaPass.map { obsid, meta -> [obsid, meta, obsid]})
-        // ) { def (obsid, meta) = it; [obsid, meta.name] }
-        //     .map { obsMetaUV_, chunkMetaObs_ ->
-        //         def (_, __, uvfits) = obsMetaUV_
-        //         def (chunk, chunkMeta, obsids) = chunkMetaObs_
-        //         [obsids, chunkMeta, uvfits]
-        //     }
-        //     .groupTuple(by: 0)
-        //     .map { obsids, meta, uvfits ->
-        //         [obsids, meta, uvfits]
-        //     }
-        //     | chipsGrid
+        chipsGrid.out.cross(
+                chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
+                    obsids.collect { obsid -> [obsid, deepcopy(chunkMeta), chunk] }
+                }
+            ) { def (obsid, meta) = it; [obsid, meta.name] }
+            .map { chipsGrid_, chunkMetaObs_ ->
+                def (obsid, obsMeta, grid) = chipsGrid_
+                def (__, chunkMeta, chunk) = chunkMetaObs_
+                [chunk, chunkMeta.name, chunkMeta, obsMeta.ext, grid]
+            }
+            .groupTuple(by: 0..1)
+            .view { it -> "\n -> chipsGrid x chunkMetaObs ${it}\n" }
+            .map { chunk, _, chunkMetas, exts, grids ->
+                def chunkMeta = chunkMetas[0]
+                def newMeta = [ ext: "${chunk}_${chunkMeta.name}"]
+                // print("\n -> chunkMetas 0: ${chunkMeta}\n")
+                [chunk, deepcopy(chunkMeta) + newMeta, exts, grids.flatten()]
+            }
+            .view { it -> "\n -> before chipsCombine ${it}\n" }
+            .filter { chunk, chunkMeta, exts, grid -> chunkMeta.name }
+            | chipsCombine
 
-        // uvfits.out.obsMetaUVPass.cross(
-        //         chunkMetaPass.flatMap { group, groupMeta, obsids ->
-        //                 obsids.collect { obsid -> [obsid, groupMeta, group] }
-        //             }
-        //             .mix(obsMetaPass.map { obsid, meta -> [obsid, meta, obsid]})
-        //     ) { def (obsid, meta) = it; [obsid, meta.name] }
-        //     .map { obsMetaUVPass_, obsMetaPass_ ->
-        //         def (obsid, _, uvfits) = obsMetaUVPass_;
-        //         def (__, meta, group) = obsMetaPass_;
-        //         [group, meta.name, obsid, meta, uvfits]
-        //     }
-        //     .groupTuple(by: 0..1)
-        //     .map { group, name, obsids, metas, viss -> [group, metas[0], obsids, viss]}
-        //     .view { group, meta, obsids, viss -> "\n -> prechips:\n\tg:${group}\n\tm:${meta}\n\to:${obsids}\n\tv:${viss}" }
-        //     | chips
-
-        chipsGrid.out | chipsLssa
+        // chipsGrid.out.mix(chipsCombine.map { group, meta, _, grid -> group, meta,grid }) | chipsLssa
+        chipsCombine.out.map { group, meta, _, grid -> [group, meta, grid] } | chipsLssa
 
         def singles1D = chipsLssa.out.map { chunk, meta, grid ->
                 def newMeta = [
