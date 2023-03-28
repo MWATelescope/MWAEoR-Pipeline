@@ -4137,9 +4137,7 @@ workflow qaPrep {
 
                 [all_sorts, all_obsids, all_metas].transpose()
                     .sort { it -> it[0] }
-                    .collate(20, false)
-                    // .collate(2)
-                    // .take(3)
+                    .collate(20, true)
                     .collect { chunk ->
                         def (sorts, obsids, metas) = chunk.transpose()
                         def obs_list = obsids.sort()
@@ -4226,13 +4224,11 @@ workflow qaPrep {
 
         // stack images from chunks
         obsMetaImgPass
-            .view { "img pass\n\t${it.join('\n\t')}"}
             .cross(
                 chunkMetaPass.flatMap { group, groupMeta, obsids ->
                     obsids.collect { obsid -> [obsid, groupMeta, group] }
                 }
             ) { def (obsid, meta) = it; [obsid, meta.name] }
-            .view { "pre flat\n\t${it.join('\n\t')}"}
             .flatMap { obsMetaImgPass_, obsMetaPass_ ->
                 def (obsid, _, imgMetas, imgs) = obsMetaImgPass_;
                 def (__, groupMeta, group) = obsMetaPass_;
@@ -4241,7 +4237,6 @@ workflow qaPrep {
                 }
             }
             .groupTuple(by: 0..2)
-            .view { "cross group\n\t${it.join('\n\t')}"}
             .map { group, _, __, imgMetas, imgs ->
                 [group, imgMetas[0], imgs]
             }
