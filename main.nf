@@ -169,8 +169,10 @@ process asvoPrep {
     }
 
     label "nvme"
+    label "mem_half"
 
-    time { 8.hour }
+    time { 1.5.hour * task.attempt }
+
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
@@ -273,6 +275,7 @@ process flagQA {
 
     label "python"
     label "nvme"
+    label "mem_half"
 
     script:
     metrics = "${obsid}_occupancy.json"
@@ -297,6 +300,7 @@ process ssins {
 
     label "ssins"
     label "nvme"
+    label "mem_half"
 
     // errorStrategy "terminate"
 
@@ -429,6 +433,8 @@ process rexCalSol {
 
     label "mwa_reduce"
     label "nvme"
+    label "mem_full"
+    label "cpu_full"
 
     script:
     dical_names = dical_args.keySet().collect()
@@ -478,7 +484,9 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
-    label "gpu_big"
+    label "mem_full"
+    label "cpu_half"
+    label "gpu_nvme"
     if (params.pullCalSol) {
         label "rclone"
     }
@@ -619,6 +627,7 @@ process hypApplyUV {
     label "hyperdrive"
     label "cpu_half"
     label "nvme"
+    label "mem_half"
 
     script:
     newMeta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
@@ -897,6 +906,7 @@ process prepVisQA {
 
     label "python"
     label "nvme"
+    label "mem_half"
 
     script:
     metrics = "birli_${obsid}_prepvis_metrics.json"
@@ -1121,8 +1131,6 @@ process wscleanDirty {
 
     time { 1.8.minute * (1 + (multiplier * pix_mult * chan_mult * inter_mult)) }
 
-    beforeScript = 'pwd; hostname; df -h .'
-
     script:
     multiplier = vis.collect().size()
     mult_suffix = multiplier > 1 ? "_x${multiplier}" : ""
@@ -1196,8 +1204,6 @@ process wscleanDConv {
     label "mem_half"
 
     time { 5.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
-
-    beforeScript = 'pwd; hostname; df -h .'
 
     script:
     multiplier = vis.collect().size()
@@ -1481,8 +1487,9 @@ process chipsLssa {
     label "chips"
     label "cpu_full"
     label "mem_full"
+    label "nvme"
 
-    time 20.minute
+    time 1.hour
 
     script:
     ext = meta.ext
