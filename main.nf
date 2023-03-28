@@ -1855,7 +1855,7 @@ process ffmpeg {
 
     tag "${name}"
 
-    label 'ffmpeg'
+    label "ffmpeg"
 
     script:
     dot_cachebust = ".${name}.${cachebust}.cachebust"
@@ -2630,7 +2630,7 @@ workflow prep {
             flagQA.out
                 .map { obsid, json -> [obsid, parseJson(json)] }
                 .filter { obsid, flagStats ->
-                    params.flag_occupancy_threshold && flagStats.total_occupancy < params.flag_occupancy_threshold
+                    params.flag_occupancy_threshold == null || flagStats.total_occupancy < params.flag_occupancy_threshold
                 }
                 .map { obsid, _ -> obsid }
                 .join(obsMetafits)
@@ -2698,6 +2698,7 @@ workflow prep {
             .groupTuple()
 
         zip = prepVisQA.out.map { _, json -> ["prepvisqa", json]}
+            .mix(flagQA.out.map { _, json -> ["flagqa", json]})
             .groupTuple()
 }
 
@@ -2937,13 +2938,16 @@ workflow cal {
         // channel of video name and frames to convert
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, meta, pngs ->
-                pngs.collect { png ->
-                    ["calqa_${meta.name}", png]
+                (pngs instanceof List ? pngs : [pngs]).collect { png ->
+                    def suffix = png.baseName.split('_')[-1]
+                    ["calqa_${meta.name}_${suffix}", png]
                 }
             }
             .groupTuple()
         // channel of files to zip
         zip = calQA.out.map { _, meta, json -> ["calqa_${meta.name}", json] }
+            .mix(solJson.out.map { obsid, meta, json -> ["soljson_${meta.name}", json] })
+            .mix(allCal.map { obsid, meta, soln -> ["${meta.cal_prog}_soln_${meta.name}", soln] })
             .groupTuple()
 }
 
