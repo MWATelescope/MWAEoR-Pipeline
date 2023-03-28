@@ -22,7 +22,7 @@ process wsMeta {
     output:
     tuple val(obsid), path(wsmeta), path(wsfiles)
 
-    maxForks 1
+    label "rate_limit"
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
@@ -92,7 +92,7 @@ process wsMetafits {
     output:
     tuple val(obsid), path(metafits)
 
-    maxForks 1
+    label "rate_limit"
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/raw"
@@ -114,7 +114,7 @@ process wsSkyMap {
     output:
     tuple val(obsid), path(skymap)
 
-    maxForks 1
+    label "rate_limit"
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/meta"
@@ -136,7 +136,7 @@ process wsPPDs {
     output:
     tuple val(obsid), path(ppds)
 
-    maxForks 1
+    label "rate_limit"
 
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/${obsid}/meta"
@@ -168,6 +168,7 @@ process asvoPrep {
         label "rclone"
     }
 
+    label "rate_limit"
     label "nvme"
     label "mem_half"
 
