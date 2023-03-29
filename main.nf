@@ -3869,7 +3869,7 @@ workflow {
     ws.out.obsMetafits
         .map { obsid, _ -> obsid }
         .collectFile(
-            name: "filtered_obsids.csv", newLine: true, sort: true,
+            name: "ws_obs_pass.csv", newLine: true, sort: true,
             storeDir: "${results_dir}"
         )
         | view { [it, it.readLines().size()] }
@@ -3885,7 +3885,7 @@ workflow {
     prep.out.obsMetaVis
         .map { obsid, _, __ -> obsid }
         .collectFile(
-            name: "unflagged_obsids.csv", newLine: true, sort: true,
+            name: "prep_obs_pass.csv", newLine: true, sort: true,
             storeDir: "${results_dir}"
         )
         | view { [it, it.readLines().size()] }
@@ -4101,6 +4101,17 @@ workflow qaPrep {
 
         // tuple of (obsid, meta) for all visibilities that pass imgQA
         obsMetaPass = obsMetaImgPass.map { it -> def (obsid, meta) = it; [obsid, meta] }
+
+        obsMetaPass
+            .map { it -> def (obsid, meta) = it;
+                ([obsid, meta.name]).join("\t")
+            }
+            .collectFile(
+                name: "img_names_pass.tsv", newLine: true, sort: true,
+                seed: ([ "OBS", "NAME"]).join("\t"),
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
+            | view { [it, it.readLines().size()] }
 
         // Apologies in advance for anyone who has to debug this.
         //
