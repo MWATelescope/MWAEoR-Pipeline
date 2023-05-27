@@ -60,29 +60,7 @@ process tapMeta {
         'starttime_utc',
         'mwa_array_configuration'
     ]
-    """
-    #!/usr/bin/env python3
-    from pyvo.dal import TAPService
-    import json
-    # import numpy as np
-    #
-    # class NpEncoder(json.JSONEncoder):
-    #     def default(self, obj):
-    #         if isinstance(obj, np.integer):
-    #             return int(obj)
-    #         if isinstance(obj, np.floating):
-    #             return float(obj)
-    #         if isinstance(obj, np.ndarray):
-    #             return obj.tolist()
-    #         return super(NpEncoder, self).default(obj)
-
-    tap = TAPService("http://vo.mwatelescope.org/mwa_asvo/tap")
-    table = tap.search("SELECT obs_id,${obs_fields.join(',')} FROM mwa.observation WHERE obs_id = ${obsid}").table
-    row = table[0]
-
-    with open("${tapmeta}", "w") as f:
-        json.dump(dict(row), f, indent=4, default=str)
-    """
+    template "tapmeta.py"
 }
 
 // download observation metadata from webservices in metafits format
