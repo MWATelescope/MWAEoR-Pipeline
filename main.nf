@@ -139,7 +139,35 @@ process wsPPDs {
     """
 }
 
-// download preprocessed files from asvo
+process metaJson {
+    input:
+        tuple val(obsid), path(metafits)
+    output:
+        tuple val(obsid), path(json), path(tsv)
+
+    storeDir "${params.outdir}/${obsid}/meta"
+    tag "${obsid}"
+
+    errorStrategy 'terminate'
+
+    label "python"
+
+    script:
+    // metrics = "${obsid}_occupancy.json"
+    json = "${obsid}_meta.json"
+    tsv = "${obsid}_inputs.tsv"
+    txt = "${obsid}_inputs.txt"
+    template "metajson.py"
+}
+
+// Download preprocessed files from asvo
+//
+// If the preprocessed files are not present, the `asvoPrep` process schedules
+// a conversion job on ASVO using [Giant Squid](github.com/mwaTelescope/giant-squid).
+// An exponential backoff is used to wait until the conversion job is ready to
+// download from [Acacia](https://pawsey.org.au/systems/acacia/), then the
+// archive is downloaded with `wget`, and hash-validated as it is inflated with
+// `tar`.
 process asvoPrep {
     input:
     val obsid
@@ -2468,6 +2496,8 @@ workflow ws {
         } else {
             pass | wsPPDs
         }
+
+        wsMetafits.out | metaJson
 
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
