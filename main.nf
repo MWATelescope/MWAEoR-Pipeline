@@ -15,6 +15,14 @@ def multichannel = (img_channels_out as int > 1)
 // whether imaging is configured for multiple intervals
 def multiinterval = (params.img_intervals_out as int > 1) || params.img_split_intervals
 
+def coerceList(x) {
+    if (x instanceof List) {
+        x
+    } else {
+        [x]
+    }
+}
+
 // download observation metadata from webservices in json format
 process wsMeta {
     input:
@@ -1395,10 +1403,7 @@ process chipsGrid {
     done
 
     """ + (
-        [
-            (obsids instanceof List ? obsids : [obsids]),
-            (viss instanceof List ? viss : [viss])
-        ].transpose().collect { obsid, vis ->
+        [coerceList(obsids), coerceList(viss)].transpose().collect { obsid, vis ->
             """gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
                 2>&1 > syslog_gridvisdiff_${obsid}.txt """
         }.join("\n")
@@ -1697,7 +1702,7 @@ process thumbnail {
     argstr = (args + meta).findAll { k, v ->
             v != null && [
                 'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
-                'vmax_quantile', 'transparent', 'symmetric', 'cmap'
+        .collect { k, v -> ["--${k}"] + coerceList(v) }
             ].contains(k)
         }
         .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
@@ -1831,7 +1836,7 @@ process stackThumbnail {
     argstr = (args + meta).findAll { k, v ->
             v != null && [
                 'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
-                'vmax_quantile', 'transparent', 'symmetric', 'cmap'
+        .collect { k, v -> ["--${k}"] + coerceList(v) }
             ].contains(k)
         }
         .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
@@ -2769,7 +2774,7 @@ workflow cal {
         //     | view { [it, it.readLines().size()] }
 
         // channel of individual dical solutions: tuple(obsid, meta, soln)
-        // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
+                coerceList(solns).collect { soln ->
         eachCal = hypCalSol.out
             .flatMap { obsid, meta, solns, _ ->
                 (solns instanceof List ? solns : [solns]).collect { soln ->
@@ -3244,7 +3249,7 @@ workflow img {
 
         obsMetaImg = wscleanDConv.out.mix(wscleanDirty.out)
             .flatMap { obsid, meta, imgs ->
-                imgs.collect { img ->
+                coerceList(imgs).collect { img ->
                     [obsid, deepcopy(meta) + decomposeImg(img), img] }}
         // obsMetaImg but:
         // - only MFS images unless thumbnail_all_chans
@@ -3466,7 +3471,7 @@ workflow img {
                         v_pks_int: v_pks.INT_FLUX,
                         v_rms_box: v.RMS_BOX,
                     ]
-                    [obsid, deepcopy(meta) + newMeta]
+                .map { obsid, metas -> [obsid, coerceList(metas)] }
                 }
                 .groupTuple(by: 0)
                 .map { obsid, metas -> [obsid, (metas instanceof List ? metas : [metas])] }
@@ -3808,7 +3813,7 @@ workflow chips {
         frame = chipsPlot.out
             .flatMap { _, meta, pngs ->
                 def suffix = ""
-                if (meta.nobs > 1) {
+                coerceList(pngs).collect { png ->
                     suffix = "_x" + sprintf("%04d", meta.nobs)
                 }
                 (pngs instanceof List ? pngs : [pngs]).collect { png ->
@@ -4115,10 +4120,10 @@ workflow qaPrep {
             //     }
             //     isEven
             // }
-            // group metas by obsid
+            .map { obsid, metas -> [ obsid, coerceList(metas) ]}
             .groupTuple(by: 0)
             // ensure metas are a list, even when there is only one meta
-            .map { obsid, metas -> [ obsid, (metas instanceof List ? metas : [metas]) ]}
+            .map { obsid, metas -> [ obsid, coerceList(metas) ]}
             // determine how to group each obsid, and how to sort that obsid within each group.
             .map { obsid, metas ->
                 // find the meta of the primary subobservation (in this case, the unsubtracted visibilities)
