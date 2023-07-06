@@ -2061,13 +2061,17 @@ def parseFloatOrNaN(s) {
 SimpleDateFormat logDateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
 // display a long list of ints, replace bursts of consecutive numbers with ranges
-def displayRange = { s, e -> s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e}," }
+def displayRange(Integer s, Integer e) {
+    return s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e},"
+}
 max_ints_display = 50
 mid_ints_display = (max_ints_display-1).intdiv(2)
-def displayInts = { l ->
+
+def displayInts(l_) {
+    def l = (l_ as ArrayList).sort(false).unique()
     switch (l) {
-        case { it.size() == 0 }: return "";
-        case { it.size() == 1 }: return displayRange(l[0],l[0]);
+        case { l.size == 0 }: return "";
+        case { l.size == 1 }: return "${l[0]}";
         default:
             def sb, start, end
             (sb, start, end) = [''<<'', l[0], l[0]]
