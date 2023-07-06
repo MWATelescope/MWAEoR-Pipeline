@@ -1728,7 +1728,7 @@ process uvPlot {
     script:
     title = "${obsid}_${meta.name}"
     uvplot = "uvplot_${title}"
-    template "uvplot_3d.py"
+    template "uvplot_2d.py"
 }
 
 // make a thumbnail png from a fits image
