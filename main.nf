@@ -212,7 +212,24 @@ process asvoPrep {
     }
 
     script:
-    uvfits = "birli_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits"
+    prefix = "birli_"
+    suffix = "_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz"
+    args = [
+        output: "uvfits"
+    ]
+    if (params.prep_time_res_s != null) {
+        args.avg_time_res = "${params.prep_time_res_s}"
+    }
+    if (params.prep_freq_res_khz != null) {
+        args.avg_freq_res = "${params.prep_freq_res_khz}"
+    }
+    if (params.prep_rfi != null && !params.prep_rfi) {
+        args.no_rfi = "true"
+        suffix += '_norfi'
+    }
+    argstr = args.collect { k, v -> "${k}=${v}" }.join(',');
+    uvfits = "${prefix}${obsid}*${suffix}.uvfits"
+
     """
     #!/bin/bash -eux
 
@@ -229,9 +246,7 @@ process asvoPrep {
     """ : "" ) + """
 
     # submit a job to ASVO, suppress failure if a job already exists.
-    ${params.giant_squid} submit-conv -v \
-        -p avg_time_res=${params.prep_time_res_s},avg_freq_res=${params.prep_freq_res_khz},output=uvfits \
-        ${obsid} || true
+    ${params.giant_squid} submit-conv -v -p ${argstr} ${obsid} || true
 
     # list pending conversion jobs
     ${params.giant_squid} list -j --types conversion --states queued,processing,error -- ${obsid}
@@ -270,7 +285,9 @@ process asvoPrep {
             echo "Hash check failed. status=\${ps[2]}"
             exit \${ps[2]}
         fi
-        mv "${obsid}.uvfits" "${uvfits}"
+        for f in ${obsid}*.uvfits; do
+            mv "\$f" "${prefix}\${f%.uvfits}${suffix}.uvfits"
+        done
         exit 0 # success
     fi
     echo "no ready jobs"
