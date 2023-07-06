@@ -1665,7 +1665,7 @@ process chipsPlot {
         // N_kperp: meta.N_kperp,
         // N_chan: meta.N_chan,
         lowerfreq: meta.lowfreq,
-        chan_width: meta.freq_res,
+        chan_width: (meta.freq_res * 1e3),
         umax: meta.maxu,
         // density_correction: meta.density_correction,
         // omega_matter: meta.omega_matter,
@@ -1991,7 +1991,6 @@ process aoQuality {
     tuple val(obsid), val(name), path("${obsid}_${name}_aoquality_{sum,rfi,b,t,f,q}.tsv")
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
-    stageInMode "symlink"
     script:
     """
     #!/bin/bash -eux

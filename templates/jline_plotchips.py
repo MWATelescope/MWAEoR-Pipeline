@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 """
-Taken from /astro/mwaeor/jline/software/chips_2019/scripts/plotchips_all.py
+This was taken from the excellent work of @jlbline
+original location: /astro/mwaeor/jline/software/chips_2019/scripts/plotchips_all.py
 
 placeholder - this does CHIPS plots
 
@@ -11,23 +12,52 @@ care about this you'll have to do some cosmologically based Tsys calculations
 which will effect the thermal noise estimation (not the power, but the upper
 limits as they are a combo of power and noise)
 
-example:
+example use with singularity:
 
 ```
 salloc --nodes=1 --mem=350G --time=8:00:00 --clusters=garrawarla --partition=workq --account=mwaeor --ntasks=20 --tmp=500G
 module load singularity
 mkdir /dev/shm/deleteme
 cd /dev/shm/deleteme
-cp /astro/mwaeor/dev/nfdata/1094751504/ps_metrics-newhyp+qa/* .
+# chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png
+cp /astro/mwaeor/dev/nfdata/eor0high_phase1-128T_p0_a3dbf06d/ps_metrics/ionosub_30l_src4k_8s_80kHz/*.dat .
 export ext="grid_30l_src4k_8s_80kHz_eor0high"
 singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
     --basedir=./ \
     --polarisation=xx \
+    --plot_type 2d_diff \
     --chips_tag=grid_30l_src4k_8s_80kHz_eor0high \
     --min_power=1e3 \
     --max_power=1e15
 cp chips2D_xx_grid_30l_src4k_8s_80kHz_eor0high_crosspower.png /astro/mwaeor/dev/nfdata/1094751504/ps_metrics-newhyp+qa/
+
+singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
+    /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
+    --title 'crosspower\neor0high_phase1-128T_p0_a3dbf06d\nionosub_30l_src4k_8s_80kHz'  \
+    --basedir "./"  \
+    --chips_tag "eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz"  \
+    --plot_type "1D"  \
+    --polarisation "both"  \
+    --min_power "1E+3" \
+    --max_power "1E+15" \
+    --lowerfreq "166995000.0" \
+    --umax "300" \
+    --N_chan 384 \
+    --num_k_edges "80" \
+    && cp chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/
+
+    # --chan_width "80"
+
+singularity exec --cleanenv --bind $PWD --home $PWD /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
+    /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
+    --basedir=./ \
+    --polarisation=xx \
+    --plot_type 1D \
+    --chips_tag=1061319960_30l_src4k_8s_80kHz \
+    --min_power=1e3 \
+    --max_power=1e15
+cp *.png /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/
 ```
 """
 
@@ -45,6 +75,7 @@ from numpy.ma import masked_array
 import warnings
 from astropy.cosmology import LambdaCDM
 from copy import deepcopy
+import shlex
 
 ##Speed of light in km/s
 VELC_KMS = 2.995e5
@@ -89,6 +120,10 @@ def get_args(argv=None):
         "This is thethat was passed to the 'lssa_thermal' step, e.g. if you "\
         "have an output called crosspower_xx_0.iter.real_cool_name.dat then "\
         "you should enter --chips_tag_two=real_cool_name")
+    file_group.add_argument("--chips_tag_three",
+        help="A third tag for 1d comparison plots. if you "\
+        "have an output called crosspower_xx_0.iter.real_cool_name.dat then "\
+        "you should enter --chips_tag_three=real_cool_name")
     file_group.add_argument("--outputdir", default='./',
         help="Directory in which to output resultant plots. Default = './'")
 
@@ -169,8 +204,12 @@ def get_args(argv=None):
     plot_group_1D.add_argument("--chips_tag_two_label", default=False,
         help="When plotting two 1D power spectra on same axes, use this to " \
              "label the the data from --chips_tag_two")
+    plot_group_1D.add_argument("--chips_tag_three_label", default=False,
+        help="When plotting two 1D power spectra on same axes, use this to " \
+             "label the the data from --chips_tag_three")
 
-
+    plot_group_1D.add_argument("--drawstyle", default='steps-mid',
+        help="drawstyle for matplotlib plot. default is 'steps-mid'")
 
 
     chips_group = parser.add_argument_group('CHIPS OPTIONS')
@@ -212,8 +251,9 @@ def get_args(argv=None):
     args.Neta = int(args.N_chan/2)
 
     ##If people like the caps, let them eat cake
-    if args.polarisation == 'XX': args.polarisation = 'xx'
-    if args.polarisation == 'YY': args.polarisation = 'yy'
+    # if args.polarisation == 'XX': args.polarisation = 'xx'
+    # if args.polarisation == 'YY': args.polarisation = 'yy'
+    args.polarisation = args.polarisation.lower()
 
     return args
 
@@ -696,6 +736,7 @@ class ChipsDataProducts(object):
             high_k_edge = self.parser_args.high_k_edge
             num_k_edges = self.parser_args.num_k_edges
             ktot_bin_edges = 10**np.linspace(np.log10(low_k_edge), np.log10(high_k_edge), num_k_edges)
+            print("ktot_bin_edges", ktot_bin_edges)
 
         self.ktot_bin_edges = ktot_bin_edges
 
@@ -757,10 +798,10 @@ def do_2D_axes_labels(ax, title, polarisation,
     else:
         title_pol = 'YY'
 
-    ax.set_title(f'{title_pol} {title}',size=16)
-    ax.set_xlabel(f'k{chr(36)}_{chr(92)}bot{chr(36)} ({chr(36)}h{chr(36)}Mpc{chr(36)}^{-1}{chr(36)})',fontsize=18)
+    ax.set_title(f'{title_pol}',size=16)
+    ax.set_xlabel(f'k{chr(36)}_{chr(92)}bot{chr(36)} ({chr(36)}h{chr(36)}Mpc{chr(36)}^{{-1}}{chr(36)})',fontsize=18)
     if not hide_k_perp_label:
-        ax.set_ylabel(f'k{chr(36)}_{chr(91)}parallel{chr(36)} ({chr(36)}h{chr(36)}Mpc{chr(36)}^{-1}{chr(36)})',fontsize=18)
+        ax.set_ylabel(f'k{chr(36)}_{chr(92)}parallel{chr(36)} ({chr(36)}h{chr(36)}Mpc{chr(36)}^{{-1}}{chr(36)})',fontsize=18)
     ax.set_xscale("log")
     ax.set_yscale("log")
 
@@ -801,7 +842,7 @@ def plot_2D_on_ax(twoD_ps_array, extent, ax, fig, polarisation,
     cb.ax.set_yticklabels(ticklabels)
 
     if not hide_cbar_label:
-        cax.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{-3}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=14)
+        cax.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{{-3}}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=14)
     cb.ax.tick_params(labelsize=11)
 
     if args.colourscale == "negs_are_grey":
@@ -909,7 +950,7 @@ def plot_2D_on_ax_two_colour_bars(twoD_ps_array, extent, ax, fig, cax_pos,
 
     if not hide_cbar_label:
         cax_pos.yaxis.set_label_coords(4.5,0.0)
-        cax_pos.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{-3}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=14)
+        cax_pos.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{{-3}}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=14)
 
     do_2D_axes_labels(ax, title, polarisation, hide_cbar_label, hide_k_perp_label)
 
@@ -949,42 +990,44 @@ def setup_ax_and_cax_for_double_colourbar(args, fig, num_axes, polarisation):
 def do_2D_plot(chips_data):
     """Given the user supplied `args`, plot a 2D power spectrum"""
 
-    if chips_data.parser_args.max_power == 0.0:
-        chips_data.parser_args.max_power = 1e+12
-    if chips_data.parser_args.min_power == 0.0:
-        chips_data.parser_args.min_power = 1e+3
+    args = chips_data.parser_args
 
-    if chips_data.parser_args.polarisation == 'xx' or chips_data.parser_args.polarisation == 'yy':
+    if args.max_power == 0.0:
+        args.max_power = 1e+12
+    if args.min_power == 0.0:
+        args.min_power = 1e+3
+
+    if args.polarisation == 'xx' or args.polarisation == 'yy':
 
         # ##Read in data and convert to a 2D array for plotting
-        # crosspower, weights = read_in_data(args, chips_data.parser_args.polarisation)
+        # crosspower, weights = read_in_data(args, args.polarisation)
         # twoD_ps_array, extent = convert_to_2D_PS_array(crosspower, weights)
 
-        twoD_ps_array, extent = chips_data.read_data_and_create_2Darray(chips_data.parser_args.polarisation)
+        twoD_ps_array, extent = chips_data.read_data_and_create_2Darray(args.polarisation)
 
-        if chips_data.parser_args.colourscale == 'pos_and_negs':
+        if args.colourscale == 'pos_and_negs':
             fig = plt.figure(figsize=(6,7))
             num_axes = 1
             ax, cax_pos, cax_neg = setup_ax_and_cax_for_double_colourbar(args,
-                                                fig, num_axes, chips_data.parser_args.polarisation)
+                                                fig, num_axes, args.polarisation)
 
             plot_2D_on_ax_two_colour_bars(twoD_ps_array, extent, ax, fig,
-                                cax_pos, cax_neg, chips_data.parser_args.polarisation, args,
+                                cax_pos, cax_neg, args.polarisation, args,
                                 args.title)
         else:
 
             fig, ax = plt.subplots(1,1,figsize=(6,7))
-            plot_2D_on_ax(twoD_ps_array, extent, ax, fig, chips_data.parser_args.polarisation, args)
+            plot_2D_on_ax(twoD_ps_array, extent, ax, fig, args.polarisation, args)
             plt.tight_layout()
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_{chips_data.parser_args.polarisation}_{chips_data.parser_args.chips_tag}_crosspower.png"
+        output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_{args.chips_tag}_crosspower.png"
 
-    elif chips_data.parser_args.polarisation == 'both':
+    elif args.polarisation == 'both':
 
         twoD_ps_array_xx, extent_xx = chips_data.read_data_and_create_2Darray('xx')
         twoD_ps_array_yy, extent_yy = chips_data.read_data_and_create_2Darray('yy')
 
-        if chips_data.parser_args.colourscale == 'pos_and_negs':
+        if args.colourscale == 'pos_and_negs':
 
             fig = plt.figure(figsize=(11,7))
 
@@ -1011,23 +1054,26 @@ def do_2D_plot(chips_data):
 
             plt.tight_layout()
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_xx+yy_{chips_data.parser_args.chips_tag}_crosspower.png"
+        output_plot_name = f"{args.outputdir}/chips2D_xx+yy_{args.chips_tag}_crosspower.png"
 
     else:
-        msg = f'--polarisation={chips_data.parser_args.polarisation} is not a valid argument{chr(10)}'
+        msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
         'Must be one of either: xx, yy, both'
         sys.exit(msg)
 
-    save_or_plot(fig, output_plot_name, chips_data.parser_args.plot_mode)
+    plt.suptitle(args.title)
+    save_or_plot(fig, output_plot_name, args.plot_mode)
 
 def make_2D_ratio(chips_data, polarisation):
     """Using input user arguments `args`, make a 2D Ratio array for the given
     `polarisation`"""
+    args = chips_data.parser_args
+
     twoD_ps_array_numer, extent_numer = chips_data.read_data_and_create_2Darray(polarisation,
-                                                      chips_data.parser_args.chips_tag_one)
+                                                      args.chips_tag_one)
 
     twoD_ps_array_denom, extent_denom = chips_data.read_data_and_create_2Darray(polarisation,
-                                                      chips_data.parser_args.chips_tag_two)
+                                                      args.chips_tag_two)
     ratio = twoD_ps_array_numer / twoD_ps_array_denom
 
     return ratio, extent_numer
@@ -1073,52 +1119,55 @@ def plot_2D_ratio_on_ax(twoD_ps_ratio_array, extent, ax, fig, polarisation,
 def do_2D_ratio_plot(chips_data):
     """Given the user supplied `chips_data.parser_args`, plot a 2D power spectrum ratio"""
 
-    if chips_data.parser_args.max_power == 0.0:
-        chips_data.parser_args.max_power = 10
-    if chips_data.parser_args.min_power == 0.0:
-        chips_data.parser_args.min_power = -10
+    args = chips_data.parser_args
 
-    if chips_data.parser_args.polarisation == 'xx' or chips_data.parser_args.polarisation == 'yy':
+    if args.max_power == 0.0:
+        args.max_power = 10
+    if args.min_power == 0.0:
+        args.min_power = -10
+
+    if args.polarisation == 'xx' or args.polarisation == 'yy':
 
         ##Read in data and convert to a 2D array for plotting
-        twoD_ps_ratio_array, extent =  make_2D_ratio(chips_data, chips_data.parser_args.polarisation)
+        twoD_ps_ratio_array, extent =  make_2D_ratio(chips_data, args.polarisation)
 
 
         fig, ax = plt.subplots(1,1,figsize=(6,7))
         plot_2D_ratio_on_ax(twoD_ps_ratio_array,
-                            extent, ax, fig, chips_data.parser_args.polarisation, chips_data.parser_args)
+                            extent, ax, fig, args.polarisation, args)
         plt.tight_layout()
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_{chips_data.parser_args.polarisation}_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_ratio.png"
+        output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_ratio.png"
 
-    elif chips_data.parser_args.polarisation == 'both':
+    elif args.polarisation == 'both':
         fig, axs = plt.subplots(1,2,figsize=(12,7))
 
         ##Read in data and convert to a 2D array for plotting
         twoD_ps_ratio_array_xx, extent =  make_2D_ratio(chips_data, 'xx')
 
         plot_2D_ratio_on_ax(twoD_ps_ratio_array_xx,
-                            extent, axs[0], fig, 'xx', chips_data.parser_args)
+                            extent, axs[0], fig, 'xx', args)
 
         ##Read in data and convert to a 2D array for plotting
         twoD_ps_ratio_array_yy, extent =  make_2D_ratio(chips_data, 'yy')
 
         plot_2D_ratio_on_ax(twoD_ps_ratio_array_yy,
-                            extent, axs[1], fig, 'yy', chips_data.parser_args)
+                            extent, axs[1], fig, 'yy', args)
 
         plt.tight_layout()
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_xx+yy_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_ratio.png"
+        output_plot_name = f"{args.outputdir}/chips2D_xx+yy_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_ratio.png"
 
     else:
-        msg = f'--polarisation={chips_data.parser_args.polarisation} is not a valid argument{chr(10)}'
+        msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
         'Must be one of either: xx, yy, both'
         sys.exit(msg)
 
-    save_or_plot(fig, output_plot_name, chips_data.parser_args.plot_mode)
+    plt.suptitle(args.title)
+    save_or_plot(fig, output_plot_name, args.plot_mode)
 
 def make_2D_diff(chips_data, polarisation):
     """Using input user arguments `args`, make a 2D Ratio array for the given
@@ -1137,36 +1186,38 @@ def make_2D_diff(chips_data, polarisation):
 def do_2D_diff_plot(chips_data):
     """Given the user supplied `args`, plot a 2D power spectrum ratio"""
 
-    if chips_data.parser_args.max_power == 0.0:
-        chips_data.parser_args.max_power = 1e12
-    if chips_data.parser_args.min_power == 0.0:
-        chips_data.parser_args.min_power = 1e3
+    args = chips_data.parser_args
+
+    if args.max_power == 0.0:
+        args.max_power = 1e12
+    if args.min_power == 0.0:
+        args.min_power = 1e3
 
     if args.chips_tag_one_label and args.chips_tag_two_label:
-        title = f'Difference{chr(10)}{chips_data.parser_args.chips_tag_one_label} - {chips_data.parser_args.chips_tag_two_label}'
+        title = f'Difference{chr(10)}{args.chips_tag_one_label} - {args.chips_tag_two_label}'
     else:
         title = 'Difference'
 
 
-    if chips_data.parser_args.polarisation == 'xx' or chips_data.parser_args.polarisation == 'yy':
+    if args.polarisation == 'xx' or args.polarisation == 'yy':
 
         ##Read in data and convert to a 2D array for plotting
-        twoD_ps_diff_array, extent =  make_2D_diff(chips_data, chips_data.parser_args.polarisation)
+        twoD_ps_diff_array, extent =  make_2D_diff(chips_data, args.polarisation)
 
         fig = plt.figure(figsize=(6,7))
         num_axes = 1
-        ax, cax_pos, cax_neg = setup_ax_and_cax_for_double_colourbar(chips_data.parser_args,
-                                            fig, num_axes, chips_data.parser_args.polarisation)
+        ax, cax_pos, cax_neg = setup_ax_and_cax_for_double_colourbar(args,
+                                            fig, num_axes, args.polarisation)
 
         plot_2D_on_ax_two_colour_bars(twoD_ps_diff_array, extent, ax, fig,
-                            cax_pos, cax_neg, chips_data.parser_args.polarisation, args,
+                            cax_pos, cax_neg, args.polarisation, args,
                             title, cmap='BlueRed')
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_{chips_data.parser_args.polarisation}_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_diff.png"
+        output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_diff.png"
 
-    elif chips_data.parser_args.polarisation == 'both':
+    elif args.polarisation == 'both':
 
         fig = plt.figure(figsize=(11,7))
 
@@ -1190,22 +1241,23 @@ def do_2D_diff_plot(chips_data):
                             ax_yy, fig, cax_pos_yy, cax_neg_yy, 'yy', args,
                             title,cmap='BlueRed', hide_k_perp_label=True)
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips2D_xx+yy_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_diff.png"
+        output_plot_name = f"{args.outputdir}/chips2D_xx+yy_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_diff.png"
 
     else:
-        msg = f'--polarisation={chips_data.parser_args.polarisation} is not a valid argument{chr(10)}'
+        msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
         'Must be one of either: xx, yy, both'
         sys.exit(msg)
 
-    save_or_plot(fig, output_plot_name, chips_data.parser_args.plot_mode)
+    plt.suptitle(args.title)
+    save_or_plot(fig, output_plot_name, args.plot_mode)
 
 def plot_1D_on_ax(ax, oneD_k_modes, oneD_power_measured, oneD_delta_measured,
                   oneD_delta_2sig_noise,
-                  min_power, max_power,
+                  args,
                   pol, colour_power='C0', marker_power='x',
-                  label='', delta=False):
+                  label='', delta=False, title=None):
     """Plot the power and two sigma noise on the given axes"""
 
     notzero = np.where(oneD_k_modes != 0)
@@ -1219,17 +1271,21 @@ def plot_1D_on_ax(ax, oneD_k_modes, oneD_power_measured, oneD_delta_measured,
     else:
         pol_label = f'YY {label}'
 
+    if title:
+        print(f'Plotting {title}')
+        ax.set_title(title)
+
     if delta:
-        ax.plot(plot_k_modes, plot_delta, drawstyle='steps-mid',
+        ax.plot(plot_k_modes, plot_delta, drawstyle=args.drawstyle,
                color=colour_power, marker=marker_power, mfc='none', ms=4,
                label=f'{pol_label}Power')
         ax.set_ylabel(f'{chr(36)}{chr(92)}Delta{chr(36)} (mK{chr(36)}^2{chr(36)})', fontsize=16)
 
     else:
-        ax.plot(plot_k_modes, plot_power, drawstyle='steps-mid',
+        ax.plot(plot_k_modes, plot_power, drawstyle=args.drawstyle,
                color=colour_power, marker=marker_power, mfc='none', ms=4,
                label=f'{pol_label}Power')
-        ax.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{-3}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=16)
+        ax.set_ylabel(f'P(k) mK{chr(36)}^2{chr(36)} {chr(36)}h^{{-3}}{chr(36)} Mpc{chr(36)}^3{chr(36)}',fontsize=16)
 
     np.savez_compressed(f"1D_power.npz", k_modes=plot_k_modes, power=plot_power,
                                         delta=plot_delta)
@@ -1237,38 +1293,40 @@ def plot_1D_on_ax(ax, oneD_k_modes, oneD_power_measured, oneD_delta_measured,
 
 
     ax.tick_params(axis='both',labelsize=14)
-    ax.set_xlabel(f'k ({chr(36)}h{chr(36)}Mpc{chr(36)}^{-1}{chr(36)})',fontsize=16)
+    ax.set_xlabel(f'k ({chr(36)}h{chr(36)}Mpc{chr(36)}^{{-1}}{chr(36)})',fontsize=16)
 
     ax.set_xscale("log")
     ax.set_yscale("log")
 
-    if max_power:
-        ax.set_ylim(top=max_power)
-    if min_power:
-        ax.set_ylim(bottom=min_power)
+    if args.max_power:
+        ax.set_ylim(top=args.max_power)
+    if args.min_power:
+        ax.set_ylim(bottom=args.min_power)
 
-    ax.legend(prop={"size":14}, loc='best')
+    ax.legend(prop={"size":10}, loc='best')
 
 def do_1D_plot(chips_data):
     """Plot a 1D power spectrum given the input arguments from the parser"""
 
-    if chips_data.parser_args.polarisation == 'xx' or chips_data.parser_args.polarisation == 'yy':
+    args = chips_data.parser_args
+
+    if args.polarisation == 'xx' or args.polarisation == 'yy':
 
         ##Read in data and convert to a 1D array for plotting
-        oneD_k_modes, oneD_delta_2sig_noise, oneD_power_measured, oneD_delta_measured =  chips_data.read_data_and_create_1Darray(chips_data.parser_args.polarisation)
+        oneD_k_modes, oneD_delta_2sig_noise, oneD_power_measured, oneD_delta_measured =  chips_data.read_data_and_create_1Darray(args.polarisation)
 
 
         fig, ax = plt.subplots(1,1,figsize=(8,6))
 
         plot_1D_on_ax(ax, oneD_k_modes, oneD_power_measured,
                       oneD_delta_measured, oneD_delta_2sig_noise,
-                      chips_data.parser_args.min_power, chips_data.parser_args.max_power,
-                      chips_data.parser_args.polarisation,
-                      delta=chips_data.parser_args.plot_delta)
+                      args,
+                      args.polarisation,
+                      delta=args.plot_delta)
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips1D_{chips_data.parser_args.polarisation}_{chips_data.parser_args.chips_tag}.png"
+        output_plot_name = f"{args.outputdir}/chips1D_{args.polarisation}_{args.chips_tag}.png"
 
-    elif chips_data.parser_args.polarisation == 'both':
+    elif args.polarisation == 'both':
         ##Read in data and convert to a 1D array for plotting
         oneD_k_modes_xx, oneD_delta_2sig_noise_xx, oneD_power_measured_xx, oneD_delta_measured_xx  =  chips_data.read_data_and_create_1Darray("xx")
 
@@ -1279,22 +1337,24 @@ def do_1D_plot(chips_data):
 
         plot_1D_on_ax(axs[0], oneD_k_modes_xx, oneD_power_measured_xx,
                               oneD_delta_measured_xx, oneD_delta_2sig_noise_xx,
-                              chips_data.parser_args.min_power, chips_data.parser_args.max_power,
-                              "xx", delta=chips_data.parser_args.plot_delta)
+                              args,
+                              "xx", delta=args.plot_delta)
 
         plot_1D_on_ax(axs[1], oneD_k_modes_yy, oneD_power_measured_yy,
                               oneD_delta_measured_xx, oneD_delta_2sig_noise_yy,
-                              chips_data.parser_args.min_power, chips_data.parser_args.max_power,
-                              "yy", delta=chips_data.parser_args.plot_delta)
+                              args,
+                              "yy", delta=args.plot_delta)
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips1D_xx+yy_{chips_data.parser_args.chips_tag}.png"
+        output_plot_name = f"{args.outputdir}/chips1D_xx+yy_{args.chips_tag}.png"
+
 
     else:
-        msg = f'--polarisation={chips_data.parser_args.polarisation} is not a valid argument{chr(10)}'
+        msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
         'Must be one of either: xx, yy, both'
         sys.exit(msg)
 
-    save_or_plot(fig, output_plot_name, chips_data.parser_args.plot_mode)
+    plt.suptitle(args.title)
+    save_or_plot(fig, output_plot_name, args.plot_mode)
 
 
 def save_or_plot(fig, output_plot_name, plot_mode):
@@ -1315,54 +1375,74 @@ def plot_1D_comparison(chips_data, pol, ax):
     """Given the axes `ax` and user supplied `chips_data.parser_args`, plot
     a comparison for the given polarisation `pol`"""
 
+    args = chips_data.parser_args
+
     ##Read in data and convert to a 1D array for plotting
     oneD_k_modes_1, oneD_delta_2sig_noise_1, oneD_power_measured_1, oneD_delta_measured_1 =  chips_data.read_data_and_create_1Darray(pol,
-                                            chips_tag=chips_data.parser_args.chips_tag_one)
+                                            chips_tag=args.chips_tag_one)
 
 
-    if chips_data.parser_args.chips_tag_one_label:
-        label_one = chips_data.parser_args.chips_tag_one_label + ' '
+    if args.chips_tag_one_label:
+        label_one = args.chips_tag_one_label + ' '
     else:
-        label_one = chips_data.parser_args.chips_tag_one + ' '
+        label_one = args.chips_tag_one + ' '
 
     plot_1D_on_ax(ax, oneD_k_modes_1, oneD_power_measured_1,
                   oneD_delta_measured_1, oneD_delta_2sig_noise_1,
-                  chips_data.parser_args.min_power, chips_data.parser_args.max_power,
+                  args,
                   pol, label=label_one,
-                  delta=chips_data.parser_args.plot_delta)
+                  delta=args.plot_delta)
 
 
-    if chips_data.parser_args.chips_tag_two_label:
-        label_two = chips_data.parser_args.chips_tag_two_label + ' '
+    if args.chips_tag_two_label:
+        label_two = args.chips_tag_two_label + ' '
     else:
-        label_two = chips_data.parser_args.chips_tag_two + ' '
+        label_two = args.chips_tag_two + ' '
 
     oneD_k_modes_2, oneD_delta_2sig_noise_2, oneD_power_measured_2, oneD_delta_measured_2 =  chips_data.read_data_and_create_1Darray(pol,
-                                            chips_tag=chips_data.parser_args.chips_tag_two)
+                                            chips_tag=args.chips_tag_two)
 
     plot_1D_on_ax(ax, oneD_k_modes_2, oneD_power_measured_2,
                   oneD_delta_measured_2, oneD_delta_2sig_noise_2,
-                  chips_data.parser_args.min_power, chips_data.parser_args.max_power,
+                  args,
                   pol, label=label_two,
-                  marker_power='o',colour_power='C1', delta=chips_data.parser_args.plot_delta)
+                  marker_power='o',colour_power='C1', delta=args.plot_delta)
+
+    # third tag
+    print(f"plotting third tag {args.chips_tag_three}")
+    if args.chips_tag_three_label:
+        label_three = args.chips_tag_three_label + ' '
+    else:
+        label_three = args.chips_tag_three + ' '
+
+    oneD_k_modes_3, oneD_delta_2sig_noise_3, oneD_power_measured_3, oneD_delta_measured_3 =  chips_data.read_data_and_create_1Darray(pol,
+                                            chips_tag=args.chips_tag_three)
+
+    plot_1D_on_ax(ax, oneD_k_modes_3, oneD_power_measured_3,
+                  oneD_delta_measured_3, oneD_delta_2sig_noise_3,
+                  args,
+                  pol, label=label_three,
+                  marker_power='v',colour_power='C2', delta=args.plot_delta)
 
 def do_1D_comparison_plot(chips_data):
     """Given the user supplied `chips_data.parser_args`, plot 2 different
     1D power spectra on the same axes"""
 
-    if chips_data.parser_args.polarisation == 'xx' or chips_data.parser_args.polarisation == 'yy':
+    args = chips_data.parser_args
+
+    if args.polarisation == 'xx' or args.polarisation == 'yy':
 
         fig, ax = plt.subplots(1,1,figsize=(8,6))
 
-        plot_1D_comparison(chips_data, chips_data.parser_args.polarisation, ax)
+        plot_1D_comparison(chips_data, args.polarisation, ax)
 
         plt.tight_layout()
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips1D_{chips_data.parser_args.polarisation}_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_comparison.png"
+        output_plot_name = f"{args.outputdir}/chips1D_{args.polarisation}_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_comparison.png"
 
-    elif chips_data.parser_args.polarisation == 'both':
+    elif args.polarisation == 'both':
 
         fig, axs = plt.subplots(2,1,figsize=(8,12))
 
@@ -1371,51 +1451,61 @@ def do_1D_comparison_plot(chips_data):
 
         plt.tight_layout()
 
-        output_plot_name = f"{chips_data.parser_args.outputdir}/chips1D_xx+yy_" \
-                           f"{chips_data.parser_args.chips_tag_one}_" \
-                           f"{chips_data.parser_args.chips_tag_two}_comparison.png"
+        output_plot_name = f"{args.outputdir}/chips1D_xx+yy_" \
+                           f"{args.chips_tag_one}_" \
+                           f"{args.chips_tag_two}_comparison.png"
 
     else:
-        msg = f'--polarisation={chips_data.parser_args.polarisation} is not a valid argument{chr(10)}'
+        msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
         'Must be one of either: xx, yy, both'
         sys.exit(msg)
 
-    save_or_plot(fig, output_plot_name, chips_data.parser_args.plot_mode)
+    plt.suptitle(args.title)
+    save_or_plot(fig, output_plot_name, args.plot_mode)
 
 
-if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        args = get_args(sys.argv[1:])
-    else:
-        # is being called directly from nextflow
-        args = get_args([
-            "--basedir=${basedir}",
-            "--polarisation=xx",
-            "--chips_tag=${ext}",
-            "--title=${title}",
-            "--min_power=1e3",
-            "--max_power=1e15"
-        ])
-
-
-    chips_data = ChipsDataProducts(args)
-
-    if args.plot_type == '2D':
+def do_plot(chips_data, ptype):
+    ptype = ptype.lower()
+    if ptype == '2d':
         do_2D_plot(chips_data)
 
-    elif args.plot_type == '2D_Ratio' or args.plot_type == '2D_ratio':
+    elif ptype == '2d_ratio':
         do_2D_ratio_plot(chips_data)
 
-    elif args.plot_type == '2D_Diff' or args.plot_type == '2D_diff':
+    elif ptype == '2d_diff':
         do_2D_diff_plot(chips_data)
 
-    elif args.plot_type == '1D':
+    elif ptype == '1d':
         do_1D_plot(chips_data)
 
-    elif args.plot_type == '1D_comp':
+    elif ptype == '1d_comp':
         do_1D_comparison_plot(chips_data)
 
     else:
         sys.exit(f"You entered --plot_type={args.plot_type}, which is not"
                  "a recognised type. You can enter either: 2D, 2D_ratio,"
                  " 2D_diffm or 1D")
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        args = get_args(sys.argv[1:])
+        # ptypes = [args.plot_type]
+    else:
+        # is being called directly from nextflow
+        args = get_args(shlex.split("""${args}"""))
+        # args = get_args([
+        #     "--basedir=\${basedir}",
+        #     "--polarisation=\${pol}",
+        #     "--chips_tag=\${ext}",
+        #     "--title=\${title}",
+        #     "--chips_tag_one=\${ext}",
+        #     "--chips_tag_two=\${diff_ext}",
+        #     "--min_power=1e3",
+        #     "--max_power=1e15"
+        # ] + shlex.split("\${args}"))
+        # ptypes = "\${ptypes}".split(" ")
+    ptypes = [args.plot_type]
+    chips_data = ChipsDataProducts(args)
+    print(chips_data.parser_args)
+    for ptype in ptypes:
+        do_plot(chips_data, ptype)
