@@ -2352,7 +2352,11 @@ workflow ws {
                 if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
-                if (params.filter_quality && dataquality > params.filter_quality) {
+                // TODO: filter_sweets
+                // if (params.filter_sweets && !params.filter_sweets.contains()) {
+                //     fail_reasons += ["pointing=${pointing}"]
+                // }
+                if (params.filter_quality != null && dataquality > params.filter_quality) {
                     fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
                 }
                 if (params.filter_bad_tile_frac && bad_tile_frac > params.filter_bad_tile_frac) {
@@ -2361,11 +2365,14 @@ workflow ws {
                 if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
                     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
                 }
-                if (params.filter_eorfield && eorfield != params.filter_eorfield) {
+                if (params.filter_eorfield != null && eorfield != params.filter_eorfield) {
                     fail_reasons += ["phase_radec=(${ra_phase_center}, ${dec_phase_center})"]
                 }
-                if (params.filter_eorband && eorband != params.filter_eorband) {
+                if (params.filter_eorband != null && eorband != params.filter_eorband) {
                     fail_reasons += ["center_chan=${center_chan}"]
+                }
+                if (params.filter_ionoqa && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
+                    fail_reasons += ["iono_qa>${params.filter_ionoqa}"]
                 }
                 // if (ra_phase_center != 0.0) {
                 //     fail_reasons += ["ra_phase_center=${ra_phase_center}"]
@@ -2466,7 +2473,7 @@ workflow ws {
 
                     // channels
                     summary.freq_res,
-                    displayInts(summary.coarse_chans.sort()),
+                    displayInts(summary.coarse_chans),
                     summary.eorband?:'',
 
                     // times
@@ -2479,8 +2486,9 @@ workflow ws {
                     summary.dead_dipole_frac,
                     summary.n_bad_tiles,
                     summary.bad_tile_frac,
-                    displayInts(summary.tile_nums.sort()),
-                    displayInts(summary.bad_tiles.sort()),
+                    displayInts(summary.tile_nums),
+                    displayInts(summary.bad_tiles),
+                    displayInts(summary.tile_rxs),
 
                     // iono quality
                     summary.iono_magnitude,
@@ -2510,7 +2518,7 @@ workflow ws {
                     "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME", "EOR FIELD",
                     "FREQ RES", "COARSE CHANS", "EOR BAND",
                     "TIME RES", "N SCANS",
-                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "TILE NUMS", "FLAG TILES",
+                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "TILE NUMS", "FLAG TILES", "TILE RXS",
                     "IONO MAG", "IONO PCA", "IONO QA",
                     "N FILES", "N ARCHIVED",
                     "QUALITY", "QUALITY COMMENT",
@@ -2549,7 +2557,7 @@ workflow ws {
             def meta = [:]
             [
                 "groupid", "pointing", "obs_name", "starttime_utc", "starttime_mjd",
-                "bad_tiles", "eorband", "eorfield", "tile_names", "tile_rxs"
+                "bad_tiles", "eorband", "eorfield", "lst",
             ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
