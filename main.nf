@@ -313,7 +313,7 @@ process flagQA {
     script:
     // metrics = "${obsid}_occupancy.json"
     names = coerceList(uvfits).collect { f -> f.name }
-    metrics = "occupancy_${names.join(',')}.json"
+    metrics = names.size > 1 ? "occupancy_{${names.join(',')}}.json" : "occupancy_${names[0]}.json"
     template "flagqa.py"
 }
 
@@ -954,10 +954,14 @@ process prepVisQA {
     label "mem_half"
 
     script:
-    metrics = "birli_${obsid}_prepvis_metrics.json"
+    // metrics = "birli_${obsid}_prepvis_metrics.json"
+    basenames = coerceList(uvfits).collect { f -> f.baseName }
+    metrics = basenames.size > 1 ? "{${basenames.join(','')}}_prepvis_metrics.json" : "${basenames[0]}_prepvis_metrics.json"
     """
     #!/bin/bash -eux
-    run_prepvisqa.py "${uvfits}" "${metafits}" --out "${metrics}"
+    for f in ${uvfits}; do
+        run_prepvisqa.py \$f "${metafits}" --out "\${f%.uvfits}_prepvis_metrics.json"
+    done
     """
 }
 
@@ -979,7 +983,7 @@ process visQA {
     json = "${meta.cal_prog}_${obsid}_${meta.name}_vis_metrics.json"
     """
     #!/bin/bash -eux
-    run_visqa.py "${uvfits}" --out "${json}"
+    run_visqa.py ${uvfits} --out "${json}"
     """
 }
 
