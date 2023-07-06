@@ -1262,7 +1262,7 @@ process wscleanDConv {
     multiplier = Math.sqrt(vis.collect().size())
     img_name = img_params.name?:''
     if (img_name == '') {
-    img_name = "${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}${meta.inter_tok?:''}"
+        img_name = "${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}${meta.inter_tok?:''}"
     }
 
     // multipliers for determining compute resources
@@ -1278,13 +1278,13 @@ process wscleanDConv {
     vis = vis.collect()
     img_glob = img_params.glob?:''
     if (img_glob == '') {
-    img_glob = "wsclean_${img_name}"
-    if (multiinterval && !meta.inter_tok) {
-        img_glob += "-t????"
-    }
-    if (multichannel) {
-        img_glob += "-MFS"
-    }
+        img_glob = "wsclean_${img_name}"
+        if (multiinterval && !meta.inter_tok) {
+            img_glob += "-t????"
+        }
+        if (multichannel) {
+            img_glob += "-MFS"
+        }
         if (img_params.pol) {
             img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}"
         }
@@ -1853,7 +1853,7 @@ process stackImgs {
         tuple val(chunk), val(meta), path(imgs)
     output:
         tuple val(chunk), val(meta), path(stack)
-    storeDir "${params.outdir}/${chunk}/img_qa${params.img_suffix}${params.cal_suffix}"
+    storeDir "${params.outdir}/${chunk}/img${params.img_suffix}${params.cal_suffix}"
 
     tag "${chunk}${meta.subobs?:''}.${meta.name}"
 
@@ -1882,21 +1882,23 @@ process stackThumbnail {
 
     script:
     title = "${chunk} ${meta.name} ${meta.suffix}"
+    thumb = "stack_${chunk}_${meta.name}_${meta.suffix}.png"
     args = [
         fits: img,
         title: title,
-        output_name: "${chunk}_${meta.name}_${meta.suffix}.png",
+        thumb: thumb,
         vmin_quantile: 0.3,
         vmax_quantile: 0.99
     ]
     argstr = (args + meta).findAll { k, v ->
             v != null && [
-                'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
-        .collect { k, v -> ["--${k}"] + coerceList(v) }
+                'fits', 'thumb', 'title', 'dpi', 'limit', 'vmin_quantile',
+                'vmax_quantile', 'transparent', 'symmetric', 'cmap'
             ].contains(k)
         }
-        .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
+        .collect { k, v -> ["--${k}"] + coerceList(v) }
         .flatten()
+        .collect { token -> "\"${token}\"" }
         .join(' ')
 
     template "thumbnail.py"
@@ -1937,6 +1939,8 @@ process ffmpeg {
 
     label "ffmpeg"
 
+    time 1.hour
+
     script:
     dot_cachebust = ".${name}.${cachebust}.cachebust"
     """
@@ -1960,8 +1964,8 @@ process archive {
     tag "$x"
     storeDir "${params.outdir}/.fakebuckets/${bucket}"
 
-    label "rclone"
-    stageInMode "symlink"
+    // label "rclone"
+    label "datamover"
 
     script:
     bucket = "${params.bucket_prefix}.${bucket_suffix}"
@@ -3825,7 +3829,7 @@ workflow img {
         obsMetaImgPass = obsMetaImgPass_
 }
 
-workflow chips {
+workflow imgCombine {
     take:
         // tuple of (obsid, meta, uvfits)
         obsMetaUV
@@ -3834,6 +3838,60 @@ workflow chips {
 
     main:
 
+        // combined images
+        groupMetaVisImgParams = obsMetaUV.cross(
+                chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
+                    obsids.collect { obsid -> [obsid, deepcopy(chunkMeta), chunk] }
+                }
+            ) { def (obsid, meta) = it; [obsid, meta.name] }
+            .map { obsMetaUV_, chunkMetaObs_ ->
+                def (obsid, obsMeta, vis) = obsMetaUV_
+                def (__, chunkMeta, chunk) = chunkMetaObs_
+                [chunk, chunkMeta.name, chunkMeta, vis]
+            }
+            .groupTuple(by: 0..1)
+            // .view { it -> "\n -> imgCombine obsMetaUV x chunkMetaObs ${it}\n" }
+            .map { chunk, _, chunkMetas, viss ->
+                [chunk, deepcopy(chunkMetas[0]), viss.flatten(), deepcopy(wscleanParams)]
+            }
+            // .view { it -> "\n -> imgCombine before filter ${it}\n" }
+            .filter { chunk, chunkMeta, viss, imgParams -> chunkMeta.name }
+
+        if (params.nodeconv) {
+            groupMetaVisImgParams | wscleanDirty
+            channel.empty() | wscleanDConv
+        } else {
+            channel.empty() | wscleanDirty
+            groupMetaVisImgParams.map { chunk, meta, vis, imgParams ->
+                    [chunk, meta, vis, deepcopy(wscleanDConvParams) + imgParams, []]
+                }
+                | wscleanDConv
+        }
+
+        // make thumbnails
+        // - only MFS images unless thumbnail_all_chans
+        // - exclude dirty if deconv is enabled
+        wscleanDConv.out.mix(wscleanDirty.out)
+            .flatMap { obsid, meta, imgs ->
+                imgs.collect { img ->
+                    [obsid, deepcopy(meta) + decomposeImg(img), img] }}
+            .filter { _, meta, img ->
+                meta.prod !=~ /uv-.*/ \
+                && (meta.chan?:-1 == -1 || params.thumbnail_all_chans) \
+                && (meta.prod == (params.nodeconv ? "dirty" : "image"))
+            }
+            | thumbnail
+}
+
+// make combined grids and images using chips and wsclean
+workflow chips {
+    take:
+        // tuple of (obsid, meta, uvfits)
+        obsMetaUV
+        // tuple of (chunk, chunkMeta, obsids) for grouping
+        chunkMetaObs
+
+    main:
         // power spectrum
         if (params.nopowerspec) {
             channel.empty() | chipsGrid
@@ -4147,8 +4205,8 @@ workflow {
         | view { [it, it.readLines().size()] }
 
     prep.out.obsFlags
-        .filter { obsid, flagAnts, prepAnts, manualAnts, newAnts -> newAnts.size() > 0 }
-        .map { obsid, flagAnts, prepAnts, manualAnts, newAnts ->
+        .filter { obsid, flagAnts, prepAnts, manualAnts, newAnts, _ -> newAnts.size() > 0 }
+        .map { obsid, flagAnts, prepAnts, manualAnts, newAnts, _ ->
             ([
                 obsid,
                 displayInts(flagAnts),
@@ -4165,11 +4223,26 @@ workflow {
         // display output path and number of lines
         | view { [it, it.readLines().size()] }
 
-    obsFlags = prep.out.obsFlags
-        .map {obsid, flagAnts, prepAnts, manualAnts, newAnts -> [obsid, newAnts]}
-    frame = ws.out.frame
+    // combine new flags from prep.out.obsFlags with ws.out.obsMeta
+    obsMeta = prep.out.obsFlags.join(ws.out.obsMeta)
+        .map {obsid, flagAnts, prepAnts, manualAnts, newAnts, fineChanFlags, meta ->
+            def newMeta = [prepFlags: newAnts]
+            if (fineChanFlags) {
+                newMeta.fineChanFlags = fineChanFlags
+            }
+            [obsid, deepcopy(meta) + newMeta]
+        }
+    qaPrep(prep.out.obsMetaVis, obsMeta)
+    if (!params.novideo) {
+        ws.out.frame
             .mix(prep.out.frame)
-    qaPrep(prep.out.obsMetaVis, obsFlags, frame, prep.out.zip)
+            .mix(qaPrep.out.frame)
+            | makeVideos
+    }
+    // make zips
+    if (params.tarchive) {
+        prep.out.zip.mix(qaPrep.out.zip) | makeTarchives
+    }
 }
 
 // given a channel of tuple (obs, metafits, vis), calibrate and analyse
@@ -4426,7 +4499,7 @@ workflow qaPrep {
             //     }
             //     isEven
             // }
-            .map { obsid, metas -> [ obsid, coerceList(metas) ]}
+            // group metas by obsid
             .groupTuple(by: 0)
             // ensure metas are a list, even when there is only one meta
             .map { obsid, metas -> [ obsid, coerceList(metas) ]}
@@ -4454,9 +4527,12 @@ workflow qaPrep {
                 if (metaPrime.config != null) {
                     group_tokens << metaPrime.config
                 }
+                // if (metaPrime.pointing != null) {
+                //     group_tokens << "p${metaPrime.pointing}"
+                // }
                 // if (metaPrime.lst != null) {
-                //     def nearest_lst = (metaPrime.lst / 1).round() * 1
-                //     group_tokens << "lst${metaPrime.lst}"
+                //     def nearest_lst = ((metaPrime.lst.round().intValue() + 180) % 360 - 180)
+                //     group_tokens << sprintf("lst%+03d", nearest_lst)
                 // }
                 def group = group_tokens.join('_')
 
@@ -4564,28 +4640,40 @@ workflow qaPrep {
                 [obsid, meta, uvfits]
             }
 
-        chips(obsMetaUVPass, chunkMetaPass)
+        if (params.noimgcombine) {
+            imgCombine(channel.empty(), channel.empty())
+        } else {
+            imgCombine(obsMetaUVPass, chunkMetaPass)
+        }
+
+        if (params.nochipscombine) {
+            chips(obsMetaUVPass, channel.empty())
+        } else {
+            chips(obsMetaUVPass, chunkMetaPass)
+        }
 
         // stack images from chunks
-        obsMetaImgPass
-            .cross(
-                chunkMetaPass.flatMap { group, groupMeta, obsids ->
-                    obsids.collect { obsid -> [obsid, groupMeta, group] }
+        if (!params.nostackthumbs) {
+            obsMetaImgPass
+                .cross(
+                    chunkMetaPass.flatMap { group, groupMeta, obsids ->
+                        obsids.collect { obsid -> [obsid, groupMeta, group] }
+                    }
+                ) { def (obsid, meta) = it; [obsid, meta.name] }
+                .flatMap { obsMetaImgPass_, obsMetaPass_ ->
+                    def (obsid, _, imgMetas, imgs) = obsMetaImgPass_;
+                    def (__, groupMeta, group) = obsMetaPass_;
+                    [imgMetas, imgs].transpose().collect { imgMeta, img ->
+                        [group, groupMeta.name, imgMeta.suffix, imgMeta, img]
+                    }
                 }
-            ) { def (obsid, meta) = it; [obsid, meta.name] }
-            .flatMap { obsMetaImgPass_, obsMetaPass_ ->
-                def (obsid, _, imgMetas, imgs) = obsMetaImgPass_;
-                def (__, groupMeta, group) = obsMetaPass_;
-                [imgMetas, imgs].transpose().collect { imgMeta, img ->
-                    [group, groupMeta.name, imgMeta.suffix, imgMeta, img]
+                .groupTuple(by: 0..2)
+                .map { group, _, __, imgMetas, imgs ->
+                    [group, imgMetas[0], imgs]
                 }
-            }
-            .groupTuple(by: 0..2)
-            .map { group, _, __, imgMetas, imgs ->
-                [group, imgMetas[0], imgs]
-            }
-            | stackImgs
-            // | stackThumbnail
+                | stackImgs
+                | stackThumbnail
+        }
 
         // archive data to object store
         if (params.archive) {
@@ -4607,8 +4695,8 @@ workflow qaPrep {
                 | archive
         }
 
-        // make videos
-        def allframes = frame.mix(cal.out.frame)
+    emit:
+        frame = cal.out.frame
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
             .mix(chips.out.frame)
@@ -4616,36 +4704,42 @@ workflow qaPrep {
                 def (_, meta, pngs) = it;
                 pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
             }.groupTuple())
+        zip = cal.out.zip
+            .mix(uvfits.out.zip)
+            .mix(img.out.zip)
+            .mix(
+                hypIonoSubUV.out.map { it -> def (obsid, meta, _, offsets) = it; ["offsets_${meta.name}", offsets]}
+                .groupTuple()
+            )
 
-        allframes.map { name, frames ->
-                def latest = frames.collect { frame -> frame.lastModified() }.max()
+}
+
+workflow makeVideos {
+    take:
+        frame
+    emit:
+        videos = frame.map { name, frames ->
+                def latest = frames.collect { it.lastModified() }.max()
                 def cachebust = "${latest}_x" + sprintf("%04d", frames.size())
-                def sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort()
+                def sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort(false)
                 [name, sorted, cachebust]
             }
             | ffmpeg
             | view { video, _ -> [video, video.size()] }
+}
 
-        // make zips
-        if (params.tarchive) {
-            zip
-                .mix(cal.out.zip)
-                .mix(uvfits.out.zip)
-                .mix(img.out.zip)
-                .mix(
-                    hypIonoSubUV.out.map { it -> def (obsid, meta, _, offsets) = it; ["offsets_${meta.name}", offsets]}
-                    .groupTuple()
-                )
-                .mix(allframes)
-                .map { name, files ->
-                    def latest = files.collect { file -> file.lastModified() }.max()
-                    def cachebust = "${latest}_x" + sprintf("%04d", files.size())
-                    // def sorted = files.collect { path -> file(deepcopy(path.toString())) }.sort()
-                    [name, files, cachebust]
-                }
-                | tarchive
-                | view { zip_, cachebust -> [zip_, zip_.size()] }
-        }
+workflow makeTarchives {
+    take:
+        zip
+    emit:
+        zips = zip.map { name, files ->
+                def latest = files.collect { file -> file.lastModified() }.max()
+                def cachebust = "${latest}_x" + sprintf("%04d", files.size())
+                // def sorted = files.collect { path -> file(deepcopy(path.toString())) }.sort(false)
+                [name, files, cachebust]
+            }
+            | tarchive
+            | view { zip_, cachebust -> [zip_, zip_.size()] }
 }
 
 // entrypoint: get externally preprocessed uvfits files from csv file and run qa
@@ -4658,6 +4752,16 @@ workflow extPrep {
     obsids = obsVis.map { obsid, _ -> obsid }
     obsids | ws
 
-    qaPrep(ws.out.obsMetafits.join(obsVis), channel.from([]), ws.out.frame)
+    qaPrep(ws.out.obsMetafits.join(obsVis), channel.empty())
+
+    if (!params.novideo) {
+        ws.out.frame
+            .mix(qaPrep.out.frame)
+            | makeVideos
+    }
+    // make zips
+    if (params.tarchive) {
+        qaPrep.out.zip | makeTarchives
+    }
 }
 
