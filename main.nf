@@ -767,7 +767,7 @@ process hypSubUV {
     #!/bin/bash -eux
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
-        --beam "${params.beam_path}" \
+        --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
         --invert --num-sources ${newMeta.sub_nsrcs} \
         --outputs "${sub_vis}" \
@@ -809,7 +809,7 @@ process hypSubMS {
     #!/bin/bash -eux
     ${params.hyperdrive} vis-sub \
         --data "${metafits}" "${vis}" \
-        --beam "${params.beam_path}" \
+        --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
         --invert --num-sources ${newMeta.sub_nsrcs} \
         --outputs "${sub_vis}" \
@@ -855,7 +855,7 @@ process hypIonoSubUV {
     #!/bin/bash -eux
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
-        --beam "${params.beam_path}" \
+        --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
         --iono-sub ${newMeta.ionosub_nsrcs} \
         --sub ${newMeta.sub_nsrcs} \
@@ -900,7 +900,7 @@ process hypIonoSubMS {
     #!/bin/bash -eux
     ${params.hyperdrive} peel \
         --data "${metafits}" "${vis}" \
-        --beam "${params.beam_path}" \
+        --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
         --iono-sub ${newMeta.ionosub_nsrcs} \
         --sub ${newMeta.sub_nsrcs} \
