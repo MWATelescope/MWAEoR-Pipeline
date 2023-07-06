@@ -919,7 +919,7 @@ process cthulhuPlot {
     input:
     tuple val(obsid), val(meta), path(srclist), path(offsets)
     output:
-    tuple val(obsid), val(meta), path("cthuluplot_${title}*.png")
+    tuple val(obsid), val(meta), path("cthuluplot_${title}*.png"), path(csv), path(json)
 
     storeDir "${params.outdir}/${obsid}/iono_qa${params.cal_suffix}"
 
@@ -931,7 +931,9 @@ process cthulhuPlot {
 
     script:
     title = "${obsid}_${meta.name}"
-    cthulhuplot = "cthuluplot_${title}.png"
+    plot = "cthuluplot_${title}.png"
+    csv = "ionoqa_${title}.csv"
+    json = "ionoqa_${title}.json"
     extra = meta.time_res ? "--time_res=${meta.time_res}" : ""
     template "cthulhuplot.py"
 }
@@ -4092,6 +4094,41 @@ workflow qaPrep {
             }
             | cthulhuPlot
 
+        // collect ionoqa results as .tsv
+        cthulhuPlot.out
+            // form row of tsv from json fields we care about
+            .map { obsid, _, __, ___, json ->
+                def stats = parseJson(json);
+                [
+                    obsid,
+                    stats.PCA_EIGENVALUE?:'',
+                    stats.MED_ABS_OFFSET?:'',
+                    stats.QA?:'',
+                    stats.MAX_SHIFT_SRC?:'',
+                    stats.MAX_SHIFT_RA?:'',
+                    stats.MAX_SHIFT_DEC?:'',
+                    stats.N_TIMES?:'',
+                    stats.N_SRCS?:'',
+                ].join("\t")
+            }
+            .collectFile(
+                name: "ionoqa.tsv", newLine: true, sort: true,
+                seed: [
+                    "OBS",
+                    "HYP_IONO_PCA",
+                    "HYP_IONO_MAG",
+                    "HYP_IONO_QA",
+                    "MAX_SHIFT_SRC",
+                    "MAX_SHIFT_RA",
+                    "MAX_SHIFT_DEC",
+                    "N_TIMES",
+                    "N_SRCS",
+                ].join("\t"),
+                storeDir: "${results_dir}"
+            )
+            // display output path and number of lines
+            | view { [it, it.readLines().size()] }
+
         // channel of calibrated, subtracted and ionosubtracted uvfits: tuple(obsid, name, uvfits)
         obsMetaUV = hypApplyUV.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] }
             .mix(hypIonoSubUV.out.map { obsid, meta, vis, _, __ -> [obsid, meta, vis] })
@@ -4369,7 +4406,8 @@ workflow qaPrep {
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
             .mix(chips.out.frame)
-            .mix(cthulhuPlot.out.flatMap {_, meta, pngs ->
+            .mix(cthulhuPlot.out.flatMap {
+                def (_, meta, pngs) = it;
                 pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
             }.groupTuple())
 
