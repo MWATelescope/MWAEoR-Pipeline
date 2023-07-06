@@ -2588,6 +2588,7 @@ workflow prep {
             // form row of tsv from json fields we care about
             .map { obsid, json ->
                 def stats = parseJson(json);
+                bad_ants = stats.BAD_ANTS?:[]
                 [
                     obsid,
                     stats.STATUS?:'',
@@ -2595,7 +2596,8 @@ workflow prep {
                     stats.NTIMES?:'',
                     stats.NCHAN?:'',
                     stats.NPOLS?:'',
-                    displayInts(stats.BAD_ANTS?:[]),
+                    bad_ants.size(),
+                    displayInts(bad_ants),
                 ].join("\t")
             }
             .collectFile(
@@ -2607,6 +2609,7 @@ workflow prep {
                     "NTIMES",
                     "NCHAN",
                     "NPOLS",
+                    "N_BAD_ANTS",
                     "BAD_ANTS",
                 ].join("\t"),
                 storeDir: "${results_dir}"
@@ -2753,12 +2756,14 @@ workflow prep {
                     if (!params.noManualFlags) {
                         newAntennas.addAll(manualAntennas)
                     }
+                    def flagged_fchan_idxs = flagStats.flagged_fchan_idxs?:[]
                     [
                         obsid,
-                        (flagAntennas as ArrayList).sort(),
-                        (prepAntennas as ArrayList).sort(),
-                        (manualAntennas as ArrayList).sort(),
-                        ((newAntennas - flagAntennas) as ArrayList).sort()
+                        (flagAntennas as ArrayList).sort(false),
+                        (prepAntennas as ArrayList).sort(false),
+                        (manualAntennas as ArrayList).sort(false),
+                        ((newAntennas - flagAntennas) as ArrayList).sort(false),
+                        flagged_fchan_idxs,
                     ]
                 })
         // channel of video name and frames to convert
@@ -2916,31 +2921,28 @@ workflow cal {
             // form row of tsv from json fields we care about
             .map { obsid, meta, json ->
                 def stats = parseJson(json)
+                def bad_ants = stats.BAD_ANTS?:[]
                 // def convg_var = stats.CONVERGENCE_VAR
                 [
                     obsid,
                     meta.name,
                     stats.STATUS?:'',
-                    displayInts(stats.BAD_ANTS?:[]),
+                    bad_ants.size,
+                    displayInts(bad_ants),
                     (stats.PERCENT_UNUSED_BLS?:0) / 100,
                     (stats.PERCENT_NONCONVERGED_CHS?:0) / 100,
-                    // convg_var,
-                    // (convg_var instanceof BigDecimal) ? convg_var * 1e14 : "NaN",
                     stats.RMS_CONVERGENCE?:'',
                     stats.SKEWNESS?:'',
                     stats.RECEIVER_VAR?:'',
                     stats.DFFT_POWER?:'',
-                    // stats.XX?.SKEWNESS?:'',
-                    // stats.XX?.DFFT_POWER?:'',
-                    // stats.YY?.SKEWNESS?:'',
-                    // stats.YY?.DFFT_POWER?:'',
                     stats.FAILURE_REASON,
                 ].join("\t")
             }
             .collectFile(
                 name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME", "STATUS", "BAD ANTS",
+                    "OBS", "CAL NAME", "STATUS",
+                    "N BAD ANTS", "BAD ANTS",
                     "BL UNUSED FRAC", "NON CONVG CHS FRAC",
                     "RMS CONVG",
                     "SKEW",
@@ -2999,7 +3001,7 @@ workflow cal {
                     }
                     def newflags = (calflags - prepflags) as ArrayList
                     if (newflags) {
-                        newMeta.calflags = newflags.sort()
+                        newMeta.calflags = deepcopy(newflags.sort(false))
                     }
                 }
                 [obsid, deepcopy(meta) + newMeta, stats]
@@ -3966,9 +3968,7 @@ workflow {
 workflow qaPrep {
     take:
         obsMetafitsVis
-        obsFlags
-        frame
-        zip
+        obsMeta
     main:
         // get sourcelists for each obs (only currently used in subtraction, not calibration)
         obsMetafitsVis.map { obsid, metafits, _ -> [obsid, metafits ] }
@@ -3993,13 +3993,9 @@ workflow qaPrep {
             // empty channel disables a process
             channel.empty() | cal
         } else {
-            obsMetafitsVis.join(obsFlags)
+            obsMetafitsVis.join(obsMeta)
                 .filter { _, metafits, vis, __ -> metafits != null && vis != null}
-                .map { obs, metafits, vis, flags ->
-                    def meta = [prepflags: []];
-                    if (flags != null && flags.size() > 0) {
-                        meta.prepflags = flags
-                    }
+                .map { obs, metafits, vis, meta ->
                     [obs, meta, metafits, vis]
                 }
                 | cal
@@ -4007,12 +4003,13 @@ workflow qaPrep {
 
         cal.out.obsMetaCalPass
             .map { it -> def (obsid, meta, soln) = it;
-                ([obsid, meta.name, displayInts(meta.prepflags?:[]), displayInts(meta.calflags?:[])]).join("\t")
+                def calflags = deepcopy(meta.calflags?:[])
+                ([obsid, meta.name, displayInts(meta.prepflags?:[]), displayInts(calflags)]).join("\t")
             }
             .collectFile(
                 name: "passcal.tsv", newLine: true, sort: true,
                 seed: ([ "OBS", "NAME", "PREPFLAGS", "CALFLAGS" ]).join("\t"),
-                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
             | view { [it, it.readLines().size()] }
 
@@ -4020,7 +4017,7 @@ workflow qaPrep {
         // - take tuple(obsid, meta, soln) from cal.out.obsMetaCalPass
         // - match with tuple(obsid, metafits, prepUVFits) by obsid
         if (params.noapply) {
-            allApply = channel.from([])
+            allApply = channel.empty()
         } else {
             allApply = obsMetafitsVis
                 .join(cal.out.obsMetaCalPass)
@@ -4031,11 +4028,14 @@ workflow qaPrep {
                         nodut1: params.nodut1,
                         apply_args: params.apply_args,
                     ]
-                    if (meta.calflags) {
-                        newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${meta.calflags.join(' ')}"
+                    def calflags = deepcopy(meta.calflags?:[])
+                    if (calflags) {
+                        newMeta.apply_args = "${params.apply_args} --tile-flags ${calflags.join(' ')}"
                     }
+                    // calflags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
+                    // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calflags.join(' ')}"
                     newMeta.apply_name = "${newMeta.time_res}s_${newMeta.freq_res}kHz"
-                    [obsid, deepcopy(meta) + newMeta, metafits, prepUVFits, soln]
+                    [obsid, deepcopy(meta) + deepcopy(newMeta), metafits, prepUVFits, soln]
                 }
         }
 
