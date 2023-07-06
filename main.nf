@@ -532,7 +532,15 @@ process hypCalSol {
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
-    flag_args = meta.prepflags.size() > 0 ? "--tile-flags ${meta.prepflags.join(' ')}" : ""
+    flag_args = ""
+    prepFlags = meta.prepflags?:[]
+    fineChanFlags = meta.fineChanFlags?:[]
+    if (prepFlags.size() > 0) {
+        flag_args += " --tile-flags ${prepFlags.join(' ')}"
+    }
+    if (fineChanFlags.size() > 0) {
+        flag_args += " --fine-chan-flags-per-coarse-chan ${fineChanFlags.join(' ')}"
+    }
 
     """
     #!/bin/bash -eux
@@ -570,7 +578,7 @@ process hypCalSol {
         (
             ${params.hyperdrive} di-calibrate \${args} \
                 --data "${metafits}" ${uvfits} \
-                --beam "${params.beam_path}" \
+                --beam-file "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
                 --outputs \$soln_name \
                 ${flag_args} \
@@ -2828,10 +2836,10 @@ workflow cal {
         //     | view { [it, it.readLines().size()] }
 
         // channel of individual dical solutions: tuple(obsid, meta, soln)
-                coerceList(solns).collect { soln ->
+        // - hypCalSol gives multiple solutions, transpose gives 1 tuple per solution.
         eachCal = hypCalSol.out
             .flatMap { obsid, meta, solns, _ ->
-                (solns instanceof List ? solns : [solns]).collect { soln ->
+                coerceList(solns).collect { soln ->
                     // give each calibration a name from basename of solution fits.
                     // this is everything after the obsid
                     def dical_name = soln.baseName.split('_')[3..-1].join('_');
