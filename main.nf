@@ -311,7 +311,9 @@ process flagQA {
     label "mem_half"
 
     script:
-    metrics = "${obsid}_occupancy.json"
+    // metrics = "${obsid}_occupancy.json"
+    names = coerceList(uvfits).collect { f -> f.name }
+    metrics = "occupancy_${names.join(',')}.json"
     template "flagqa.py"
 }
 
@@ -2633,9 +2635,9 @@ workflow prep {
         // plot prepvisQA
         prepVisQA.out | plotPrepVisQA
 
-        // analyse flag occupancy
+        // analyse aoflagger occupancy
         if (params.noprepqa) {
-            channel.from([]) | flagQA & autoplot
+            channel.empty() | flagQA
         } else {
             obsMetafits.join(asvoPrep.out) | flagQA
             obsMetafits.join(asvoPrep.out).join(obsMeta).flatMap { obsid, metafits, uvfits, meta ->
