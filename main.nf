@@ -2520,7 +2520,7 @@ workflow ws {
 
         pass | wsMetafits & wsSkyMap
         if (params.noppds) {
-            channel.from([]) | wsPPDs
+            channel.empty() | wsPPDs
         } else {
             pass | wsPPDs
         }
@@ -2565,13 +2565,13 @@ workflow prep {
             | asvoPrep
 
         if (params.noprepqa) {
-            channel.from([]) | prepVisQA
+            channel.empty() | prepVisQA
         } else {
             obsMetafits.join(asvoPrep.out) | prepVisQA
         }
 
         if (params.nossins) {
-            channel.from([]) | ssins
+            channel.empty() | ssins
         } else {
             asvoPrep.out | ssins
         }
@@ -2857,7 +2857,7 @@ workflow cal {
 
         // do polyFit unless --nopoly is set
         if (params.nopoly) {
-            channel.from([]) | polyFit
+            channel.empty() | polyFit
         } else {
             eachCal | polyFit
         }
@@ -2906,7 +2906,7 @@ workflow cal {
 
         // plot each calQA result
         if (params.noplotcalqa) {
-            channel.from([]) | plotCalQA
+            channel.empty() | plotCalQA
         } else {
             calQA.out | plotCalQA
         }
@@ -3024,7 +3024,7 @@ workflow cal {
         // channel of video name and frames to convert
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, meta, pngs ->
-                (pngs instanceof List ? pngs : [pngs]).collect { png ->
+                coerceList(pngs).collect { png ->
                     def suffix = png.baseName.split('_')[-1]
                     ["calqa_${meta.name}_${suffix}", png]
                 }
@@ -3048,7 +3048,7 @@ workflow uvfits {
             | visQA
 
         if (params.nouvplot) {
-            channel.from([]) | uvPlot
+            channel.empty() | uvPlot
         } else {
             obsMetaUV | uvPlot
         }
@@ -3130,7 +3130,7 @@ workflow uvfits {
             | view { [it, it.readLines().size()] }
 
         if (params.noplotvisqa) {
-            channel.from([]) | plotVisQA
+            channel.empty() | plotVisQA
         } else {
             visQA.out | plotVisQA
         }
@@ -3231,7 +3231,7 @@ workflow uvfits {
 
         // delay spectrum
         if (params.nodelayspec) {
-            channel.from([]) | delaySpec
+            channel.empty() | delaySpec
         } else {
             obsMetaUVEoR | delaySpec
         }
@@ -3465,7 +3465,7 @@ workflow img {
         //  - imgs need to be deconvolved for QA
         //  - can't handle multiple intervals
         if (params.noimgqa || params.nodeconv || params.img_split_intervals) {
-            channel.from([]) | imgQA
+            channel.empty() | imgQA
             obsMetaImgPass_ = obsMetaImgGroup
         } else {
             obsMetaImgGroup
@@ -3536,7 +3536,7 @@ workflow img {
                 .map { obsid, metas -> [obsid, coerceList(metas)] }
                 }
                 .groupTuple(by: 0)
-                .map { obsid, metas -> [obsid, (metas instanceof List ? metas : [metas])] }
+                .map { obsid, metas -> [obsid, coerceList(metas)] }
                 .flatMap { obsid, metas ->
                     def nosubMeta = metas.find { meta -> meta.sub == null }
                     def nosubReason = cmt_imgqa_pass(nosubMeta)
@@ -3626,7 +3626,7 @@ workflow chips {
 
         // power spectrum
         if (params.nopowerspec) {
-            channel.from([]) | chipsGrid
+            channel.empty() | chipsGrid
         } else {
             obsMetaUV
                 .map { obsid, meta, viss ->
@@ -3646,15 +3646,16 @@ workflow chips {
                 [chunk, chunkMeta.name, chunkMeta, obsMeta.ext, grid]
             }
             .groupTuple(by: 0..1)
-            .view { it -> "\n -> chipsGrid x chunkMetaObs ${it}\n" }
+            // .view { it -> "\n -> chipsGrid x chunkMetaObs ${it}\n" }
             .map { chunk, _, chunkMetas, exts, grids ->
                 def chunkMeta = chunkMetas[0]
                 def newMeta = [ ext: "${chunk}_${chunkMeta.name}"]
                 // print("\n -> chunkMetas 0: ${chunkMeta}\n")
                 [chunk, deepcopy(chunkMeta) + newMeta, exts, grids.flatten()]
             }
-            .view { it -> "\n -> before chipsCombine ${it}\n" }
+            // .view { it -> "\n -> before chipsCombine ${it}\n" }
             .filter { chunk, chunkMeta, exts, grid -> chunkMeta.name }
+            // .take(10)
             | chipsCombine
 
         // chipsGrid.out.mix(chipsCombine.map { group, meta, _, grid -> group, meta,grid }) | chipsLssa
@@ -3875,10 +3876,10 @@ workflow chips {
         frame = chipsPlot.out
             .flatMap { _, meta, pngs ->
                 def suffix = ""
-                coerceList(pngs).collect { png ->
+                if (meta.nobs > 1) {
                     suffix = "_x" + sprintf("%04d", meta.nobs)
                 }
-                (pngs instanceof List ? pngs : [pngs]).collect { png ->
+                coerceList(pngs).collect { png ->
                     ["${meta.plot_name}_${meta.name}${suffix}", png]
                 }
             }.groupTuple()
@@ -3921,7 +3922,7 @@ workflow {
 
     // download preprocessed, unless noprep is set
     if (params.noprep) {
-        prep(channel.from([]), channel.from([]))
+        prep(channel.empty(), channel.empty())
     } else {
         prep(ws.out.obsMetafits, ws.out.obsMeta)
     }
@@ -3976,7 +3977,7 @@ workflow qaPrep {
         // obsMetaSrclist: channel of tuple(obsid, metafits, srclist)
         // cluster unless --nocluster
         if (params.nocluster) {
-            channel.from([]) | rexCluster
+            channel.empty() | rexCluster
             obsMetaSrclist = obsMetafitsVis.join(hypSrclistAO.out)
                 .map { obsid, metafits, _, srclist ->
                     [obsid, metafits, srclist] }
@@ -3990,7 +3991,7 @@ workflow qaPrep {
         // calibrate each obs that passes flag gate unless --nocal:
         if (params.nocal) {
             // empty channel disables a process
-            channel.from([]) | cal
+            channel.empty() | cal
         } else {
             obsMetafitsVis.join(obsFlags)
                 .filter { _, metafits, vis, __ -> metafits != null && vis != null}
@@ -4040,12 +4041,12 @@ workflow qaPrep {
 
         // apply calibration solutions to uvfits and ms unless --nouv or --noms
         if (params.nouv) {
-            channel.from([]) | hypApplyUV
+            channel.empty() | hypApplyUV
         } else {
             allApply | hypApplyUV
         }
         if (params.noms) {
-            channel.from([]) | hypApplyMS
+            channel.empty() | hypApplyMS
         } else {
             allApply | hypApplyMS
         }
@@ -4065,13 +4066,13 @@ workflow qaPrep {
                 [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
         if (params.nosub) {
-            channel.from([]) | (hypSubUV & hypSubMS)
+            channel.empty() | (hypSubUV & hypSubMS)
         } else {
             subArgsUV | hypSubUV
             subArgsMS | hypSubMS
         }
         if (params.noionosub) {
-            channel.from([]) | (hypIonoSubUV & hypIonoSubMS)
+            channel.empty() | (hypIonoSubUV & hypIonoSubMS)
         } else {
             subArgsUV.map {obsid, meta, metafits, vis, srclist ->
                 def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
@@ -4126,7 +4127,7 @@ workflow qaPrep {
 
         // image and qa measurementsets or uvfits unless --noimage
         if (params.noimg) {
-            channel.from([]) | img
+            channel.empty() | img
             obsMetaImgPass = uvfits.out.obsMetaUVPass.map { obsid, meta, _ -> [obsid, meta, [], []]}
         } else {
             // visibilities for imaging and power spectrum
@@ -4348,12 +4349,12 @@ workflow qaPrep {
             if (params.archive_prep) {
                 prep_archive = obsMetafitsVis.map { _, __, vis -> ["prep", vis] }
             } else {
-                prep_archive = channel.from([])
+                prep_archive = channel.empty()
             }
             if (params.archive_uvfits) {
                 vis_archive = obsMetaUV.map { _, __, vis -> ["uvfits", vis]}
             } else {
-                vis_archive = channel.from([])
+                vis_archive = channel.empty()
             }
             prep_archive.mix(vis_archive)
                 .mix(cal.out.obsMetaCalPass.map { _, __, soln -> ["soln", soln] })
