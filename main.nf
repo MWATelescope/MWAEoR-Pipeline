@@ -2169,7 +2169,7 @@ def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
 }
 
 def cmt_imgqa_pass(meta) {
-    if (meta.v_rms_box != null) {
+    if (params.filter_max_vrms_box!= null && meta.v_rms_box != null) {
         if (meta.v_rms_box > params.filter_max_vrms_box) {
             return "${meta.sub?:""}_v_rms_box(${meta.v_rms_box}) > max_vrms_box(${params.filter_max_vrms_box})"
         }
@@ -2180,7 +2180,7 @@ def cmt_imgqa_pass(meta) {
     //         return "${meta.sub?:""}_pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"
     //     }
     // }
-    if (meta.xx_pks_int != null && meta.yy_pks_int != null) {
+    if (params.filter_max_pks_int_diff != null && meta.xx_pks_int != null && meta.yy_pks_int != null) {
         def pks_int_diff = (meta.xx_pks_int - meta.yy_pks_int).abs()
         if (pks_int_diff > params.filter_max_pks_int_diff) {
             return "${meta.sub?:""}_pks_int |xx+yy| (${pks_int_diff}) > max_pks_int_diff(${params.filter_max_pks_int_diff})"
@@ -2197,30 +2197,30 @@ def cmt_imgqa_pass(meta) {
 // IMG	XX_sub integ	< 0.5	Integrated remaining flux after subtraction is small
 // IMG	YY_sub integ	< 0.5	Integrated remaining flux after subtraction is small
 def cmt_imgqa_pass_sub(nosubMeta, subMeta) {
-    if (nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
+    if (params.filter_max_pks_int_v_ratio != null && nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
         def pks_int_v_ratio = nosubMeta.v_pks_int / (nosubMeta.xx_pks_int + nosubMeta.yy_pks_int)
         if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
             return "pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"
         }
     }
-    if (nosubMeta.xx_pks_int != null && subMeta.xx_pks_int != null) {
+    if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.xx_pks_int != null && subMeta.xx_pks_int != null) {
         def pks_int_sub_ratio = subMeta.xx_pks_int / nosubMeta.xx_pks_int
         if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
             return "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"
         }
     }
-    if (nosubMeta.yy_pks_int != null && subMeta.yy_pks_int != null) {
+    if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.yy_pks_int != null && subMeta.yy_pks_int != null) {
         def pks_int_sub_ratio = subMeta.yy_pks_int / nosubMeta.yy_pks_int
         if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
             return "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"
         }
     }
-    if (subMeta.xx_pks_int != null) {
+    if (params.filter_max_pks_int_sub != null && subMeta.xx_pks_int != null) {
         if (subMeta.xx_pks_int > params.filter_max_pks_int_sub) {
             return "${subMeta.sub?:""}_xx_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"
         }
     }
-    if (subMeta.yy_pks_int != null) {
+    if (params.filter_max_pks_int_sub != null && subMeta.yy_pks_int != null) {
         if (subMeta.yy_pks_int > params.filter_max_pks_int_sub) {
             return "${subMeta.sub?:""}_yy_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"
         }
