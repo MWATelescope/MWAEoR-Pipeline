@@ -1713,6 +1713,28 @@ process imgQA {
     """
 }
 
+// analyse images of V,XX,YY
+process krVis {
+    input:
+    tuple val(obsid), val(meta), path(fits), path(roma0)
+    output:
+    tuple val(obsid), val(meta), path("${out_prefix}{I,L,V,IV}-*.png")
+
+    // errorStrategy "terminate"
+
+    storeDir "${params.outdir}/${obsid}/img_qa${params.img_suffix}${params.cal_suffix}"
+
+    tag "${obsid}${meta.inter_tok?:''}.${meta.name}"
+
+    label "python"
+
+    script:
+    out_prefix = "${obsid}${meta.inter_tok?"-${meta.inter_tok}":''}_${meta.name}-"
+    template "krvis.py"
+}
+
+
+
 process uvPlot {
     input:
     tuple val(obsid), val(meta), path(uvfits)
@@ -3682,6 +3704,21 @@ workflow img {
             channel.empty() | polMontage
         }
 
+        if (params.krvis) {
+            obsMetaImgMfsPass
+                .map { obsid, meta, img -> [obsid, meta.name, meta.inter_tok?:'', meta, img] }
+                .groupTuple(by: 0..2)
+                .map { obsid, name, interval, metas, imgs ->
+                    def iMeta = metas.find { it.pol == 'I' }
+                    def (_, iquvImgs) = [metas, imgs].transpose().findAll { meta, img ->
+                        ['I', 'Q', 'U', 'V'].contains(meta.pol)
+                    }.transpose()
+                    [obsid, iMeta, iquvImgs, file('/pawsey/mwa/mwaeor/dev/telescope_data_visualisation/romaO.npy')]
+                }
+                | krVis
+        } else {
+            channel.empty() | krVis
+        }
 
         // each vis name can have multiple images in obsMetaImgMfs
         // group by obsid, vis name using original meta from obsMetaVis
@@ -3841,6 +3878,12 @@ workflow img {
                     }
                 }
                 frames_
+            })
+            .mix(krVis.out.flatMap {_, meta, pngs ->
+                pngs.collect { png ->
+                    def suffix = png.baseName.split('-')[-2..-1].join('-');
+                    ["krvis_${meta.name}_${suffix}", png]
+                }
             })
             .groupTuple()
         // channel of files to zip
