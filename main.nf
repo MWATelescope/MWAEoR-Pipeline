@@ -2270,6 +2270,7 @@ workflow ws {
 
         quality_updates = file(params.quality_updates_path)
             .readLines()
+            .findAll { !it.startsWith('#') && it.length() > 13 }
             .collectEntries { line ->
                 def (obsid, quality, comment) = line.split(',')
                 [obsid, [dataquality: quality, dataqualitycomment: comment]]
