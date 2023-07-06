@@ -4192,11 +4192,19 @@ workflow archivePrep {
 // default entrypoint: get preprocessed vis from asvo and run qa
 workflow {
     // get obsids from csv
-    obsids = channel.of(obsids_file)
+    obsCSV = channel.of(obsids_file)
         .splitCsv()
-        .flatten()
-        .filter { line -> !line.startsWith('#') }
-        .unique()
+        .filter { line -> !line[0].startsWith('#') }
+        .map { line -> def (obsid, cluster) = line
+            def meta = [:]
+            if (cluster != null) {
+                meta.cluster = cluster
+            }
+            [obsid, meta]
+        }
+        .view()
+
+    obsids = obsCSV.map { obsid, meta -> obsid }
 
     // analyse obsids with web services
     obsids | ws
