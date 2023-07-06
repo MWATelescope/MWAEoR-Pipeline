@@ -1346,26 +1346,7 @@ process imgQuantiles {
 
     script:
     csv = "quantile_${meta.name}_${meta.suffix}.csv"
-    """
-    #!/usr/bin/env python
-
-    from astropy.io import fits
-    import numpy as np
-
-    with fits.open("${fits}") as hdus:
-        data = hdus[0].data[0,0,:,:]
-
-    quantiles = [0.90, 0.95, 0.99, 1.0]
-    values = np.quantile(data, quantiles)
-    np.savetxt(
-        "${csv}", np.array([quantiles, values]).T,
-        delimiter=',', fmt='%.6e', header='quantile,value'
-    )
-
-    # TODO: histogram?
-    # import matplotlib.pyplot as plt
-    # plt.style.use([astropy_mpl_style, 'dark_background'])
-    """
+    template "img_meta.py"
 }
 
 // power spectrum metrics via chips
