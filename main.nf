@@ -352,7 +352,7 @@ process autoplot {
     output:
     tuple val(obsid), val(meta), path(autoplot)
 
-    storeDir "${params.outdir}/${obsid}/vis_qa"
+    storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${obsid}${suffix}"
 
@@ -2640,13 +2640,17 @@ workflow prep {
             channel.empty() | flagQA
         } else {
             obsMetafits.join(asvoPrep.out) | flagQA
-            obsMetafits.join(asvoPrep.out).join(obsMeta).flatMap { obsid, metafits, uvfits, meta ->
-                    def rxTiles = meta.tile_rxs
-                        .withIndex()
-                        .collect { rx, tile -> [rx as Integer, tile] }
+        }
+        if (params.noautoplot) {
+            channel.empty() | autoplot
+        } else {
+            obsMetafits.join(asvoPrep.out).join(flagQA.out).flatMap { obsid, metafits, uvfits, flagJson ->
+                    def flagStats = parseJson(flagJson)
+                    def rxTiles = (flagStats.INPUTS?:[])
+                        .findAll { it['Pol'] == "X" }
+                        .collect { [it['Rx'], it['Antenna']] }
                         .groupBy { rx, tile -> rx }
                         .collect { rx, rx_tiles -> [rx, rx_tiles.collect { it[1] }] };
-                    println("rxTiles: ${rxTiles}");
                     rxTiles.collect { rx, tiles ->
                         def suffix = sprintf("_rx%02d", rx);
                         def plotMeta = [
