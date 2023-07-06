@@ -2745,6 +2745,24 @@ workflow prep {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
+        // analyse ssins occupancy
+        def ssinsOcc = ssins.out.map { obsid, _, __, occ_json ->
+                [obsid, parseJson(occ_json)]
+            }
+        ssinsOcc.map { obsid, occ ->
+                [
+                    obsid,
+                    occ['streak']?:'',
+                    occ['total']?:'',
+                ].join("\t")
+            }
+            .collectFile(
+                name: "ssins_occupancy.tsv", newLine: true, sort: true,
+                seed: ["OBS", "STREAK", "TOTAL"].join("\t"),
+                storeDir: "${results_dir}"
+            )
+            | view { [it, it.readLines().size()] }
+
     emit:
         // channel of obsids which pass the flag gate: tuple(obsid, metafits, uvfits)
         obsMetaVis = (params.noprepqa ? \
