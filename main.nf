@@ -1169,10 +1169,11 @@ process wscleanDirty {
 
     storeDir "${params.outdir}/${obsid}/img${params.img_suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${meta.name}"
+    tag "${obsid}${meta.inter_tok?:''}.${meta.name}"
     label "wsclean"
     label "cpu_half"
     label "mem_half"
+    label "nvme"
 
     time { 1.8.minute * (1 + (multiplier * pix_mult * chan_mult * inter_mult)) }
 
@@ -1216,7 +1217,8 @@ process wscleanDirty {
             // convert any uvfits to ms
             [vis, vis_ms].transpose().collect { uv, ms ->
                 (uv.extension == 'uvfits' ? \
-                """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
+                """${params.casa} -c "importuvfits('${uv}', '${ms}')" ;
+                rm -rf ${uv} ; """ : "")
             }.join("\n")
         ) + """
         """ + (
@@ -1248,28 +1250,34 @@ process wscleanDConv {
 
     storeDir "${params.outdir}/${obsid}/img${img_params.suffix}${params.cal_suffix}"
 
-    tag "${obsid}.${meta.name}"
+    tag "${obsid}${meta.inter_tok?:''}.${meta.name}"
     label "wsclean"
-    label "cpu_half"
-    label "mem_half"
+    label "cpu_full"
+    label "mem_full"
+    label "nvme"
 
-    time { 5.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
+    time { 15.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
 
     script:
-    multiplier = vis.collect().size()
+    multiplier = Math.sqrt(vis.collect().size())
+    img_name = img_params.name?:''
+    if (img_name == '') {
     img_name = "${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}${meta.inter_tok?:''}"
+    }
 
     // multipliers for determining compute resources
-    pix_mult = 1 + (img_params.size / 1024) ** 2
+    pix_mult = 1 + (img_params.size / 1024)
     chan_mult = 1 + ("${img_params.channels_out}".split(' ')[0] as int) / 25
     if (meta.interval) {
         inter_mult = meta.interval[1] - meta.interval[0]
     } else {
         inter_mult = 1 + ("${img_params.intervals_out}".split(' ')[0] as int) / 3
     }
-    iter_mult = 1 + Math.sqrt(img_params.niter as Double) / 100
+    iter_mult = 1 + Math.sqrt(img_params.niter as Double) / 1000
     vis_ms = vis.collect {"${it.baseName}.ms"}
     vis = vis.collect()
+    img_glob = img_params.glob?:''
+    if (img_glob == '') {
     img_glob = "wsclean_${img_name}"
     if (multiinterval && !meta.inter_tok) {
         img_glob += "-t????"
@@ -1277,7 +1285,11 @@ process wscleanDConv {
     if (multichannel) {
         img_glob += "-MFS"
     }
-    img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}-image.fits"
+        if (img_params.pol) {
+            img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}"
+        }
+        img_glob += "-image.fits"
+    }
     img_args = img_params.args
     if (img_params.weight) {
         img_args += " -weight ${img_params.weight}"
@@ -1749,22 +1761,27 @@ process thumbnail {
     time {10.min * task.attempt}
 
     script:
-    title = "${obsid} ${meta.name} ${meta.suffix}"
     thumb = "${obsid}_${meta.name}_${meta.suffix}.png"
     args = [
         fits: img,
-        title: title,
-        output_name: thumb,
-    ]
+        title: meta.title?:"${obsid} ${meta.name} ${meta.suffix}",
+        thumb: thumb,
+    ] + meta
     // argstr = "${params.thumbnail_args}"
-    argstr = (args + meta).findAll { k, v ->
+    argtokens = args.findAll { k, v ->
             v != null && [
-                'fits', 'output_name', 'title', 'dpi', 'limit', 'vmin_quantile',
-        .collect { k, v -> ["--${k}"] + coerceList(v) }
+                'fits', 'thumb', 'title', 'dpi', 'limit', 'vmin', 'vmax', 'vmin_quantile',
+                'vmax_quantile', 'cmap', 'norm_args'
             ].contains(k)
         }
-        .collect { k, v -> ["--${k}"] + (v instanceof List ? v : [v]) }
+        .collect { k, v -> ["--${k}"] + coerceList(v) }
         .flatten()
+    argtokens += args.findAll { k, v ->
+            v && ['transparent', 'symmetric'].contains(k)
+        }
+        .collect { k, _ -> "--${k}" }
+
+    argstr = argtokens
         .collect { token -> "\"${token}\"" }
         .join(' ')
 
@@ -2060,6 +2077,21 @@ def parseFloatOrNaN(s) {
 
 SimpleDateFormat logDateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
+def isNaN(n) {
+    if (n==null) {
+        return true
+    }
+    def cls = null
+    try {
+        cls = n.getClass();
+        return n.isNaN()
+    } catch (groovy.lang.MissingMethodException e) {
+        print("WARN isNaN(${n})<${cls}>: ${e}")
+        org.codehaus.groovy.runtime.StackTraceUtils.sanitize(e).printStackTrace()
+        return true
+    }
+}
+
 // display a long list of ints, replace bursts of consecutive numbers with ranges
 def displayRange(Integer s, Integer e) {
     return s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e},"
@@ -2238,7 +2270,7 @@ def decomposeImg = { img ->
     // defaults:
     def meta = [chan: -1, inter: -1, chan_tok: "MFS"]
     // this handles the case where product is "uv-{real,imag}"
-    if (tokens[-2] == "uv") {
+    if (tokens.size > 1 && tokens[-2] == "uv") {
         tokens = tokens[0..-3] + ["uv-${tokens[-1]}"]
     }
     meta.prod = tokens.removeLast()
@@ -3271,6 +3303,28 @@ workflow uvfits {
         obsMetaUVPass = obsMetaUVPass_
 }
 
+def wscleanParams = [
+    suffix: params.img_suffix,
+    weight: params.img_weight,
+    size: params.img_size,
+    scale: params.img_scale,
+    channels_out: params.img_channels_out,
+    intervals_out: params.img_intervals_out,
+    split_intervals: params.img_split_intervals,
+    pol: params.img_pol,
+    args: params.wsclean_args,
+]
+def wscleanDConvParams = deepcopy(wscleanParams) + [
+    args: "${params.wsclean_args} ${params.wsclean_dconv_args}",
+    // args: params.wsclean_dconv_args
+    niter: params.img_niter,
+    minor_clean_gain: params.img_minor_clean_gain,
+    major_clean_gain: params.img_major_clean_gain,
+    auto_threshold: params.img_auto_threshold,
+    auto_mask: params.img_auto_mask,
+    mwa_path: params.img_mwa_path,
+]
+
 // image measurement sets and QA images
 workflow img {
     take:
@@ -3278,26 +3332,6 @@ workflow img {
     main:
 
         // wsclean: make deconvolved images
-        wscleanParams = [
-            suffix: params.img_suffix,
-            weight: params.img_weight,
-            size: params.img_size,
-            scale: params.img_scale,
-            channels_out: params.img_channels_out,
-            intervals_out: params.img_intervals_out,
-            split_intervals: params.img_split_intervals,
-            pol: params.img_pol,
-            args: params.wsclean_args,
-        ]
-        wscleanDConvParams = deepcopy(wscleanParams) + [
-            args: params.wsclean_dconv_args,
-            niter: params.img_niter,
-            minor_clean_gain: params.img_minor_clean_gain,
-            major_clean_gain: params.img_major_clean_gain,
-            auto_threshold: params.img_auto_threshold,
-            auto_mask: params.img_auto_mask,
-            mwa_path: params.img_mwa_path,
-        ]
         if (params.img_split_intervals) {
             // add -t???? suffix to name, to split wsclean over multiple jobs
             splitObsMetaVis = obsMetaVis.flatMap { obsid, meta, vis ->
@@ -3306,94 +3340,197 @@ workflow img {
                     newMeta.interval = [i, i+1]
                     // interval token
                     newMeta.inter_tok = sprintf("-t%04d", i)
-                    [obsid, newMeta, vis, deepcopy(wscleanParams)]
+                    [obsid, newMeta, vis]
                 }
             }
         } else {
-            splitObsMetaVis = obsMetaVis.map { obsid, meta, vis ->
-                [obsid, meta, vis, deepcopy(wscleanParams)]
-            }
+            splitObsMetaVis = obsMetaVis
         }
 
         if (params.nodeconv) {
-            channel.from([]) | wscleanDConv
-            splitObsMetaVis | wscleanDirty
+            splitObsMetaVis.map {obsid, meta, vis ->
+                    def imgParams = deepcopy(wscleanParams)
+                    imgParams.img_name = "${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}${meta.inter_tok?:''}"
+                    [obsid, meta, vis, imgParams]
+                }
+                | wscleanDirty
+            channel.empty() | wscleanDConv
         } else {
-            channel.from([]) | wscleanDirty
-            splitObsMetaVis.map { obsid, meta, vis, imgParams ->
-                    [obsid, meta, vis, deepcopy(wscleanDConvParams) + imgParams, []]
+            channel.empty() | wscleanDirty
+            // splitObsMetaVis.cross(wscleanDirty.out) {
+            //         def (obsid, meta) = it;
+            //         [obsid, meta.subobs, meta.name, meta.inter_tok]
+            //     }
+            //     .map { splitObsMetaVis_, wscleanDirty_ ->
+            //         def (obsid, _, vis, imgParams) = splitObsMetaVis_
+            //         def (__, meta, imgs) = wscleanDirty_
+            //         def dirtyImgs = imgs.findAll {img -> img.baseName.split('-')[-1] == 'dirty'}
+            //         def newImgParams = deepcopy(imgParams + wscleanDConvParams)
+            //         [obsid, meta, vis, newImgParams, dirtyImgs]
+            //     }
+
+            splitObsMetaVis.map { obsid, meta, vis ->
+                    def imgParams = deepcopy(wscleanDConvParams)
+                    imgParams.img_name = "${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}${meta.inter_tok?:''}"
+                    [obsid, meta, vis, imgParams, []]
+                }
+                .flatMap {obsid, meta, vis, imgParams_, dirtyImgs ->
+                    [
+                        ["-{XX,YY}", "xx,yy -join-polarizations"],
+                        ["-{I,V}", "i,v -join-polarizations"],
+                        // ["-{XX,YY,XY,XYi}", "xx,xy,yx,yy -link-polarizations xx,yy"],
+                        // ["-{Q,U}", "q,u -join-polarizations -squared-channel-joining"],
+                    ].collect { polGlob, polArg ->
+                        def imgParams = deepcopy(imgParams_)
+                        imgParams.pol = polArg
+                        imgParams.glob = "wsclean_${imgParams.img_name}"
+                        if (multiinterval && !meta.inter_tok) {
+                            imgParams.glob += "-t????"
+                        }
+                        if (multichannel) {
+                            imgParams.glob += "-MFS"
+                        }
+                        imgParams.glob += polGlob
+                        imgParams.glob += "-image.fits"
+                        [obsid, meta, vis, imgParams, dirtyImgs]
+                    }
                 }
                 | wscleanDConv
         }
 
-        obsMetaImg = wscleanDConv.out.mix(wscleanDirty.out)
+        obsMetaImg = wscleanDirty.out.mix(wscleanDConv.out)
             .flatMap { obsid, meta, imgs ->
                 coerceList(imgs).collect { img ->
                     [obsid, deepcopy(meta) + decomposeImg(img), img] }}
-        // obsMetaImg but:
-        // - only MFS images unless thumbnail_all_chans
-        // - exclude dirty if deconv is enabled
-        obsMetaImgMfs = obsMetaImg.filter { _, meta, img ->
-                meta.prod !=~ /uv-.*/ \
-                && (meta.chan?:-1 == -1 || params.thumbnail_all_chans) \
-                && (meta.prod == (params.nodeconv ? "dirty" : "image"))
+            .branch { obsid, meta, img ->
+                // target product is image unless deconv is disabled, separate MFS
+                imgMfs: meta.prod == (params.nodeconv ? "dirty" : "image") && meta.chan == -1
+                imgNoMfs: meta.prod == (params.nodeconv ? "dirty" : "image")
+                // target product is uv grids
+                gridMfs: meta.prod ==~ /uv-.*/ && meta.chan == -1
+                gridNoMfs: meta.prod ==~ /uv-.*/
+                // other potential products: psf, residual, model
             }
-        // obsMetaImg but only gridded uv images
-        if (params.thumbnail_uvs) {
-            obsMetaGrid = obsMetaImg.filter { _, meta, img -> meta.prod ==~ /uv-.*/ }
-        } else {
-            obsMetaGrid = channel.from([])
-        }
 
-        // do a polcomp for each allowed prod
-        if (params.nopolcomp) {
-            channel.from([]) | polComp
-        } else {
+        if (!params.nopolcomp || params.thumbnail_limits) {
             // calculate quantiles (what values are at nth percentile)
-            obsMetaImgMfs \
+            obsMetaImg.imgMfs \
                 // .mix(obsMetaGrid) \
                 | imgQuantiles
 
             // limits are used to set the color scale of each type of image.
             imgLimits = imgQuantiles.out
                 .map { obsid, meta, hist ->
-                    limit = parseCsv(hist, true, 2)
-                        // get 90th percentile
-                        .find { row -> Float.compare(row.quantile as float, 0.90) == 0 }
-                    [obsid, meta.name, meta.inter_suffix, limit.value as float]
+                    high = parseCsv(hist, true, 2)
+                        .find { row -> Float.compare(parseFloatOrNaN(row.quantile), params.thumbnail_quantile as Float) == 0 }
+                    high = parseFloatOrNaN(high.value)
+                    low = parseCsv(hist, true, 2)
+                        .find { row -> Float.compare(parseFloatOrNaN(row.quantile), (1-params.thumbnail_quantile) as Float) == 0 }
+                    low = parseFloatOrNaN(low.value)
+                    // subobs = meta.subobs?:''
+                    [obsid, meta.inter_tok, meta.name, meta.inter_suffix, high, low]
                 }
+                .filter { _obsid, _interval, _name, _suff, high, low -> !(isNaN(high) || isNaN(low)) }
+                // get max limit for each obs, interval, name, suffix (deals with multiple channels)
+                .groupTuple(by: 0..3)
+                .map { obsid, interval, name, suff, highs, lows ->
+                    high = coerceList(highs).max()
+                    low = coerceList(lows).max()
+                    [obsid, interval, name, suff, high, low]
+                }
+                // for each obs, interval, name, produce a mapping from suff to limit
                 .groupTuple(by: 0..2)
-                .map { obsid, name, suff, limits ->
-                    [obsid, name, suff, limits.max()]
+                .map { obsid, interval, name, suffs, highs, lows ->
+                    _suffLimits = [
+                            coerceList(suffs),
+                            coerceList(highs),
+                            coerceList(lows),
+                        ]
+                        .transpose()
+                        .collect { suff, high, low -> [suff, [high, low]]}
+                        .collectEntries()
+                    [obsid, interval, name, _suffLimits]
                 }
-                .groupTuple(by: 0..1)
-                .map { obsid, name, suffs, limits ->
-                    suffLimits = [suffs, limits].transpose().collectEntries()
-                    [obsid, name, suffLimits]
-                }
+                // .view { "imgLimits ${it}" }
 
-            allSuffs = imgLimits.flatMap { obsid, name, limits -> limits.keySet()}
+            obsMetaImgMfsPass = obsMetaImg.imgMfs.map { obsid, meta, img ->
+                    [obsid, meta.inter_tok, meta.name, meta.inter_suffix, meta, img]
+                }
+                .cross(imgLimits.flatMap { obsid, interval, name, _suffLimits ->
+                    _suffLimits.collect { k, _ -> [ obsid, interval, name, k ]}}
+                ) { it[0..3] }
+                .map { obsMetaImgMfs_, imgLimits_ ->
+                    def (obsid, _, __, ___, meta, img) = obsMetaImgMfs_
+                    [obsid, meta, img]
+                }
+                // .view { "obsMetaImgMfs ${it}" }
+
+            // channel of all suffixes in
+            suffs_ = obsMetaImg.imgMfs
+                .map { obsid, meta, img -> meta.inter_suffix }
                 .unique()
-                .collect(sort: true)
-                .toList()
+                .toSortedList()
+                .map{it -> [it]}
 
             // write img limits to file
-            allSuffs.subscribe { suffs ->
-                imgLimits.map { obsid, name, limits ->
-                        ([obsid, name] + suffs.collect { limits[it]?:'' }).join("\t")}
+            imgLimits.combine(suffs_)
+                .map { obsid, interval, name, limits, suffs ->
+                        ([obsid, interval, name] + suffs.collect { suff ->
+                                hilo = ['', '']
+                                if (limits[suff]) {
+                                    hilo = limits[suff]
+                                }
+                                [suff] + hilo
+                            }
+                            .flatten()
+                        ).join("\t")
+                }
                 .collectFile(
                     name: "img_limits.tsv", newLine: true, sort: true,
-                    seed: (["OBSID", "IMG NAME"] + suffs).join("\t"),
+                    seed: (["OBSID", "interval", "IMG NAME", "suff", "hi", "lo"]).join("\t"),
                     storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
                 )
-            }
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
 
-            // value channel containing a map from img suffix to max limit
-            suffLimits = imgLimits.map{ _, __, limits -> limits }
-                .reduce([:]) { acc, limits ->
-                    limits.collectEntries { k, v -> [k, [v, acc[k]?:v].max()] }
+            // value channel containing a map from img suffix to max limit excluding outliers
+            // suffLimits = channel.from([:])
+            suffLimits = imgLimits.combine(suffs_)
+                .flatMap{ obsid, interval, name, limits, suffs ->
+                    suffs.collect { suff ->
+                        hilo = [Float.NaN, Float.NaN]
+                        if (limits[suff]) {
+                            hilo = limits[suff]
+                        }
+                        [new Tuple(name, suff)] + hilo
+                    }
                 }
-                .collect()
+                .groupTuple(by: 0)
+                .map { group, highs_, lows_ ->
+                    highs = coerceList(highs_)
+                        .findAll { !isNaN(it) }
+                        .sort(false)
+                    high_index = ((highs.size() - 1) * params.thumbnail_quantile).round() as Integer
+
+                    lows = coerceList(lows_)
+                        .findAll { !isNaN(it) }
+                        .sort(false)
+                    low_index = (lows.size() * (1-params.thumbnail_quantile)).round() as Integer
+                    [group, [highs[high_index], lows[low_index]]]
+                }
+                .toList()
+                .map { it.collectEntries() }
+        } else {
+            suffLimits = channel.from([:])
+            obsMetaImgMfsPass = obsMetaImg.imgMfs
+        }
+
+        suffLimits.view { "suffLimits \n${it.collect().join('\n')}"}
+
+        // do a polcomp for each allowed prod
+        if (params.nopolcomp) {
+            channel.empty() | polComp
+        } else {
 
             // all valid pol orders for polComp
             polOrders = [
@@ -3402,34 +3539,108 @@ workflow img {
                 // ["XX", "XY", "YY"]
             ]
 
-            obsMetaImgMfs
-                .map { obsid, meta, img -> [obsid, meta.name, meta.prod, meta, img] }
-                .groupTuple(by: 0..2)
+            obsMetaImgMfsPass
+                // look up the sufflimit for each suffix
                 .combine(suffLimits)
-                .flatMap { obsid, name, prod, metas, imgs, limits ->
-                    polLimits = metas.collect { meta -> [meta.pol, limits[meta.inter_suffix]] }
-                        .findAll { pol, limit -> limit != null }
+                .map { obsid, meta, img, _suffLimits ->
+                    def name_suff = new Tuple(meta.name, meta.inter_suffix)
+                    def hilo = [Float.NaN, Float.NaN]
+                    if (_suffLimits && _suffLimits[name_suff]) {
+                        hilo = _suffLimits[name_suff]
+                    }
+                    [obsid, meta, img] + hilo
+                }
+                // filter out NaN limits
+                .filter { obsid, meta, img, high, low ->
+                    !(isNaN(high) || isNaN(low))
+                }
+                // group (pol, img, limit) by (obs, interval, name, prod).
+                .map { obsid, meta, img, high, low ->
+                    [obsid, meta.inter_tok, meta.name, meta.prod, meta.pol, img, high, low]
+                }
+                .groupTuple(by: 0..3)
+                // make a hashmap of pol -> (img, limit) for each (obs, interval, name, prod)
+                .map { obsid, interval, name, prod, pols, imgs, highs, lows ->
+                    polImgLimits = [
+                        coerceList(pols),
+                        coerceList(imgs),
+                        coerceList(highs),
+                        coerceList(lows),
+                    ].transpose()
+                        .collect { pol, img, high, low -> [pol, [img, high, low]] }
                         .collectEntries()
-                    polOrders.findAll { order -> polLimits.keySet().containsAll(order) }
+                    [obsid, interval, name, prod, polImgLimits]
+                }
+                // for every pol order where every pol is present, do a polComp
+                .flatMap { obsid, interval, name, prod, polImgLimits ->
+                    polOrders.findAll { order -> polImgLimits.keySet().containsAll(order) }
                         .collect { order ->
-                            limits = order.collect { pol -> polLimits[pol] }
-                            meta_imgs = [metas, imgs].transpose()
-                            imgs_ordered = order.collect {
-                                pol -> meta_imgs.find { meta, img -> meta.pol == pol }[1]
-                            }
-                            [obsid, [name:name, prod:prod, order:order, limits:limits], imgs_ordered]
+                            def (imgs, highs, _)  = order.collect { pol -> polImgLimits[pol] }.transpose()
+                            polcompMeta = [
+                                name:name,
+                                prod:prod,
+                                order:order,
+                                limits:highs,
+                                subobs:interval,
+                            ]
+                            [obsid, polcompMeta, imgs]
                         }
                 }
                 | polComp
         }
 
         // make thumbnails
-        obsMetaImgMfs \
-            .mix(obsMetaGrid) \
-            | thumbnail
+        if (params.nothumbnail) {
+            channel.empty() | thumbnail
+        } else {
+            obsMetaImgMfsPass
+                .mix(params.thumbnail_uvs ? obsMetaGrid : channel.empty())
+                // look up the sufflimit for each suffix
+                .combine(params.thumbnail_limits ? suffLimits : channel.from([:]))
+                // .view { "thumbnail limit ${it}"}
+                .map { obsid, meta, img, _suffLimits ->
+                    def name_suff = new Tuple(meta.name, meta.inter_suffix)
+                    def hilo = [Float.NaN, Float.NaN]
+                    if (_suffLimits && _suffLimits[name_suff]) {
+                        hilo = _suffLimits[name_suff]
+                    }
+                    [obsid, meta, img] + hilo
+                }
+                // filter out NaN limits
+                // .filter { obsid, meta, img, high, low -> !isNaN(limit) }
+                .map { obsid, meta, img, high, low  ->
+                    def newMeta = [:]
+                    if (!isNaN(high)) {
+                        newMeta.vmax = high
+                    } else {
+                        newMeta.vmax_quantile = params.thumbnail_quantile
+                    }
+                    if (!isNaN(low)) {
+                        newMeta.vmin = low
+                    } else {
+                        newMeta.vmin_quantile = (1-params.thumbnail_quantile)
+                    }
+                    if (['Q', 'V', 'U', 'XY', 'YX'].contains(meta.pol)) {
+                        newMeta.symmetric = true
+                        newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"asinh\\\\",\\\\"asinh_a\\\\":0.8}'
+                    } else {
+                        if (newMeta.vmin as Float < 0 && newMeta.vmax as Float > 0) {
+                            ratio = (-newMeta.vmin) / (newMeta.vmax - newMeta.vmin)
+                        } else {
+                            ratio = 0.1
+                        }
+                        // newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"asinh\\\\",\\\\"asinh_a\\\\":'+ "${ratio}" + '}'
+                        newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"power\\\\",\\\\"power\\\\":2,\\\\"clip\\\\":true}'
+                    }
+                    [obsid, deepcopy(meta) + newMeta, img]
+                }
+                .view { "thumbnail ${it}" }
+                | thumbnail
+        }
 
         // montage of polarizations
-        thumbnail.out.flatMap { obs, meta, png ->
+        if (!params.nomontage) {
+            thumbnail.out.flatMap { obs, meta, png ->
                 // visibility name, without sub*
                 def newMeta = deepcopy(meta) + [vis_name: meta.name, sub: meta.sub?:'nosub']
                 if (m = newMeta.vis_name =~ /(sub|ionosub)_(.*)/) {
@@ -3457,26 +3668,27 @@ workflow img {
             }
             .groupTuple(by: 0..2)
             .map { obs, subobs, name, pngs ->
-                [obs, [subobs:subobs, name:name], pngs.sort()]
+                [obs, [subobs:subobs, name:name], pngs.sort(false)]
             }
             // .view {"polmontage ${it}"}
             | polMontage
-        // thumbnail.out.map { obs, meta, thumb -> [obs, meta.name, meta, thumb]}
-        //     .groupTuple(by: [0, 1])
-        //     .map { obs, name, _, thumbs ->
-        //         [obs, name, thumbs.sort()]
-        //     }
+        } else {
+            channel.empty() | polMontage
+        }
+
 
         // each vis name can have multiple images in obsMetaImgMfs
         // group by obsid, vis name using original meta from obsMetaVis
-        obsMetaImgGroup = obsMetaVis.cross(obsMetaImgMfs) { def (obsid, meta) = it; [obsid, meta.name] }
+        obsMetaImgGroup = obsMetaVis.cross(obsMetaImgMfsPass) { def (obsid, meta) = it; [obsid, meta.name] }
             .map { obsMetaVis_, obsMetaImgMfs_ ->
                 def (obsid, meta) = obsMetaVis_
                 def (_, imgMeta, img) = obsMetaImgMfs_
                 [obsid, meta.name, meta, imgMeta, img]
             }
+            .filter { obsid, name, meta, imgMeta, img -> ['XX', 'YY', 'V'].contains(imgMeta.pol)}
             .groupTuple(by: 0..1)
             .map { obsid, _, metas, imgMetas, imgs -> [obsid, metas[0], imgMetas, imgs] }
+            // | view { def (obsid, meta) = it; "obsMetaImgGroup ${obsid}, ${meta.name}"}
 
         // imgQA for MFS images and groups of images
         //  - imgs need to be deconvolved for QA
@@ -3550,7 +3762,7 @@ workflow img {
                         v_pks_int: v_pks.INT_FLUX,
                         v_rms_box: v.RMS_BOX,
                     ]
-                .map { obsid, metas -> [obsid, coerceList(metas)] }
+                    [obsid, deepcopy(meta) + newMeta]
                 }
                 .groupTuple(by: 0)
                 .map { obsid, metas -> [obsid, coerceList(metas)] }
@@ -3578,7 +3790,7 @@ workflow img {
                     seed: [
                         "OBSID", "NAME", "XX PKS INT", "YY PKS INT", "V PKS INT", "V RMS BOX", "REASON"
                     ].join("\t"),
-                    storeDir: "${results_dir}${params.cal_suffix}"
+                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -3597,7 +3809,7 @@ workflow img {
 
     emit:
         // channel of files to archive, and their buckets
-        archive = obsMetaImgMfs.filter { obsid, _, __ -> (!obsid.startsWith("e")) }
+        archive = obsMetaImgMfsPass.filter { obsid, _, __ -> !obsid.startsWith("e") }
             .transpose()
             .map { _, __, img -> ["img", img]}
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
