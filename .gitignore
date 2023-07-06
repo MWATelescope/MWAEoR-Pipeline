@@ -92,3 +92,7 @@ test/.casa/ipython/history.sqlite
 test/.casa/ipython/profile_default/startup/README
 test/.matplotlib/fontList.cache
 test/logs/test.o46858382
+.astropy
+.cache
+.ipython
+.local
