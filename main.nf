@@ -240,9 +240,10 @@ process asvoPrep {
     ${params.giant_squid} list -j --types conversion --states ready -- ${obsid} \
         | tee /dev/stderr \
         | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
+        | sort -r \
         | tee ready.tsv
 
-    # download the first ready jobs
+    # download the most recent ready job
     if read -r jobid url size hash < ready.tsv; then
         if read -r avail < <(df --output=avail -B1 . | tail -n 1); then
             if [[ \$avail -lt \$size ]]; then
