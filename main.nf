@@ -956,7 +956,7 @@ process prepVisQA {
     script:
     // metrics = "birli_${obsid}_prepvis_metrics.json"
     basenames = coerceList(uvfits).collect { f -> f.baseName }
-    metrics = basenames.size > 1 ? "{${basenames.join(','')}}_prepvis_metrics.json" : "${basenames[0]}_prepvis_metrics.json"
+    metrics = basenames.size > 1 ? "{${basenames.join(',')}}_prepvis_metrics.json" : "${basenames[0]}_prepvis_metrics.json"
     """
     #!/bin/bash -eux
     for f in ${uvfits}; do
