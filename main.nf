@@ -30,8 +30,6 @@ process wsMeta {
     output:
     tuple val(obsid), path(wsmeta), path(wsfiles)
 
-    label "rate_limit"
-
     // persist results in outdir, process will be skipped if files already present.
     storeDir "${params.outdir}/meta"
     // tag to identify job in squeue and nf logs
@@ -63,11 +61,6 @@ process tapMeta {
 
     script:
     tapmeta = "${obsid}_tapmeta.json"
-    obs_fields = [
-        'starttime_mjd',
-        'starttime_utc',
-        'mwa_array_configuration'
-    ]
     template "tapmeta.py"
 }
 
