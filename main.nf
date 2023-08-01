@@ -2401,10 +2401,10 @@ workflow ws {
                 if (params.filter_quality != null && dataquality > params.filter_quality) {
                     fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
                 }
-                if (params.filter_bad_tile_frac && bad_tile_frac > params.filter_bad_tile_frac) {
+                if (params.filter_bad_tile_frac != null && bad_tile_frac > params.filter_bad_tile_frac) {
                     fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
                 }
-                if (params.filter_dead_dipole_frac && dead_dipole_frac > params.filter_dead_dipole_frac) {
+                if (params.filter_dead_dipole_frac != null && dead_dipole_frac > params.filter_dead_dipole_frac) {
                     fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
                 }
                 if (params.filter_eorfield != null && eorfield != params.filter_eorfield) {
@@ -2413,7 +2413,7 @@ workflow ws {
                 if (params.filter_eorband != null && eorband != params.filter_eorband) {
                     fail_reasons += ["center_chan=${center_chan}"]
                 }
-                if (params.filter_ionoqa && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
+                if (params.filter_ionoqa != null && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
                     fail_reasons += ["iono_qa>${params.filter_ionoqa}"]
                 }
                 // if (ra_phase_center != 0.0) {
