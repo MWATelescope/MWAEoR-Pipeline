@@ -2318,20 +2318,20 @@ workflow ws {
                 [obsid, [dataquality: quality, dataqualitycomment: comment]]
             }
 
-        wsSummary = wsMeta.out.join(tapMeta.out).map { obsid, json, filesJson, tapJson ->
-                // parse json
-                def stats = parseJson(json)
+        wsSummary = wsMeta.out.join(tapMeta.out).map { obsid, wsJson, filesJson, tapJson ->
+                // parse wsJson
+                def wsStats = parseJson(wsJson)
 
-                def obs_name = stats.obsname;
-                def groupid = stats.groupid;
+                def obs_name = wsStats.obsname;
+                def groupid = wsStats.groupid;
 
-                def ra_phase_center = stats.ra_phase_center;
+                def ra_phase_center = wsStats.ra_phase_center;
                 if (ra_phase_center == null) {
-                    ra_phase_center = stats.metadata.ra_pointing
+                    ra_phase_center = wsStats.metadata.ra_pointing
                 }
-                def dec_phase_center = stats.dec_phase_center;
+                def dec_phase_center = wsStats.dec_phase_center;
                 if (dec_phase_center == null) {
-                    dec_phase_center = stats.metadata.dec_pointing
+                    dec_phase_center = wsStats.metadata.dec_pointing
                 }
 
                 def eorfield = null;
@@ -2344,7 +2344,7 @@ workflow ws {
                     }
                 }
 
-                def coarse_chans = ((stats.rfstreams?:[:])["0"]?:[:]).frequencies?:[]
+                def coarse_chans = ((wsStats.rfstreams?:[:])["0"]?:[:]).frequencies?:[]
                 def center_chan = coarse_chans[coarse_chans.size()/2]
                 def eorband = null;
                 if (center_chan == 143) {
@@ -2353,11 +2353,11 @@ workflow ws {
                     eorband = 0
                 }
 
-                def pointing = stats.metadata.gridpoint_number
-                def nscans = ((stats.stoptime?:0) - (stats.starttime?:0)) / (stats.int_time?:1)
-                def delays = (stats.alldelays?:[:]).values().flatten()
-                def quality = stats.quality?:[:]
-                def tiles = stats.tdict?:[:]
+                def pointing = wsStats.metadata.gridpoint_number
+                def nscans = ((wsStats.stoptime?:0) - (wsStats.starttime?:0)) / (wsStats.int_time?:1)
+                def delays = (wsStats.alldelays?:[:]).values().flatten()
+                def quality = wsStats.quality?:[:]
+                def tiles = wsStats.tdict?:[:]
                 def tile_nums = tiles.collect { k, _ -> k as int }
                 def tile_names = tiles.collect { _, v -> v[0] }
                 def tile_rxs = tiles.collect { _, v -> v[1] }
@@ -2374,15 +2374,15 @@ workflow ws {
                 }
                 config += "-${n_tiles}T"
 
-                def bad_tiles = stats.bad_tiles?:[:]
+                def bad_tiles = wsStats.bad_tiles?:[:]
                 def n_bad_tiles = bad_tiles.size()
                 def bad_tile_frac = n_bad_tiles / n_tiles
                 def n_dead_dipoles = delays.count { it == 32 }
                 def dead_dipole_frac = n_dead_dipoles / delays.size()
                 def quality_update = quality_updates[obsid]?:[:]
-                def dataquality = Float.valueOf(quality_update.dataquality?:stats.dataquality?:0)
-                def dataqualitycomment = quality_update.dataqualitycomment?:stats.dataqualitycomment?:''
-                def faults = stats.faults?:[:]
+                def dataquality = Float.valueOf(quality_update.dataquality?:wsStats.dataquality?:0)
+                def dataqualitycomment = quality_update.dataqualitycomment?:wsStats.dataqualitycomment?:''
+                def faults = wsStats.faults?:[:]
                 def badstates = (faults.badstates?:[:]).values().flatten()
                 def badpointings = (faults.badpointings?:[:]).values().flatten()
                 def badfreqs = (faults.badfreqs?:[:]).values().flatten()
@@ -2391,11 +2391,15 @@ workflow ws {
                 def fail_reasons = []
 
                 def fileStats = parseJson(filesJson)
+                def tapStats = parseJson(tapJson)
+                sun_elevation = Float.valueOf(tapStats.sun_elevation?:'NaN')
+
                 if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
                     fail_reasons += ["pointing=${pointing}"]
                 }
+
                 // TODO: filter_sweets
-                // if (params.filter_sweets && !params.filter_sweets.contains()) {
+                // if (params.filter_sweets != null && !params.filter_sweets.contains()) {
                 //     fail_reasons += ["pointing=${pointing}"]
                 // }
                 if (params.filter_quality != null && dataquality > params.filter_quality) {
@@ -2416,43 +2420,39 @@ workflow ws {
                 if (params.filter_ionoqa != null && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
                     fail_reasons += ["iono_qa>${params.filter_ionoqa}"]
                 }
-                // if (ra_phase_center != 0.0) {
-                //     fail_reasons += ["ra_phase_center=${ra_phase_center}"]
-                // }
-                // if (dec_phase_center != -27.0) {
-                //     fail_reasons += ["dec_phase_center=${dec_phase_center}"]
-                // }
-
-                def tapStats = parseJson(tapJson)
+                if (params.filter_sun_elevation != null && sun_elevation != null && sun_elevation > params.filter_sun_elevation) {
+                    fail_reasons += ["sun_elevation>${params.filter_sun_elevation}"]
+                }
 
                 def summary = [
                     fail_reasons: fail_reasons,
                     // obs metadata
                     obs_name: obs_name,
                     groupid: groupid,
-                    corrmode: stats.mode,
-                    delaymode: stats.delaymode_name,
+                    corrmode: wsStats.mode,
+                    delaymode: wsStats.delaymode_name,
                     starttime_mjd: tapStats.starttime_mjd,
                     starttime_utc: tapStats.starttime_utc,
+                    sun_elevation: sun_elevation,
 
                     // pointing
-                    ra_pointing: stats.metadata.ra_pointing,
-                    dec_pointing: stats.metadata.dec_pointing,
-                    az_pointing: stats.metadata.azimuth_pointing,
-                    el_pointing: stats.metadata.elevation_pointing,
+                    ra_pointing: wsStats.metadata.ra_pointing,
+                    dec_pointing: wsStats.metadata.dec_pointing,
+                    az_pointing: wsStats.metadata.azimuth_pointing,
+                    el_pointing: wsStats.metadata.elevation_pointing,
                     ra_phase_center: ra_phase_center,
                     dec_phase_center: dec_phase_center,
                     pointing: pointing,
-                    lst: stats.metadata.local_sidereal_time_deg,
+                    lst: wsStats.metadata.local_sidereal_time_deg,
                     eorfield: eorfield,
 
                     // channels
-                    freq_res: stats.freq_res,
+                    freq_res: wsStats.freq_res,
                     coarse_chans: coarse_chans,
                     eorband: eorband,
 
                     // times
-                    int_time: stats.int_time,
+                    int_time: wsStats.int_time,
                     nscans: nscans,
 
                     // tiles
@@ -2584,14 +2584,17 @@ workflow ws {
 
         wsMetafits.out | metaJson
 
+        obsPass = wsSummary.filter { _, summary -> summary.fail_reasons == '' }
+            .map { obsid, _ -> obsid }
+
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
         obsMetafits = wsMetafits.out
 
         // channel of video name and frames to convert
-        frame = wsSkyMap.out
+        frame = obsPass.join(wsSkyMap.out)
             .map { _, png -> ["skymap", png] }
-            .mix( wsPPDs.out.map { _, png -> ["ppd", png] } )
+            .mix( obsPass.join(wsPPDs.out.map { _, png -> ["ppd", png] }) )
             .groupTuple()
 
         // channel of (obsid, metadata hashmap)
@@ -2599,7 +2602,7 @@ workflow ws {
             def meta = [:]
             [
                 "groupid", "pointing", "obs_name", "starttime_utc", "starttime_mjd",
-                "bad_tiles", "eorband", "eorfield", "lst",
+                "bad_tiles", "eorband", "eorfield", "lst", "int_time", "freq_res", "tile_nums",
             ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
