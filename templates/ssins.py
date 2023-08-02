@@ -18,7 +18,8 @@ def get_parser():
     parser = argparse.ArgumentParser(
         description="Run SSINS on uvfits visibilities.")
 
-    parser.add_argument('--uvfits', default=False, help='uvfits file to flag')
+    parser.add_argument('--uvfits', default=False,
+                        help='uvfits file to flag')
 
     plot_group = parser.add_argument_group('PLOTTING OPTIONS')
     plot_group.add_argument('--output_prefix',
@@ -53,9 +54,9 @@ def main():
         # is being called directly from nextflow
         args = parser.parse_args([
             "--uvfits=${uvfits}",
-            "--plot_title=${title}",
-            "--guard_width=${guard_width}"
-            # "--output_prefix=",
+            "--plot_title=${base}",
+            "--guard_width=${guard_width}",
+            "--output_prefix=${base}_",
         ])
 
     ins_plot_args = {
@@ -134,16 +135,16 @@ def main():
     with open(f'{args.output_prefix}ssins_occ.json', "w") as json_file:
         json.dump(occ_dict, json_file, indent=4)
 
-    with open(f'{args.output_prefix}ssins_events.json', "w") as events_file:
-        events_obj = [
-            {
-                'time_bounds': [int(event[0].start), int(event[0].stop)],
-                'freq_bounds': [int(event[1].start), int(event[1].stop)],
-                'shape': event[2],
-                'sig': event[3] if event[3] is None else float(event[3])
-            } for event in ins_cross.match_events
-        ]
-        json.dump(events_obj, events_file, indent=4)
+    # with open(f'{args.output_prefix}ssins_events.json', "w") as events_file:
+    #     events_obj = [
+    #         {
+    #             'time_bounds': [int(event[0].start), int(event[0].stop)],
+    #             'freq_bounds': [int(event[1].start), int(event[1].stop)],
+    #             'shape': event[2],
+    #             'sig': event[3] if event[3] is None else float(event[3])
+    #         } for event in ins_cross.match_events
+    #     ]
+    #     json.dump(events_obj, events_file, indent=4)
 
     ins_cross.write(f'{args.output_prefix}', output_type='mask', clobber=True)
 

@@ -109,5 +109,6 @@ for path in "${uvfits}".split(' '):
         data['total_non_preflagged_bl_occupancy'] = total_non_preflagged_bl_occupancy
 
     basename = os.path.basename(path)
+    basename, _ = os.path.splitext(basename)
     with open(f"occupancy_{basename}.json", 'w') as out:
         json_dump(data, out, indent=4)
