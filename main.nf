@@ -1910,19 +1910,20 @@ process polMontage {
 
 process plotCalJsons {
     input:
-        path(jsons)
+        tuple val(name), path(jsons)
     output:
-        path("cal_qa.png")
+        path("cal_qa*.png")
 
     storeDir "${results_dir}"
     stageInMode "symlink"
 
     label "python"
+    tag "${name}"
 
     script:
     """
     #!/bin/bash -eux
-    plot_calqa.py --out cal_qa --save ${jsons.join(' ')}
+    plot_caljson.py --out cal_qa_${name} --save ${jsons.join(' ')}
     """
 }
 
@@ -3115,8 +3116,16 @@ workflow cal {
         // plot each calQA result
         if (params.noplotcalqa) {
             channel.empty() | plotCalQA
+            channel.empty() | plotCalJsons
         } else {
             calQA.out | plotCalQA
+
+            calQA.out.map { _, meta, json -> [meta.ew_pointing?sprintf("ewp%+02d", meta.ew_pointing):"", json] }
+                .groupTuple(by: 0)
+                .map { ew_pointing, jsons ->
+                    [ew_pointing, jsons.sort(false)]
+                }
+                | plotCalJsons
         }
 
         // collect calQA results as .tsv
