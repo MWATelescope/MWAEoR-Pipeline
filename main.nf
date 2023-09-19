@@ -2095,23 +2095,34 @@ process aoQuality {
     // done
 }
 
-import groovy.json.JsonSlurper
+// import groovy.json.JsonSlurper
+import groovy.json.JsonSlurperClassic
 import groovy.json.StringEscapeUtils
-jslurp = new JsonSlurper()
+jslurp = new JsonSlurperClassic()
 def parseJson(path) {
     // TODO: fix nasty hack to deal with NaNs
-    jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"$1"'))
+    try {
+        // try reading the file first, it may not be ready yet.
+        File(path).size()
+    } catch (Exception _) {
+        sleep (5)
+    }
+    try {
+        return jslurp.parseText(path.getText().replaceAll(/(NaN|-?Infinity)/, '"$1"'))
+    } catch (Exception e) {
+        println("error parsing ${path} ${e}")
+    }
 }
 
-def parseCsv(path, header = true, skipBytes = 0) {
+def parseCsv(path, header = true, skipBytes = 0, delimeter=',') {
     allLines = path.readLines()
     if (!header) {
-        return allLines.collect { it.split(',') }
+        return allLines.collect { it.split(delimeter) }
     } else {
-        head = allLines[0][skipBytes..-1].split(',')
+        head = allLines[0][skipBytes..-1].split(delimeter)
         body = allLines[1..-1]
         return body.collect { row ->
-            [head, row.split(',')].transpose().collectEntries()
+            [head, row.split(delimeter)].transpose().collectEntries()
         }
     }
 }
@@ -2131,6 +2142,9 @@ def deepcopy(orig) {
 }
 
 def parseFloatOrNaN(s) {
+    if (s == null) {
+        return Float.NaN
+    }
     try {
         return Float.parseFloat(s) // .toFloat()?
     } catch (NumberFormatException e) {
@@ -2141,28 +2155,30 @@ def parseFloatOrNaN(s) {
 SimpleDateFormat logDateFmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss");
 
 def isNaN(n) {
-    if (n==null) {
+    if (n==null || n=="") {
         return true
     }
-    def cls = null
+    // def cls = null
     try {
-        cls = n.getClass();
-        return n.isNaN()
+        // cls = n.getClass();
+        return (n as float).isNaN()
     } catch (groovy.lang.MissingMethodException e) {
-        print("WARN isNaN(${n})<${cls}>: ${e}")
+        // print("WARN isNaN(${n})<${cls}>: ${e}")
         org.codehaus.groovy.runtime.StackTraceUtils.sanitize(e).printStackTrace()
+        throw e
         return true
     }
 }
 
 // display a long list of ints, replace bursts of consecutive numbers with ranges
-def displayRange(Integer s, Integer e) {
-    return s == e ? "${s}," : s == e - 1 ? "${s},${e}," : "${s}-${e},"
+// start, end, delim
+def displayRange(Integer s, Integer e, String d=',') {
+    return s == e ? "${s}${d}" : s == e - 1 ? "${s}${d}${e}${d}" : "${s}-${e}${d}"
 }
 max_ints_display = 50
 mid_ints_display = (max_ints_display-1).intdiv(2)
 
-def displayInts(l_) {
+def displayInts(l_, delim=',') {
     def l = (l_ as ArrayList).sort(false).unique()
     switch (l) {
         case { l.size == 0 }: return "";
@@ -2171,9 +2187,9 @@ def displayInts(l_) {
             def sb, start, end
             (sb, start, end) = [''<<'', l[0], l[0]]
             for (i in l[1..-1]) {
-                (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << displayRange(start, end), i, i]
+                (sb, start, end) = i == end + 1 ? [sb, start, i] : [sb << displayRange(start, end, delim), i, i]
             }
-            def result = (sb << displayRange(start, end))[0..-2].toString()
+            def result = (sb << displayRange(start, end, delim))[0..-2].toString()
             def size = result.size()
             if (size > max_ints_display) {
                 try {
@@ -2717,7 +2733,7 @@ workflow prep {
                     stats.NCHAN?:'',
                     stats.NPOLS?:'',
                     bad_ants.size(),
-                    displayInts(bad_ants),
+                    displayInts(bad_ants, delim=' '),
                 ].join("\t")
             }
             .collectFile(
@@ -3140,14 +3156,14 @@ workflow cal {
                     meta.name,
                     stats.STATUS?:'',
                     bad_ants.size,
-                    displayInts(bad_ants),
+                    displayInts(bad_ants, delim=' '),
                     (stats.PERCENT_UNUSED_BLS?:0) / 100,
                     (stats.PERCENT_NONCONVERGED_CHS?:0) / 100,
                     stats.RMS_CONVERGENCE?:'',
                     stats.SKEWNESS?:'',
                     stats.RECEIVER_VAR?:'',
                     stats.DFFT_POWER?:'',
-                    stats.FAILURE_REASON,
+                    stats.FAILURE_REASON?:'',
                 ].join("\t")
             }
             .collectFile(
@@ -4559,11 +4575,11 @@ workflow qaPrep {
         cal.out.obsMetaCalPass
             .map { it -> def (obsid, meta, soln) = it;
                 def calflags = deepcopy(meta.calflags?:[])
-                ([obsid, meta.name, displayInts(meta.prepflags?:[]), displayInts(calflags)]).join("\t")
+                ([obsid, meta.name, meta.subobs?:'', displayInts(meta.prepflags?:[]), displayInts(calflags)]).join("\t")
             }
             .collectFile(
                 name: "passcal.tsv", newLine: true, sort: true,
-                seed: ([ "OBS", "NAME", "PREPFLAGS", "CALFLAGS" ]).join("\t"),
+                seed: ([ "OBS", "NAME", "SUBOBS", "PREPFLAGS", "CALFLAGS" ]).join("\t"),
                 storeDir: "${results_dir}${params.cal_suffix}"
             )
             | view { [it, it.readLines().size()] }
