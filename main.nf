@@ -917,7 +917,7 @@ process cthulhuPlot {
     input:
     tuple val(obsid), val(meta), path(srclist), path(offsets)
     output:
-    tuple val(obsid), val(meta), path("cthuluplot_${title}*.png"), path(csv), path(json)
+    tuple val(obsid), val(meta), path("cthuluplot_${title}*.png"), path(csv), path(json), path("tec_${title}*.png")
 
     storeDir "${params.outdir}/${obsid}/iono_qa${params.cal_suffix}"
 
@@ -929,11 +929,21 @@ process cthulhuPlot {
     time 1.hour
 
     script:
-    title = "${obsid}${meta.subobs?:''}_${meta.name}"
+    title = "${obsid}${meta.subobs?:''}_${meta.name}_i${meta.ionosub_nsrcs}"
     plot = "cthuluplot_${title}.png"
+    tec = "tec_${title}.png"
     csv = "ionoqa_${title}.csv"
     json = "ionoqa_${title}.json"
-    extra = meta.time_res ? "--time_res=${meta.time_res}" : ""
+    extra = "--plot-altaz 90 0 --offset-type arrow --show-axes"
+    if (meta.time_res) {
+        extra += " --time-res=${meta.time_res}"
+    }
+    if (meta.centre_freq) {
+        extra += " --obs-frequency=${meta.centre_freq as int}"
+    }
+    if (meta.ra_phase_center != null && meta.dec_phase_center!= null) {
+        extra += " --obs-radec ${meta.ra_phase_center} ${meta.dec_phase_center}"
+    }
     template "cthulhuplot.py"
 }
 
@@ -4526,7 +4536,7 @@ workflow qaPrep {
         // collect ionoqa results as .tsv
         cthulhuPlot.out
             // form row of tsv from json fields we care about
-            .map { obsid, _, __, ___, json ->
+            .map { obsid, _, __, ___, json, ____ ->
                 def stats = parseJson(json);
                 [
                     obsid,
@@ -4553,7 +4563,7 @@ workflow qaPrep {
                     "N_TIMES",
                     "N_SRCS",
                 ].join("\t"),
-                storeDir: "${results_dir}"
+                storeDir: "${results_dir}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
@@ -4851,8 +4861,8 @@ workflow qaPrep {
             .mix(img.out.frame)
             .mix(chips.out.frame)
             .mix(cthulhuPlot.out.flatMap {
-                def (_, meta, pngs) = it;
-                pngs.collect { png -> ["cthulhuplot_${meta.name}", png] }
+                def (_, meta, pngs, __, ___, tecs) = it;
+                pngs.collect { png -> ["cthulhuplot_${meta.name}", png] } + tecs.collect { tec -> ["tec_${meta.name}", tec] }
             }.groupTuple())
         zip = cal.out.zip
             .mix(uvfits.out.zip)
