@@ -5346,9 +5346,9 @@ workflow qaPrep {
                     first_lst: jsonMeta.times[0]['lst_rad'],
                     first_jd: jsonMeta.times[0]['jd1'],
                     nchans:jsonMeta.freqs.size(),
-                    ntimes:jsonMeta.times.size()
+                    ntimes:jsonMeta.times.size(),
                 ];
-                ['eorband', 'eorfield', 'config'].each { key ->
+                ['eorband', 'eorfield', 'config', 'total_weight'].each { key ->
                     if (jsonMeta[key] != null) {
                         newMeta[key] = jsonMeta[key]
                     }
@@ -5430,9 +5430,13 @@ workflow qaPrep {
                 // find the meta of the primary subobservation (in this case, the unsubtracted visibilities)
                 def metaPrime = metas.find { meta -> meta.sub == null }
                 // determine the value to sort obsids by
-                def sort = Float.NaN
+                def sort = 1
                 if (metaPrime.p_window?:Float.NaN != Float.NaN && metaPrime.p_wedge?:Float.NaN != Float.NaN) {
-                    sort = metaPrime.p_window / metaPrime.p_wedge
+                    sort *= metaPrime.p_window / metaPrime.p_wedge
+                }
+                if (metaPrime.total_weight?:Float.NaN != Float.NaN) {
+                    def weight = metaPrime.total_weight / 1e9
+                    sort /= weight
                 }
                 // group by field, band, config
                 def group_tokens = []
@@ -5449,13 +5453,13 @@ workflow qaPrep {
                 if (metaPrime.config != null) {
                     group_tokens << metaPrime.config
                 }
-                // if (metaPrime.pointing != null) {
-                //     group_tokens << "p${metaPrime.pointing}"
-                // }
-                // if (metaPrime.lst != null) {
-                //     def nearest_lst = ((metaPrime.lst.round().intValue() + 180) % 360 - 180)
-                //     group_tokens << sprintf("lst%+03d", nearest_lst)
-                // }
+                if (params.groupByPointing && metaPrime.ew_pointing != null) {
+                    group_tokens << sprintf("ewp%+1d", metaPrime.ew_pointing)
+                }
+                if (params.groupByLst && metaPrime.lst != null) {
+                    def nearest_lst = ((metaPrime.lst.round().intValue() + 180) % 360 - 180)
+                    group_tokens << sprintf("lst%+03d", nearest_lst)
+                }
                 def group = group_tokens.join('_')
 
                 if (metas.size() > 1) {
@@ -5479,10 +5483,11 @@ workflow qaPrep {
 
                 [all_sorts, all_obsids, all_metas].transpose()
                     .sort { it -> it[0] }
-                    .collate(20, true)
+                    .collate(params.chunkSize, params.chunkRemainder)
+                    .take(params.chunkCount)
                     .collect { chunk ->
                         def (sorts, obsids, metas) = chunk.transpose()
-                        def obs_list = obsids.sort()
+                        def obs_list = obsids.sort(false)
                         def hash = obs_list.join(' ').md5()[0..7]
                         def chunkMeta = [
                             // ntimes: metas.collect { meta -> meta[0].ntimes?:0 }
@@ -5529,7 +5534,7 @@ workflow qaPrep {
             .map { chunk, chunkMeta, obsids, all_metas ->
                 def sort_bounds = chunkMeta.sort_bounds?:[Float.NaN, Float.NaN]
                 (
-                    sort_bounds.collect { sprintf("%5.4f", it) }
+                    sort_bounds.collect { sprintf("%9.9f", it) }
                     + [chunk, obsids.size(), obsids.join(' ')]
                 ).join("\t")
             }
