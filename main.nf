@@ -846,9 +846,9 @@ process hypIonoSubUV {
     script:
     old_name = meta.name
     newMeta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
-    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}.uvfits"
+    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}.uvfits"
     logs = "hyp_vis-${newMeta.name}_uv.log"
-    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_uv.json"
+    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}_uv.json"
     """
     #!/bin/bash -eux
     ${params.hyperdrive} peel \
@@ -891,9 +891,9 @@ process hypIonoSubMS {
     script:
     old_name = meta.name
     newMeta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
-    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}.ms"
+    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}.ms"
     logs = "hyp_vis-${newMeta.name}_ms.log"
-    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_ms.json"
+    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}_ms.json"
     """
     #!/bin/bash -eux
     ${params.hyperdrive} peel \
