@@ -227,7 +227,7 @@ graph TD;
 
 Finally, observations that have passed all QA steps are gridded with CHIPS, and combined into integrated power spectra.
 
-## Output Directory Structure:
+## Output Directory Structure
 
 - `${params.outdir}/` (e.g. `/data/curtin_mwaeor/data/`)
   - `${obsid}/`
@@ -255,7 +255,7 @@ Finally, observations that have passed all QA steps are gridded with CHIPS, and 
 
 populate `obsids.csv` with each obsid to be processed, one per line
 
-```
+```txt
 obsid1
 obsid2
 ```
@@ -282,7 +282,7 @@ if you discover tiles that need to be flagged manually over a range of obsids, y
 
 multiple hyperdrive calibrations per obsid can be obtained by populating `params.dical_args` as a map of `[dical_name:dical_args]` in `nextflow.config`, where `dical_args` are passed to `hyperdrive di-cal`, e.g.
 
-```
+```conf
 dical_args = [
   "30l_src4k": "--uvw-min 30l -n 4000",
   "50l_src1k": "--uvw-min 50l -n 1000",
@@ -332,6 +332,7 @@ nextflow run main.nf -profile garrawarla
 ```
 
 architecture reference:
+
 - garra workq & gpuq: `Intel(R) Xeon(R) Gold 6230` (cascade lake)
 - garra head: `Intel(R) Xeon(R) Silver 4215` - (cascade lake)
 - hpc-data{1..6} (zeus): `AMD EPYC 7351`
@@ -339,15 +340,14 @@ architecture reference:
 ### tracing
 
 ```bash
-tail -n 999999 -F .nextflow.log | grep -E 'COMPLETED; exit: [^0]'
+tail -n 999999 -F .nextflow.log | grep -E '(COMPLETED; exit: [^0]|WARN|WorkflowStatsObserver)'
 ```
-
 
 ### dug quirks
 
 nextflow module conflicts with singularity for dumb Java reasons.
 
-```
+```bash
 module unload singularity
 module load nextflow
 nextflow run main.nf -profile dug
@@ -360,7 +360,7 @@ nextflow run main.nf -profile dug
 ```bash
 export run_name="$(nextflow log -q | tail -n 1)"
 export filter='process=~/.*hypCalSol/'
-nextflow log "${run_name}" -F "${filter}" -f "workdir,exit,status,process,tag,duration,realtime,memory,peak_vmem"
+nextflow log "${run_name}" -F "${filter}" -f "workdir,exit,status,hostname,process,tag,duration,realtime,memory,peak_vmem"
 ```
 
 ### get all lines matching pattern from all scripts executed recently
@@ -390,7 +390,7 @@ done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
 
 ### suffixes
 
-```
+```bash
 # this will put results in $outdir/test/results-a-b-c-d
 nextflow run main.nf -profile garrawarla --outdir=$outdir/test/ --img_suffix=-a --cal_suffix=-b --obsids_suffix=-c --results_suffix=-d
 ```
@@ -435,8 +435,27 @@ squeue -u $USER --format %A -h --states SE | sort | xargs scancel
 ### get info for jobid: standard out
 
 ```bash
-export jobid=3405303
-squeue --json | /pawsey/mwa/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid 3459463
+export jobid=...
+squeue --json | /pawsey/mwa/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid $jobid
+```
+
+### get info for asvo jobs stuck in queue
+
+```bash
+squeue --json > squeue.json
+jq -r '.jobs[]|select(.user_name == "mwaservice")|[.job_id,.user_name,.name,.submit_time,.start_time,.state_description,.state_reason
+]|@tsv' squeue.json \
+  | while read -r id user name submit start state reason; do \
+  echo $(date -d @${submit} -Im) $(date -d @${start} -Im) $id $user $name $((start-submit)) $state $reason; \
+done | sort
+
+
+90314          asvoq asvo-669202                    mwaservi PD       0:00   6:00:00      1 (Priority)      5165043
+75262      asvo-copy asvo-669202                    mwaservi PD       0:00      5:00      1 (Dependency)    5165045
+75262      asvo-copy asvo-669202                    mwaservi PD       0:00   4:00:00      1 (Dependency)    5165044
+90309          asvoq asvo-669271                    mwaservi PD       0:00   6:00:00      1 (Priority)      5166138
+75262      asvo-copy asvo-669271                    mwaservi PD       0:00      5:00      1 (Dependency)    5166140
+75262      asvo-copy asvo-669271                    mwaservi PD       0:00   4:00:00      1 (Dependency)    5166139
 ```
 
 ### live updating queue for current user
@@ -469,12 +488,23 @@ giant-squid submit-conv -p output=uvfits,no_rfi=true, obsids-eclipse-2023-04-20.
 giant-squid list --states=Ready -j | jq -r '.[]|[.obsid]|@csv' | tee obsids-ready.csv | tee /dev/stderr | wc -l
 ```
 
-### reschedule conversion jobs where some failed.
+### reschedule conversion jobs where some failed
 
 ```bash
 giant-squid list --states=Error -j | jq -r '.[]|[.obsid]|@csv' \
   | while read -r obsid; do giant-squid submit-conv \
     -p timeres=2,freqres=40,conversion=uvfits,preprocessor=birli $obsid; done
+```
+
+### list jobids that failed
+
+```bash
+giant-squid list --states=Error -j | jq -r 'to_entries[]|[.value.obsid,.key]|@tsv' \
+  | sort \
+  | while read -r obsid jobid; do \
+    echo $obsid; \
+    grep 'panicked' /astro/mwaasvo/mwaservice/asvo/prod/logs/$jobid.out; \
+done
 ```
 
 ## handy storage commands
@@ -546,7 +576,7 @@ done
 
 ### cleanup folders
 
-```
+```bash
 cd ${outdir}
 for obsid in ...; do
   [ -d ${outdir}/$obsid ] && rm -rf ${outdir}/$obsid
@@ -748,7 +778,6 @@ cf = CalFits('1251908712/cal/hyp_soln_1251908712_30l_src4k.fits')
 ```bash
 find /data/curtin_mwaeor/data/ -type f -path '*/cal_qa/*X.json' -print -exec jq -r '(.CONVERGENCE//[])[0]|length' {} \; | tee has_convergence.txt
 ```
-
 
 ### tap stuff
 
