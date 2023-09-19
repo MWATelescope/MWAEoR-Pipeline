@@ -179,14 +179,14 @@ process asvoPrep {
     label "nvme"
     label "mem_half"
 
-    time { 1.5.hour * task.attempt }
+    time { 2.hour * task.attempt }
 
     // allow multiple retries
     maxRetries 5
     // exponential backoff: sleep for 2^attempt hours after each fail
     errorStrategy {
         failure_reason = [
-            5: "I/O error or hash mitch",
+            5: "I/O error or hash mismatch",
             28: "No space left on device",
         ][task.exitStatus]
         if (failure_reason) {
@@ -327,6 +327,8 @@ process ssins {
     label "ssins"
     label "nvme"
     label "mem_half"
+
+    time { 30.min }
 
     // errorStrategy "terminate"
 
@@ -515,14 +517,14 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
-    label "mem_full"
+    label "mem_half"
     label "cpu_half"
     label "gpu_nvme"
     // if (params.pullCalSol) {
     //     label "rclone"
     // }
 
-    time { 2.hour }
+    time { 45.minutes }
 
     script:
     dical_names = dical_args.keySet().collect()
@@ -922,8 +924,9 @@ process cthulhuPlot {
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
 
     label "python"
+    label "mem_half"
 
-    time 10.minute
+    time 1.hour
 
     script:
     title = "${obsid}${meta.subobs?:''}_${meta.name}"
@@ -1274,7 +1277,7 @@ process wscleanDConv {
     label "mem_half"
     label "nvme"
 
-    time { 13.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult)) }
+    time { [23.hour, 13.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult))].min() }
 
     script:
     multiplier = Math.sqrt(vis.collect().size())
@@ -1500,9 +1503,17 @@ process chipsCombine {
     label "chips"
     label "cpu_full"
     label "mem_full"
-    label "nvme"
+    label "nvme_full"
+    stageInMode "symlink"
 
-    time { 1.hour }
+    // takes about 6 hours for 300, 16 hours for 1000, double it for safety
+    time {
+        if (exts.size() < 1000) {
+            [1.hour, 6.hour * (exts.size() - 0.5) / 300].max()
+        } else {
+            [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
+        } * 2
+    }
 
     script:
     // ext = "${group}_${meta.name}"
