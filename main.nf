@@ -1053,6 +1053,29 @@ process calQA {
     """
 }
 
+process phaseFits {
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(soln)
+    output:
+    tuple val(obsid), val(meta), path("${obsid}*${name}*phase_fits.tsv"), path("${obsid}*${name}*.png")
+
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
+
+    tag "${obsid}.${meta.name}"
+
+    label "mwax_mover"
+
+    script:
+    name = "${meta.cal_prog}_${meta.name}"
+    """
+    #!/bin/bash -eux
+    python /app/scripts/cal_analysis.py \
+        --name "${name}" \
+        --metafits "${metafits}" --solns ${soln} \
+        --phase-diff-path=/app/phase_diff.txt
+    """
+}
+
 // write info from solutions to json
 process solJson {
     input:
@@ -3028,6 +3051,21 @@ workflow cal {
                 }
             }
 
+        // phase fit on calibration solutions
+        obsMetafits.cross(
+                eachCal.map { obsid, meta, soln -> [obsid, meta.name, meta, soln] }
+                    .groupTuple(by: 0..1)
+                    .map{ obsid, name, metas, solns ->
+                        [obsid, metas[0], solns]
+                    }
+            )
+            .map { obsMetafits_, hypCalSol_ ->
+                def (obsid, metafits) = obsMetafits_
+                def (_, meta, solns) = hypCalSol_
+                [obsid, meta, metafits, solns]
+            }
+            | phaseFits
+
         // generate json from solns
         eachCal | solJson
 
@@ -3156,6 +3194,44 @@ workflow cal {
                 | view { [it, it.readLines().size()] }
         }
 
+        allTiles = obsMetaMetafitsVis.flatMap { obs, meta, metafits, vis ->
+                meta.tile_nums
+            }
+            .unique()
+            .toSortedList()
+            .map{it -> [it]}
+            .view { it -> "allTiles ${it}" }
+
+        // can't collectFile in a channel, so this is not possible?
+        // keys = channel.of("intercept", "length", "chi2dof", "sigma_resid")
+        // pols = channel.of("xx", "yy")
+        // keys.combine(pols)
+        [
+            "intercept_xx", "intercept_yy",
+            "length_xx", "length_yy",
+            "chi2dof_xx", "chi2dof_yy",
+            "sigma_resid_xx", "sigma_resid_yy",
+        ].collect { key ->
+            channel.of("OBS").concat(allTiles.flatten())
+                .toList()
+                .map { it.join("\t") }
+                .concat(
+                    phaseFits.out.combine(allTiles).map { obsid, meta, tsv, _, tiles ->
+                            def phaseFits = parseCsv(tsv, true, 0, '\t')
+                            ([obsid] + tiles.collect { tile ->
+                                def tilePhaseFits = phaseFits.find { "${it['tile_id']}" == "${tile}" }?:[:]
+                                tilePhaseFits[key]?:''
+                            }).join("\t")
+                        }
+                        .toSortedList()
+                        .flatten()
+                ).collectFile(
+                    name: "phase_fits_${key}.tsv", newLine: true, sort: false,
+                    storeDir: "${results_dir}"
+                )
+                .view { [it, it.readLines().size()] }
+        }
+
         // channel of obsids and names that pass qa. tuple(obsid, name)
         // - take tuple(obsid, cal_name, json) from calQA.out
         // - filter on json.STATUS == "PASS"
@@ -3203,10 +3279,17 @@ workflow cal {
                     ["calqa_${meta.name}_${suffix}", png]
                 }
             }
+            .mix(phaseFits.out.flatMap { _, meta, __, pngs ->
+                pngs.collect { png ->
+                    def suffix = png.baseName.split(' ')[-1]
+                    ["phasefits_${suffix}", png]
+                }
+            })
             .groupTuple()
         // channel of files to zip
         zip = calQA.out.map { _, meta, json -> ["calqa_${meta.name}", json] }
             .mix(solJson.out.map { obsid, meta, json -> ["soljson_${meta.name}", json] })
+            .mix(phaseFits.out.map { obsid, meta, tsv, _ -> ["phasefits_${meta.name}", tsv] })
             .mix(allCal.map { obsid, meta, soln -> ["${meta.cal_prog}_soln_${meta.name}", soln] })
             .groupTuple()
 }
