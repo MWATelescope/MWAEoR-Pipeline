@@ -1645,8 +1645,6 @@ process chipsLssa {
     """
 }
 
-// TODO: process chipsCombine
-
 process chipsPlot {
     input:
     tuple val(group), val(meta), path(grid)
@@ -1662,13 +1660,6 @@ process chipsPlot {
     time 15.minute
 
     script:
-    // nchans = meta.nchans
-    // eorband = meta.eorband
-    // eorfield = meta.eorfield
-    // ext = meta.name
-    // diff_ext = ""
-    // lowfreq = "${meta.lowfreq?:167075000}"
-    // freq_res = "${(meta.freq_res?:80) * 1000}"
     pol = meta.pol?:"both"
     if (pol == "both") {
         pol = "xx+yy"
@@ -1694,8 +1685,6 @@ process chipsPlot {
         suffix = "${meta.ext}${suffix}"
     }
     basedir = "./"
-    // title = "${group}\\n${ext}"
-    // ptypes = "1D 2D"
     args = [
         title: meta.title,
         // file group
@@ -1726,8 +1715,6 @@ process chipsPlot {
         chips_tag_two_label: (meta.labels?:[])[1],
         chips_tag_three_label: (meta.labels?:[])[2],
         // chips group
-        // N_kperp: meta.N_kperp,
-        // N_chan: meta.N_chan,
         lowerfreq: meta.lowfreq,
         chan_width: (meta.freq_res * 1e3),
         umax: meta.maxu,
@@ -1742,6 +1729,7 @@ process chipsPlot {
         .join(" ")
     if (meta.plot_delta) {
         args += " --plot_delta"
+        suffix += "_delta"
     }
     if (meta.plot_wedge_cut) {
         args += " --plot_wedge_cut_2D"
@@ -4204,6 +4192,20 @@ workflow chips {
                 [chunk, deepcopy(meta) + newMeta, grid]
             }
 
+        def singles1DDelta = chipsLssa.out.map { chunk, meta, grid ->
+                def newMeta = [
+                    ptype: '1D',
+                    pol: 'both',
+                    plot_delta: true,
+                    title: "crosspower\\n${chunk}\\n${meta.name}",
+                    plot_name: 'chips1d',
+                    max_power: 1e15,
+                    min_power: 1e3,
+                    tags: [],
+                ]
+                [chunk, deepcopy(meta) + newMeta, grid]
+            }
+
         def singles2D = chipsLssa.out.map { chunk, meta, grid ->
                 def newMeta = [
                     ptype: '2D',
@@ -4276,7 +4278,7 @@ workflow chips {
         def diffs2D_iono = chipsLssa.out
             // group grids from vis name together
             .groupTuple(by: 0)
-            .filter { _, metas, __ -> metas.size() >= 2 }
+            .filter { _, metas, __ -> metas.size() >= 2 & metas.find { it.sub == null} != null & metas.find { it.sub == 'ionosub'} != null }
             .map { chunk, metas, grids ->
                 def nosubMeta = metas.find { it.sub == null} ?: [:]
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
@@ -4302,7 +4304,7 @@ workflow chips {
         def diffs2D_sub_ionosub = chipsLssa.out
             // group grids from vis name together
             .groupTuple(by: 0)
-            .filter { _, metas, __ -> metas.size() >= 2 }
+            .filter { _, metas, __ -> metas.size() >= 2 & metas.find { it.sub == 'sub'} != null & metas.find { it.sub == 'ionosub'} != null }
             .map { chunk, metas, grids ->
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
                 def subMeta = metas.find { it.sub == 'sub'} ?: [:]
@@ -4328,7 +4330,7 @@ workflow chips {
         def ratios2D_sub = chipsLssa.out
             // group grids from vis name together
             .groupTuple(by: 0)
-            .filter { _, metas, __ -> metas.size() >= 2 }
+            .filter { _, metas, __ -> metas.size() >= 2 & metas.find { it.sub == 'sub'} != null & metas.find { it.sub == null} != null }
             .map { chunk, metas, grids ->
                 def nosubMeta = metas.find { it.sub == null} ?: [:]
                 def subMeta = metas.find { it.sub == 'sub'} ?: [:]
@@ -4356,7 +4358,7 @@ workflow chips {
         def ratios2D_ionosub = chipsLssa.out
             // group grids from vis name together
             .groupTuple(by: 0)
-            .filter { _, metas, __ -> metas.size() >= 2 }
+            .filter { _, metas, __ -> metas.size() >= 2 & metas.find { it.sub == null} != null & metas.find { it.sub == 'ionosub'} != null }
             .map { chunk, metas, grids ->
                 def nosubMeta = metas.find { it.sub == null} ?: [:]
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
@@ -4382,6 +4384,7 @@ workflow chips {
             }
 
         singles1D
+            .mix(singles1DDelta)
             .mix(singles2D)
             .mix(comps1D)
             .mix(diffs2D_sub)
