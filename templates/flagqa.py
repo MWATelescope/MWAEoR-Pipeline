@@ -2,23 +2,70 @@
 
 from astropy.io import fits
 import astropy.units as u
+from astropy.time import Time
+from astropy.coordinates import EarthLocation
+from astropy.coordinates.errors import UnknownSiteException
 from json import dump as json_dump
 import numpy as np
 from math import ceil
 import os
 import pandas as pd
+from argparse import ArgumentParser
+import sys
 
+"""
+```bash
+salloc --nodes=1 --mem=350G --time=8:00:00 --clusters=garrawarla --partition=workq --account=mwaeor --ntasks=20 --tmp=500G
+module load singularity
+mkdir /dev/shm/deleteme
+cd /dev/shm/deleteme
+export obsid=1087941792
+birli_1087941792_2s_40kHz_norfi.uvfits
+cp /astro/mwaeor/dev/nfdata/${obsid}/prep/birli_${obsid}_2s_40kHz_norfi.uvfits ${obsid}.uvfits
+cp /astro/mwaeor/dev/nfdata/${obsid}/raw/${obsid}.metafits ${obsid}.metafits
+singularity exec --bind `pwd` --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
+    /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/flagqa.py \
+    --metafits=${obsid}.metafits \
+    --uvfits=${obsid}.uvfits \
+    --obsid=${obsid}
+jq -r '.' occupancy_${obsid}.json
+cp ${obsid}.json /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/
+```
+"""
 
 def split_strip_filter(str):
     return list(filter(None, map(lambda tok: tok.strip(), str.split(','))))
 
+def get_parser():
+    parser = ArgumentParser(
+        description="analyse uvfits for flag occupancy.")
+
+    parser.add_argument('--obsid', help='obsid', default=None)
+    parser.add_argument('--metafits', help='metafits file')
+    parser.add_argument('--uvfits', help='source uvfits files', nargs='+')
+    # parser.add_argument('--json', help='Name of output json file', default=None)
+    return parser
+
+# TODO: put all this in def main():
+
+parser = get_parser()
+if len(sys.argv) > 1:
+    args = parser.parse_args()
+else:
+    # is being called directly from nextflow
+    args = parser.parse_args([
+        "--obsid=${obsid}",
+        "--uvfits=${uvfits}",
+        "--metafits=${metafits}",
+    ])
 
 total_occupancy = 0
-total_non_preflagged_bl_occupancy = 0
-num_unflagged_cchans = 0
-data = {'obsid': int('${obsid}'), 'channels': {}}
+total_rfi_occupancy = 0
+data = {'channels': {}}
+if args.obsid is not None:
+    data['obsid'] = int(args.obsid)
 
-with fits.open("${metafits}") as meta:
+with fits.open(args.metafits) as meta:
     mpr = meta['PRIMARY']
     sky_chans = [*map(int, split_strip_filter(mpr.header['CHANNELS']))]
     num_cchans = len(sky_chans)
@@ -38,75 +85,121 @@ with fits.open("${metafits}") as meta:
 
 cchan_bandwidth = bandwidth / num_cchans
 
-for path in "${uvfits}".split(' '):
+for path in args.uvfits:
     with fits.open(path) as uv:
         vis_hdu = uv['PRIMARY']
+
+        # location
+        # loc = None
+        # if inst := vis_hdu.header.get('INSTRUME', vis_hdu.header.get('TELESCOP')):
+        #     data['instrument'] = inst
+        #     try:
+        #         loc = EarthLocation.of_site(inst.lower())
+        #     except UnknownSiteException as exc:
+        #         print(exc)
+        #         print(EarthLocation.get_site_names())
+
+        # baselines
+
         baseline_array = np.int16(vis_hdu.data["BASELINE"])
+        unique_baselines = np.unique(baseline_array)
         num_blts = len(baseline_array)
-        num_bls = len(np.unique(baseline_array))
+        num_bls = len(unique_baselines)
         data['num_baselines'] = num_bls
-        num_times = num_blts // num_bls
+
+        # times
+
+        date_cols = [col.name for col in vis_hdu.data.columns if 'DATE' in col.name]
+        time_array = np.sum(np.stack([
+            np.float64(vis_hdu.data[date_col])
+            for date_col in date_cols
+        ], axis=1), axis=1)
+        unique_times = np.sort(np.unique(time_array))
+        print(unique_times)
+        timestep_idx_array = np.searchsorted(unique_times, time_array)
+        num_times = len(unique_times)
         data['num_times'] = num_times
-        vis_shape = vis_hdu.data.data.shape
-        assert vis_shape[0] == num_blts, 'vis shape 0 != num_blts'
+        assert num_blts == num_bls * num_times, \
+            f'{num_blts=} != {num_bls=} * {num_times=}'
+
+        print(f"{num_times,num_bls,num_blts=}")
+
+        # channels
 
         num_chans = vis_hdu.header['NAXIS4']
+        freq_res = vis_hdu.header['CDELT4'] * u.Hz
         data['num_chans'] = num_chans
         # number of fine chans per coarse
         num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
         num_cchans = num_chans // num_fchans
+        print(f"{num_chans,num_cchans,num_fchans=}")
 
-        ant_2_array = baseline_array % 256 - 1
-        ant_1_array = (baseline_array - ant_2_array) // 256 - 1
-        antpair_array = np.stack((ant_1_array, ant_2_array), axis=1)
-        preflagged_blts_mask = np.isin(antpair_array, preflagged_ants).any(axis=1)
-        # unflagged_blt_idxs = np.where(np.logical_not(preflagged_blts_mask))[0]
-        (unflagged_blt_idxs,) = np.where(np.logical_not(preflagged_blts_mask))
-        num_unflagged_blts = len(unflagged_blt_idxs)
-        num_unflagged_bls = num_unflagged_blts // num_times
-        unflagged_fraction = num_unflagged_blts / num_blts
+        vis_shape = vis_hdu.data.data.shape
+        assert vis_shape[0] == num_blts, f'{vis_shape[0]=} != {num_blts=}'
+        assert vis_shape[3] == num_chans, f'{vis_shape[3]=} != {num_chans=}'
 
+        # weights / flags
         # assumption: vis data axes 1,2 (ra/dec?) are not used
         # assumption: flags are the same for all pols, so only use pol=0
-        # 4d weight array: [time, baseline, coarse channel, fine channel]
-        weights = vis_hdu.data.data[unflagged_blt_idxs, 0, 0, :, 0, 2].reshape(
-            (num_times, num_unflagged_bls, num_cchans, num_fchans))
-        # flag count for unflagged bls by [time, coarse channel, fine channel]
-        unflagged_bl_flag_count = np.sum(np.int64(weights <= 0), axis=1)
-        # where unflagged_bl_flag_count is flagged for all baselines
-        flagged_mask = unflagged_bl_flag_count == num_unflagged_bls
-        data['flagged_timestep_idxs'] = np.where(
-            flagged_mask.all(axis=(1, 2)))[0].tolist()
-        flagged_cchan_idxs = np.where(flagged_mask.all(axis=(0, 2)))[0].tolist()
-        data['flagged_cchan_idxs'] = flagged_cchan_idxs
+        # 4d flag mask: [time, baseline, coarse channel, fine channel]
+        flagged_mask = (vis_hdu.data.data[:, 0, 0, :, 0, 2] <= 0).reshape(
+            (num_times, num_bls, num_cchans, num_fchans))
+        print(f"{flagged_mask.shape=}")
+
+        # flagged times
+        flagged_timestep_mask = flagged_mask.all(axis=(1, 2, 3))
+        (flagged_timestep_idxs,) = np.where(flagged_timestep_mask)
+        (unflagged_timestep_idxs,) = np.where(np.logical_not(flagged_timestep_mask))
+        data['flagged_timestep_idxs'] = flagged_timestep_idxs.tolist()
+        flagged_times = unique_times[flagged_timestep_idxs]
+        num_unflagged_times = num_times - len(flagged_timestep_idxs)
+        non_preflagged_mask = flagged_mask[unflagged_timestep_idxs, :, :, :]
+
+        # flagged baselines
+        flagged_bl_mask = non_preflagged_mask.all(axis=(0, 2, 3))
+        (flagged_bl_idxs,) = np.where(flagged_bl_mask)
+        (unflagged_bl_idxs,) = np.where(np.logical_not(flagged_bl_mask))
+        non_preflagged_mask = non_preflagged_mask[:, unflagged_bl_idxs, :, :]
+        num_unflagged_bls = len(unflagged_bl_idxs)
+
+        # flagged fine channels within a coarse channel
+        flagged_fchan_mask = non_preflagged_mask.all(axis=(0, 1, 2))
+        (flagged_fchan_idxs, ) = np.where(flagged_fchan_mask)
+        (unflagged_fchan_idxs, ) = np.where(np.logical_not(flagged_fchan_mask))
+        data['flagged_fchan_idxs'] = flagged_fchan_idxs.tolist()
+        print(f"{flagged_fchan_idxs.tolist()=}")
+        num_unflagged_fchans = len(unflagged_fchan_idxs)
+        non_preflagged_mask = non_preflagged_mask[:, :, :, unflagged_fchan_idxs.tolist()]
+
+        # flagged coarse channels
+        flagged_cchan_mask = non_preflagged_mask.all(axis=(0, 1, 3))
+        (flagged_cchan_idxs, ) = np.where(flagged_cchan_mask)
+        (unflagged_cchan_idxs, ) = np.where(np.logical_not(flagged_cchan_mask))
+        data['flagged_cchan_idxs'] = flagged_cchan_idxs.tolist()
         flagged_sky_chans = np.array(sky_chans)[flagged_cchan_idxs].tolist()
         data['flagged_sky_chans'] = flagged_sky_chans
-        data['flagged_fchan_idxs'] = np.where(
-            flagged_mask.all(axis=(0, 1)))[0].tolist()
+        num_unflagged_cchans = len(unflagged_cchan_idxs)
 
-        # occupancy of non-preflagged baselines by coarse channel
-        unflagged_bl_occupancy = np.sum(unflagged_bl_flag_count, axis=(
-            0, 2)) / (num_unflagged_blts * num_fchans)
+        cchan_flagged_occupancies = np.sum(np.int64(flagged_mask), axis=(0, 1, 3)) / (num_times * num_bls * num_fchans)
+        cchan_non_preflagged_occupancies = np.sum(np.int64(non_preflagged_mask), axis=(0, 1, 3)) / (num_unflagged_times * num_unflagged_bls * num_unflagged_fchans)
 
-        for chan_idx, cchan_unflagged_bl_occupancy in enumerate(unflagged_bl_occupancy):
-            if chan_idx not in flagged_cchan_idxs:
-                num_unflagged_cchans += 1
-                total_non_preflagged_bl_occupancy += cchan_unflagged_bl_occupancy
-            sky_chan = sky_chans[chan_idx]
-            cchan_total_occupancy = (
-                unflagged_fraction * cchan_unflagged_bl_occupancy) + (1 - unflagged_fraction)
-            total_occupancy += cchan_total_occupancy
+        for sky_chan, cchan_flagged, cchan_occupancy, cchan_non_preflagged_occupancy in \
+                zip(sky_chans, flagged_cchan_mask, cchan_flagged_occupancies, cchan_non_preflagged_occupancies):
             data['channels'][sky_chan] = {
-                'occupancy': cchan_total_occupancy,
-                'non_preflagged_bl_occupancy': cchan_unflagged_bl_occupancy,
-                'flagged': chan_idx in data['flagged_cchan_idxs']
+                'occupancy': cchan_occupancy,
+                'rfi_occupancy': cchan_non_preflagged_occupancy,
+                'flagged': sky_chan
             }
+            total_occupancy += cchan_occupancy
+            if not cchan_flagged:
+                total_rfi_occupancy += cchan_non_preflagged_occupancy
+
         if num_cchans:
             total_occupancy /= num_cchans
         data['total_occupancy'] = total_occupancy
         if num_unflagged_cchans:
-            total_non_preflagged_bl_occupancy /= num_unflagged_cchans
-        data['total_non_preflagged_bl_occupancy'] = total_non_preflagged_bl_occupancy
+            total_rfi_occupancy /= num_unflagged_cchans
+        data['total_rfi_occupancy'] = total_rfi_occupancy
 
     basename = os.path.basename(path)
     basename, _ = os.path.splitext(basename)
