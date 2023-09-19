@@ -163,9 +163,9 @@ process metaJson {
 // `tar`.
 process asvoPrep {
     input:
-    val obsid
+    tuple val(obsid), val(meta)
     output:
-    tuple val(obsid), path(uvfits)
+    tuple val(obsid), val(meta), path(uvfits)
 
     storeDir "${params.outdir}/${obsid}/prep"
     // tag to identify job in squeue and nf logs
