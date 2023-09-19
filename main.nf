@@ -1523,15 +1523,15 @@ process chipsGrid {
 
 process chipsCombine {
     input:
-    tuple val(group), val(meta), val(exts), path(grids)
+    tuple val(group), val(pol), val(meta), val(exts), path(grids)
 
     output:
-    tuple val(group), val(meta), path("combine_{xx,yy}.${combined_ext}.txt"),
-        path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${combined_ext}.dat")
+    tuple val(group), val(pol), val(meta), path("combine_${pol}.${combined_ext}.txt"),
+        path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat")
 
     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
 
-    tag "${group}.${meta.name}"
+    tag "${group}.${pol}.${meta.name}"
 
     label "chips"
     label "cpu_full"
@@ -1569,18 +1569,24 @@ process chipsCombine {
         [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
     done
 
-    for pol in xx yy; do
-        echo -n "" > combine_\${pol}.${combined_ext}.txt
+    echo -n "" > combine_${pol}.${combined_ext}.txt
         """ + (
             exts.collect { ext ->
-                """echo "\${pol}.${ext}" >> combine_\${pol}.${combined_ext}.txt"""
+            """echo "${pol}.${ext}" >> combine_${pol}.${combined_ext}.txt"""
             }.join("\n")
         ) + """
 
-        combine_data "combine_\${pol}.${combined_ext}.txt" ${nchans} "\${pol}.${combined_ext}" 1
+    combine_data "combine_${pol}.${combined_ext}.txt" ${nchans} "${pol}.${combined_ext}" 1
 
-        # todo: check first bytes not null
+    # check for nulls
+    for dat in *_${pol}.${combined_ext}.dat; do
+        if ! grep -m1 -qP "[^\\0]" \$dat; then
+            echo "oops, all nulls \$dat"
+            exit 69
+        fi
     done
+
+    exit 0
     """
 }
 
@@ -4147,6 +4153,8 @@ workflow chips {
                 | chipsGrid
         }
 
+        pols = channel.of('xx', 'yy')
+
         chipsGrid.out.cross(
                 chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
                     obsids.collect { obsid -> [obsid, deepcopy(chunkMeta), chunk] }
@@ -4168,10 +4176,20 @@ workflow chips {
             // .view { it -> "\n -> before chipsCombine ${it}\n" }
             .filter { chunk, chunkMeta, exts, grid -> chunkMeta.name }
             // .take(10)
+            .combine(pols)
+            .map { chunk, chunkMeta, exts, grid, pol ->
+                [chunk, pol, chunkMeta, exts, grid.findAll { it.baseName.contains(pol) }]
+            }
             | chipsCombine
 
-        // chipsGrid.out.mix(chipsCombine.map { group, meta, _, grid -> group, meta,grid }) | chipsLssa
-        chipsCombine.out.map { group, meta, _, grid -> [group, meta, grid] } | chipsLssa
+        chipsCombine.out
+            .map { group, pol, meta, _, grid ->
+                [group, meta.name?:'', meta, grid]}
+            .groupTuple(by: 0..1)
+            .map { group, name, metas, grids ->
+                [group, metas[0], grids.flatten()]
+            }
+            | chipsLssa
 
         def singles1D = chipsLssa.out.map { chunk, meta, grid ->
                 def newMeta = [
