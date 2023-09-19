@@ -20,7 +20,7 @@ module load singularity
 mkdir /dev/shm/deleteme
 cd /dev/shm/deleteme
 # chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png
-cp /astro/mwaeor/dev/nfdata/eor0high_phase1-128T_p0_a3dbf06d/ps_metrics/ionosub_30l_src4k_8s_80kHz/*.dat .
+cp /astro/mwaeor/dev/nfdata/eor0high_phase1-128T_13d68053/ps_metrics/30l_src4k_8s_80kHz/*.dat .
 export ext="grid_30l_src4k_8s_80kHz_eor0high"
 singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
@@ -32,11 +32,12 @@ singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singula
     --max_power=1e15
 cp chips2D_xx_grid_30l_src4k_8s_80kHz_eor0high_crosspower.png /astro/mwaeor/dev/nfdata/1094751504/ps_metrics-newhyp+qa/
 
-singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
+eval singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
-    --title 'crosspower\neor0high_phase1-128T_p0_a3dbf06d\nionosub_30l_src4k_8s_80kHz'  \
+    --title 'crosspower\neor0high_phase1-128T_13d68053\n30l_src4k_8s_80kHz'  \
     --basedir "./"  \
-    --chips_tag "eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz"  \
+    --chips_tag "eor0high_phase1-128T_13d68053_30l_src4k_8s_80kHz"  \
+    --plot_delta \
     --plot_type "1D"  \
     --polarisation "both"  \
     --min_power "1E+3" \
@@ -44,7 +45,7 @@ singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singula
     --lowerfreq "166995000.0" \
     --umax "300" \
     --N_chan 384 \
-    --num_k_edges "80" \
+    --num_k_edges "160" \
     && cp chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/
 
     # --chan_width "80"
@@ -991,6 +992,7 @@ def do_2D_plot(chips_data):
     """Given the user supplied `args`, plot a 2D power spectrum"""
 
     args = chips_data.parser_args
+    delta_suff = '_delta' if args.plot_delta else ''
 
     if args.max_power == 0.0:
         args.max_power = 1e+12
@@ -1020,7 +1022,7 @@ def do_2D_plot(chips_data):
             plot_2D_on_ax(twoD_ps_array, extent, ax, fig, args.polarisation, args)
             plt.tight_layout()
 
-        output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_{args.chips_tag}_crosspower.png"
+        output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_{args.chips_tag}_crosspower{delta_suff}.png"
 
     elif args.polarisation == 'both':
 
@@ -1054,7 +1056,7 @@ def do_2D_plot(chips_data):
 
             plt.tight_layout()
 
-        output_plot_name = f"{args.outputdir}/chips2D_xx+yy_{args.chips_tag}_crosspower.png"
+        output_plot_name = f"{args.outputdir}/chips2D_xx+yy_{args.chips_tag}_crosspower{delta_suff}.png"
 
     else:
         msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
@@ -1120,6 +1122,7 @@ def do_2D_ratio_plot(chips_data):
     """Given the user supplied `chips_data.parser_args`, plot a 2D power spectrum ratio"""
 
     args = chips_data.parser_args
+    delta_suff = '_delta' if args.plot_delta else ''
 
     if args.max_power == 0.0:
         args.max_power = 10
@@ -1139,7 +1142,7 @@ def do_2D_ratio_plot(chips_data):
 
         output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_ratio.png"
+                           f"{args.chips_tag_two}_ratio{delta_suff}.png"
 
     elif args.polarisation == 'both':
         fig, axs = plt.subplots(1,2,figsize=(12,7))
@@ -1159,7 +1162,7 @@ def do_2D_ratio_plot(chips_data):
         plt.tight_layout()
         output_plot_name = f"{args.outputdir}/chips2D_xx+yy_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_ratio.png"
+                           f"{args.chips_tag_two}_ratio{delta_suff}.png"
 
     else:
         msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
@@ -1198,6 +1201,7 @@ def do_2D_diff_plot(chips_data):
     else:
         title = 'Difference'
 
+    delta_suff = '_delta' if args.plot_delta else ''
 
     if args.polarisation == 'xx' or args.polarisation == 'yy':
 
@@ -1215,7 +1219,7 @@ def do_2D_diff_plot(chips_data):
 
         output_plot_name = f"{args.outputdir}/chips2D_{args.polarisation}_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_diff.png"
+                           f"{args.chips_tag_two}_diff{delta_suff}.png"
 
     elif args.polarisation == 'both':
 
@@ -1243,7 +1247,7 @@ def do_2D_diff_plot(chips_data):
 
         output_plot_name = f"{args.outputdir}/chips2D_xx+yy_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_diff.png"
+                           f"{args.chips_tag_two}_diff{delta_suff}.png"
 
     else:
         msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
@@ -1309,6 +1313,7 @@ def do_1D_plot(chips_data):
     """Plot a 1D power spectrum given the input arguments from the parser"""
 
     args = chips_data.parser_args
+    delta_suff = '_delta' if args.plot_delta else ''
 
     if args.polarisation == 'xx' or args.polarisation == 'yy':
 
@@ -1324,7 +1329,7 @@ def do_1D_plot(chips_data):
                       args.polarisation,
                       delta=args.plot_delta)
 
-        output_plot_name = f"{args.outputdir}/chips1D_{args.polarisation}_{args.chips_tag}.png"
+        output_plot_name = f"{args.outputdir}/chips1D_{args.polarisation}_{args.chips_tag}{delta_suff}.png"
 
     elif args.polarisation == 'both':
         ##Read in data and convert to a 1D array for plotting
@@ -1345,7 +1350,7 @@ def do_1D_plot(chips_data):
                               args,
                               "yy", delta=args.plot_delta)
 
-        output_plot_name = f"{args.outputdir}/chips1D_xx+yy_{args.chips_tag}.png"
+        output_plot_name = f"{args.outputdir}/chips1D_xx+yy_{args.chips_tag}{delta_suff}.png"
 
 
     else:
@@ -1429,6 +1434,7 @@ def do_1D_comparison_plot(chips_data):
     1D power spectra on the same axes"""
 
     args = chips_data.parser_args
+    delta_suff = '_delta' if args.plot_delta else ''
 
     if args.polarisation == 'xx' or args.polarisation == 'yy':
 
@@ -1440,7 +1446,7 @@ def do_1D_comparison_plot(chips_data):
 
         output_plot_name = f"{args.outputdir}/chips1D_{args.polarisation}_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_comparison.png"
+                           f"{args.chips_tag_two}_comparison{delta_suff}.png"
 
     elif args.polarisation == 'both':
 
@@ -1453,7 +1459,7 @@ def do_1D_comparison_plot(chips_data):
 
         output_plot_name = f"{args.outputdir}/chips1D_xx+yy_" \
                            f"{args.chips_tag_one}_" \
-                           f"{args.chips_tag_two}_comparison.png"
+                           f"{args.chips_tag_two}_comparison{delta_suff}.png"
 
     else:
         msg = f'--polarisation={args.polarisation} is not a valid argument{chr(10)}'
