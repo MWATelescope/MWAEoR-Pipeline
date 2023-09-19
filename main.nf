@@ -3026,6 +3026,8 @@ workflow cal {
         //     )
         //     | view { [it, it.readLines().size()] }
 
+        // channel of metadata for each obsid: tuple(obsid, meta)
+        obsMeta = obsMetaMetafitsVis.map { obsid, meta, _, __ -> [obsid, meta] }
         // channel of metafits for each obsid: tuple(obsid, metafits)
         obsMetafits = obsMetaMetafitsVis.map { obsid, _, metafits, __ -> [obsid, metafits] }
 
@@ -3079,13 +3081,13 @@ workflow cal {
         solJson.out
             // form row of tsv from json fields we care about
             .map { obsid, meta, json ->
-                def name = meta.name
                 def stats = parseJson(json)
                 def results = stats.RESULTS?[0]?:[]
                 def (nans, convergences) = results.split { it == "NaN" }
                 [
                     obsid,
-                    name,
+                    meta.name,
+                    meta.subobs?:'',
                     nans.size() / results.size(),
                     results.join('\t')
                 ].join("\t")
@@ -3093,15 +3095,13 @@ workflow cal {
             .collectFile(
                 name: "cal_results${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
+                    "OBS", "CAL NAME", "SUBOBS", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
                 storeDir: "${results_dir}${params.cal_suffix}"
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        // channel of metafits for each obsid: tuple(obsid, metafits)
-        obsMetafits = obsMetaVis.map { obsid, _, metafits, __ -> [obsid, metafits] }
         // calibration QA and plot solutions
         obsMetafits.cross(allCal)
             // cross with solutions from eachCal and eachPolyCal
@@ -3181,8 +3181,9 @@ workflow cal {
         ].each { metric, getMetric ->
             calQA.out
                 // form row of tsv from json fields we care about
-                .map { obsid, meta, json ->
-                    def stats = parseJson(json);
+                .map { obsid, meta, json -> [obsid, meta, parseJson(json)] }
+                .filter { _, __, stats -> stats != null }
+                .map { obsid, meta, stats ->
                     ([ obsid, meta.name ] + getMetric(stats)).join("\t")
                 }
                 .collectFile(
