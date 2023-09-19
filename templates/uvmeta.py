@@ -12,7 +12,7 @@ from math import ceil
 # from mwa_qa.read_uvfits import UVfits
 import sys
 from argparse import ArgumentParser
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import codecs
 
 
@@ -25,11 +25,12 @@ module load singularity
 mkdir -p /dev/shm/deleteme
 cd /dev/shm/deleteme
 export obsid=1090012424
-cp /astro/mwaeor/dev/nfdata/\${obsid}/cal/hyp_\${obsid}_sub_30l_src4k_8s_80kHz.uvfits vis.uvfits
-singularity exec -B --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
+eval cp /astro/mwaeor/dev/nfdata/\${obsid}/cal/hyp_\${obsid}_sub_30l_src4k_8s_80kHz.uvfits vis.uvfits
+eval singularity exec -B \$PWD --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/uvmeta.py \
     --uvfits=vis.uvfits \
-    --uvmeta="\${obsid}_uvmeta.json"
+    --uvmeta="\${obsid}_uvmeta.json" \
+    --weights
 cp \${obsid}_uvmeta.json /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/
 ```
 """
@@ -47,8 +48,8 @@ def get_parser():
         description="get basic metadata from uvfits file in json format")
 
     parser.add_argument('--uvfits', help='source uvfits file')
-    parser.add_argument(
-        '--uvmeta', help='Name of output json file', default=None)
+    parser.add_argument('--uvmeta', help='output json file', default=None)
+    parser.add_argument('--weights', help='calculate weights', default=True, action='store_true')
 
     return parser
 
@@ -102,6 +103,7 @@ def main():
                 print(EarthLocation.get_site_names())
 
         naxis = vis_hdu.header['NAXIS']
+        weight_selection = [slice(None)] * naxis
         freq_data = None
 
         for axis in range(naxis):
@@ -125,12 +127,20 @@ def main():
                 if axis_data['NAXIS'] > 1:
                     print(UserWarning(f"multiple RA values found. {axis_array}"))
                 data['ra'] = axis_array[0]
+                weight_selection[naxis-axis] = 0
             elif 'DEC' in axis_data.get('CTYPE', ''):
                 if axis_data['NAXIS'] > 1:
                     print(UserWarning(f"multiple DEC values found. {axis_array}"))
                 data['dec'] = axis_array[0]
+                weight_selection[naxis-axis] = 0
+            elif axis > 0:
+                weight_selection[naxis-axis] = 0
 
             print(f"{axis=}, {axis_data=}")
+        # assumption: weight idx 3
+        weight_selection[naxis-1] = 2
+        weight_selection[0] = slice(None)
+        print(f"{weight_selection=}")
 
         if freq_data is None:
             raise UserWarning("No FREQ axis found.")
@@ -147,6 +157,12 @@ def main():
         if date_cols:
             time_array += np.float64(vis_hdu.data[date_cols.pop()])
         jds = np.sort(np.unique(time_array))
+
+        if args.weights:
+            jd_weights = defaultdict(lambda: 0)
+            weights = vis_hdu.data['DATA'][tuple(weight_selection)].sum(axis=1)
+            for jd, weight in zip(time_array, weights):
+                jd_weights[jd] += weight
 
         antnames = []
         antnums = []
@@ -168,7 +184,7 @@ def main():
             antnums = ant_hdu.data['NOSTA'].tolist()
 
         times = Time(jds, format='jd', scale='utc', location=loc, precision=3)
-        if dut1 := data['dut1']:
+        if dut1 := data.get('dut1'):
             print(f"updating delta_ut1_utc {times.delta_ut1_utc} -> {dut1}")
             times.delta_ut1_utc = dut1
 
@@ -203,6 +219,12 @@ def main():
         )
         for time in times
     ]
+    if args.weights:
+        total_weight = 0
+        for i, jd in enumerate(jds):
+            times[i]['weight'] = jd_weights[jd]
+            total_weight += jd_weights[jd]
+        data['total_weight'] = total_weight
 
     ants = [
         OrderedDict(
