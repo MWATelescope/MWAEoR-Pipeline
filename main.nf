@@ -2820,27 +2820,34 @@ workflow prep {
             .map { obsid, meta, json ->
                 def stats = parseJson(json)
                 def flagged_sky_chans = stats.flagged_sky_chans?:[]
-                def chan_occupancy = sky_chans.collect { ch -> stats.channels?[ch]?.non_preflagged_bl_occupancy?:'' }
+                def chan_occupancy = sky_chans.collect { ch ->
+                    occ = stats.channels?[ch]?.rfi_occupancy
+                    isNaN(occ)?'':occ
+                }
+                def rfi_occ = stats.total_rfi_occupancy
+                def flagged_sky_chan_idxs = displayInts(flagged_sky_chans, delim=' ')
+                def flagged_fchan_idxs = displayInts(stats.flagged_fchan_idxs?:[], delim=' ')
+                def flagged_timestep_idxs = displayInts(stats.flagged_timestep_idxs?:[], delim=' ')
+                def preflagged_ants = displayInts(stats.preflagged_ants?:[], delim=' ')
                 ([
                     obsid,
                     meta.subobs?:'',
                     stats.num_chans?:'',
-                    displayInts(flagged_sky_chans),
-                    displayInts(stats.flagged_fchan_idxs?:[]),
+                    flagged_sky_chan_idxs,
+                    flagged_fchan_idxs,
                     flagged_sky_chans.size/chan_occupancy.size,
                     stats.num_times?:'',
                     stats.num_baselines?:'',
-                    displayInts(stats.flagged_timestep_idxs?:[]),
-                    displayInts(stats.preflagged_ants?:[]),
+                    flagged_timestep_idxs,
+                    preflagged_ants,
                     stats.total_occupancy,
-                    stats.total_non_preflagged_bl_occupancy
+                    isNaN(rfi_occ)?'':rfi_occ,
                 ] + chan_occupancy).join("\t")
             }
             .collectFile(
                 name: "occupancy.tsv", newLine: true, sort: true,
                 seed: ([
-                    "OBS",
-                    "SUBOBS",
+                    "OBS", "SUBOBS",
                     "N CHAN", "FLAGGED SKY CHANS", "FLAGGED FINE CHANS", "FLAGGED SKY CHAN FRAC",
                     "N TIME","N BL", "FLAGGED TIMESTEPS", "FLAGGED ANTS",
                     "TOTAL OCCUPANCY", "NON PREFLAGGED"
@@ -2852,25 +2859,108 @@ workflow prep {
 
         // analyse ssins occupancy
         def ssinsOcc = ssins.out.map { it -> def (obsid, meta, _, __, occ_json) = it;
-                [obsid, meta, parseJson(occ_json)]
+                stats = [:]
+                parseJson(occ_json).each { item ->
+                    stats[item.key] = item.value
+                }
+                stats.dab_total = stats.findAll {item ->
+                        item.key.contains('DAB') && item.value != null
+                    }
+                    .collect { item -> item.value }
+                    .sum()
+                stats.narrow_total = stats.findAll {item ->
+                        item.key.contains('narrow') && item.value != null
+                    }
+                    .collect { item -> item.value }
+                    .sum()
+                [obsid, meta, deepcopy(stats)]
             }
+
         ssinsOcc.map { it -> def (obsid, meta, occ) = it;
-                [
+                    ([
                     obsid,
                     meta.subobs?:'',
-                    occ['streak']?:'',
-                    occ['total']?:'',
-                ].join("\t")
+                        occ.total?:'',
+                        occ.streak?:'',
+                        occ.dab_total?:'',
+                        occ.narrow_total?:'',
+                    ]).join("\t")
             }
             .collectFile(
                 name: "ssins_occupancy.tsv", newLine: true, sort: true,
-                seed: ["OBS", "SUBOBS", "STREAK", "TOTAL"].join("\t"),
+                    seed: (["OBS", "SUBOBS", "TOTAL", "STREAK", "DAB TOTAL", "NARROW TOTAL"]).join("\t"),
                 storeDir: "${results_dir}"
             )
             | view { [it, it.readLines().size()] }
 
+        def allDABs = ssinsOcc.flatMap { obs, meta, occ ->
+                occ.findAll { it.key.startsWith("DAB") }.collect { it.key }
+            }
+            .unique()
+            .toSortedList()
+            .map{it -> [it]}
+
+        channel.of("OBS", "SUBOBS", "DAB TOTAL").concat(allDABs.flatten())
+            .toList()
+            .map { it.join("\t") }
+            .concat(
+                ssinsOcc.filter { obs, meta, occ ->
+                        occ.dab_total > 0
+                    }
+                    .combine(allDABs)
+                    .map { obs, meta, occ, dabs ->
+                        ([
+                            obs,
+                            meta.subobs?:'',
+                            occ.dab_total?:''
+                        ] + dabs.collect { dab ->
+                            occ[dab]?:''
+                        }).join("\t")
+                    }
+                    .toSortedList()
+                    .flatten()
+            ).collectFile(
+                name: "ssins_dab.tsv", newLine: true, sort: false,
+                storeDir: "${results_dir}"
+            )
+            .view { [it, it.readLines().size()] }
+
+        def allNarrows = ssinsOcc.flatMap { obs, meta, occ ->
+                occ.findAll { it.key.contains('narrow') }.collect { it.key }
+            }
+            .unique()
+            .toSortedList()
+            .map{it -> [it]}
+
+        channel.of("OBS", "SUBOBS", "NARROW TOTAL").concat(allNarrows.flatten())
+            .toList()
+            .map { it.join("\t") }
+            .concat(
+                ssinsOcc.filter { obs, meta, occ ->
+                        occ.narrow_total > 0
+                    }
+                    .combine(allNarrows)
+                    .map { obs, meta, occ, narrows ->
+                        ([
+                            obs,
+                            meta.subobs?:'',
+                            occ.narrow_total?:''
+                        ] + narrows.collect { narrow ->
+                            occ[narrow]?:''
+                        }).join("\t")
+                    }
+                    .toSortedList()
+                    .flatten()
+            ).collectFile(
+                name: "ssins_narrow.tsv", newLine: true, sort: false,
+                storeDir: "${results_dir}"
+            )
+            .view { [it, it.readLines().size()] }
+
         if (params.noprepqa) {
             subobsMetaVisPass = subobsMetaVis
+            subobsMetaVisFlags = channel.empty()
+            fail_codes = channel.empty()
         } else {
             tileUpdates = file(params.tile_updates_path)
                 .readLines()
@@ -2894,7 +2984,8 @@ workflow prep {
                     def newMeta = [:]
                     def flagMeta = [manualAnts: (manualAnts as ArrayList).sort(false)]
                     def newFlags = ([]) as Set
-                    if (!params.noManualFlags) {
+                    if (!params.noManualFlags && manualAnts.size() > 0) {
+                        // println("${obsid} newFlags += manualAnts:${displayInts(manualAnts)}")
                         newFlags.addAll(manualAnts) // as Set?
                     }
                     if (prepStats != null) {
@@ -2903,25 +2994,41 @@ workflow prep {
                         if (prepStats.STATUS) {
                             flagMeta += [prep_status: prepStats.STATUS]
                         }
-                        if (!params.noPrepFlags) {
+                        if (!params.noPrepFlags && prepAnts.size() > 0) {
+                            // println("${obsid} newFlags += prepAnts:${displayInts(prepAnts)}")
                             newFlags.addAll(prepAnts) // as Set?
                         }
                     }
                     if (flagStats != null) {
                         def flagAnts = flagStats.preflagged_ants?:[]
-                        flagMeta += [ total_occ: flagStats.total_occupancy, ]
+                        flagMeta += [
+                            total_occ: flagStats.total_occupancy,
+                            total_non_preflagged_bl_occ: flagStats.total_rfi_occupancy,
+                        ]
                         if (flagStats.preflagged_ants) {
                             flagMeta += [ flagAnts: flagAnts ]
                         }
                         if (flagStats.flagged_fchan_idxs) {
                             newMeta += [ fineChanFlags: flagStats.flagged_fchan_idxs?:[] ]
                         }
+                        if (flagAnts.size() > 0) {
+                            // println("${obsid} newFlags -= flagAnts:${displayInts(flagAnts)}")
                         newFlags.removeAll(flagAnts)
                     }
-                    if (ssinsStats != null) {
-                        flagMeta += [ ssins_total_occ: ssinsStats['total'], ]
                     }
+                    if (ssinsStats != null) {
+                        [ "dab_total", "narrow_total", "streak", "total" ].each { key ->
+                            if (ssinsStats[key]) {
+                                flagMeta[ "ssins_${key}" ] = ssinsStats[key]
+                    }
+                        }
+                    }
+
+                    if (newFlags.size() > 0) {
+                        // println("${obsid} newFlags:${displayInts(newFlags)}")
                     newMeta += [prepFlags: (newFlags as ArrayList).sort(false)]
+                    }
+
                     [obsid, deepcopy(meta) + newMeta, uvfits, flagMeta]
                 }
 
