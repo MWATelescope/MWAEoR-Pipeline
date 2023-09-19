@@ -5254,17 +5254,34 @@ workflow qaPrep {
             allApply | hypApplyMS
         }
         // get uvfits subtraction arguments from apply output.
-        subArgsUV = obsMetafitsSrclist.cross(hypApplyUV.out)
-            .map { obsMetafitsSrclist_, hypApplyUV_ ->
-                def (obsid, metafits, srclist) = obsMetafitsSrclist_
+        // subArgsUV = obsMetafitsSrclist.cross(hypApplyUV.out)
+        //     .map { obsMetafitsSrclist_, hypApplyUV_ ->
+        //         def (obsid, metafits, srclist) = obsMetafitsSrclist_
+        //         def (__, meta, vis) = hypApplyUV_;
+        //         def newMeta = [sub_nsrcs: params.sub_nsrcs]
+        //         [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
+        //     }
+        // subArgsMS = obsMetafitsSrclist.cross(hypApplyMS.out)
+        //     .map { obsMetafitsSrclist_, hypApplyUV_ ->
+        //         def (obsid, metafits, srclist) = obsMetafitsSrclist_
+        //         def (__, meta, vis) = hypApplyUV_;
+        //         def newMeta = [sub_nsrcs: params.sub_nsrcs]
+        //         [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
+        //     }
+        // TODO: make hyperdrive not crash if there are not num srcs
+        subArgsUV = obsMetafits.cross(hypApplyUV.out)
+            .map { obsMetafits_, hypApplyUV_ ->
+                def (obsid, metafits) = obsMetafits_
                 def (__, meta, vis) = hypApplyUV_;
+                srclist = file(params.sourcelist)
                 def newMeta = [sub_nsrcs: params.sub_nsrcs]
                 [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
-        subArgsMS = obsMetafitsSrclist.cross(hypApplyMS.out)
-            .map { obsMetafitsSrclist_, hypApplyUV_ ->
-                def (obsid, metafits, srclist) = obsMetafitsSrclist_
+        subArgsMS = obsMetafits.cross(hypApplyMS.out)
+            .map { obsMetafits_, hypApplyUV_ ->
+                def (obsid, metafits) = obsMetafits_
                 def (__, meta, vis) = hypApplyUV_;
+                srclist = file(params.sourcelist)
                 def newMeta = [sub_nsrcs: params.sub_nsrcs]
                 [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
