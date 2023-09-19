@@ -2236,68 +2236,117 @@ def get_seconds(float time, String unit) {
     }
 }
 
+def prepqa_pass(flagMeta) {
+    def reasons = []
+    def fail_code = 0x00 // no error
+    if (params.flag_occupancy_threshold != null && flagMeta.total_occ > params.flag_occupancy_threshold) {
+        reasons += "total_occ(${String.format('%.2f', flagMeta.total_occ)})>${params.flag_occupancy_threshold}"
+        fail_code = fail_code==0x00 ? 0x31 : fail_code
+    }
+    if (params.rfi_occupancy_threshold != null && flagMeta.total_non_preflagged_bl_occ > params.rfi_occupancy_threshold) {
+        reasons += "rfi_occ(${String.format('%.2f', flagMeta.total_non_preflagged_bl_occ)})>${params.rfi_occupancy_threshold}"
+        fail_code = fail_code==0x00 ? 0x32 : fail_code
+    }
+    if (params.ssins_occupancy_threshold != null && flagMeta.ssins_total > params.ssins_occupancy_threshold) {
+        reasons += "ssins_total(${String.format('%.2f', flagMeta.ssins_total)})>${params.ssins_occupancy_threshold}"
+        fail_code = fail_code==0x00 ? 0x33 : fail_code
+    }
+    if (params.ssins_streak_threshold != null && flagMeta.ssins_streak > params.ssins_streak_threshold) {
+        reasons += "ssins_streak(${String.format('%.2f', flagMeta.ssins_streak)})>${params.ssins_streak_threshold}"
+        fail_code = fail_code==0x00 ? 0x34 : fail_code
+    }
+    if (params.ssins_narrow_threshold != null && flagMeta.ssins_narrow_total > params.ssins_narrow_threshold) {
+        reasons += "ssins_narrow_total(${String.format('%.2f', flagMeta.ssins_narrow_total)})>${params.ssins_narrow_threshold}"
+        fail_code = fail_code==0x00 ? 0x35 : fail_code
+    }
+    if (params.ssins_dab_threshold != null && flagMeta.ssins_dab_total > params.ssins_dab_threshold) {
+        reasons += "ssins_dab_total(${String.format('%.2f', flagMeta.ssins_dab_total)})>${params.ssins_dab_threshold}"
+        fail_code = fail_code==0x00 ? 0x36 : fail_code
+    }
+    if (!params.noprepqafilter && flagMeta.prep_status != "GOOD") {
+        reasons += "prep_status=${flagMeta.prep_status}"
+        fail_code = fail_code==0x00 ? 0x37 : fail_code
+    }
+    if (params.wilensky_mode && Float.valueOf(flagMeta.ssins_narrow_total?:0.0) + Float.valueOf(flagMeta.ssins_dab_total?:0.0) < 0.1) {
+        reasons += "ssins_narrow_total(${String.format('%.2f', flagMeta.ssins_narrow_total)}) + ssins_dab_total(${String.format('%.2f', flagMeta.ssins_dab_total)})<0.1"
+        fail_code = fail_code==0x00 ? 0x35 : fail_code
+    }
+
+    if (reasons.size() > 0) {
+        reason = reasons.join('|')
+    } else {
+        reason = null
+    }
+    return [fail_code, reason]
+}
 
 // POWER	P_win_sub, P_win	< 20	Small window power overall
 def cmt_ps_metrics_pass(meta) {
+    def fail_code = 0x00
     if (meta.p_window != null) {
         if (meta.p_window > params.filter_max_ps_window) {
-            return "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window(${params.filter_max_ps_window})"
+            fail_code = ((meta.sub?:"")=="") ? 0x60 : 0x61
+            return [fail_code, "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window(${params.filter_max_ps_window})"]
         }
     }
-    return null
+    return [fail_code, null]
 }
 
 // POWER	Normal P_win/P_wg	< 0.1	Window power a small fraction of wedge power
 // POWER	P_wg_sub/P_wg	< 0.3	More than 70% wedge power subtracted
 // POWER	P_win_sub/P_win	< 1.0, >0.1	Window power not crazy after subtraction
 def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
-    def subReason = cmt_ps_metrics_pass(subMeta)
-    if (subReason != null) {
-        return subReason
+    def (fail_code, subReason) = cmt_ps_metrics_pass(subMeta)
+    if (fail_code != 0x00) {
+        return [fail_code, subReason]
     }
     if (nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
         def p_win_p_wg = nosubMeta.p_window / nosubMeta.p_wedge
         if (p_win_p_wg > params.filter_max_ps_ratio) {
-            return "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio(${params.filter_max_ps_ratio})"
+            return [0x62, "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio(${params.filter_max_ps_ratio})"]
         }
     }
     if (subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
         def sub_p_wg = subMeta.p_wedge / nosubMeta.p_wedge
         if (sub_p_wg > params.filter_max_ps_wedge_sub) {
-            return "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_sub{${params.filter_max_ps_wedge_sub}}"
+            return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_sub{${params.filter_max_ps_wedge_sub}}"]
         }
     }
     if (subMeta.p_window != null && nosubMeta.p_window != null) {
         def sub_p_win = subMeta.p_window / nosubMeta.p_window
         if (sub_p_win < 0.1) {
-            return "sub_p_win:p_win(${sub_p_win}) < min_ps_win_sub(${params.filter_min_ps_win_sub})"
+            return [0x66, "sub_p_win:p_win(${sub_p_win}) < min_ps_win_sub(${params.filter_min_ps_win_sub})"]
         }
         if (sub_p_win < 0.1) {
-            return "sub_p_win:p_win(${sub_p_win}) > max_ps_win_sub(${params.filter_max_ps_win_sub})"
+            return [0x67, "sub_p_win:p_win(${sub_p_win}) > max_ps_win_sub(${params.filter_max_ps_win_sub})"]
         }
     }
-    return null
+    return [fail_code, subReason]
 }
 
 def cmt_imgqa_pass(meta) {
+    def fail_code = 0x00
     if (params.filter_max_vrms_box!= null && meta.v_rms_box != null) {
         if (meta.v_rms_box > params.filter_max_vrms_box) {
-            return "${meta.sub?:""}_v_rms_box(${meta.v_rms_box}) > max_vrms_box(${params.filter_max_vrms_box})"
+            fail_code = ((meta.sub?:"")=="") ? 0x70 : 0x71
+            return [fail_code, "${meta.sub?:""}_v_rms_box(${meta.v_rms_box}) > max_vrms_box(${params.filter_max_vrms_box})"]
         }
     }
-    // if (meta.xx_pks_int != null && meta.yy_pks_int != null && meta.v_pks_int != null) {
-    //     def pks_int_v_ratio = meta.v_pks_int / (meta.xx_pks_int + meta.yy_pks_int)
-    //     if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
-    //         return "${meta.sub?:""}_pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"
-    //     }
-    // }
+    if (params.filter_max_pks_int_v_ratio != null && meta.xx_pks_int != null && meta.yy_pks_int != null && meta.v_pks_int != null) {
+        def pks_int_v_ratio = meta.v_pks_int / (meta.xx_pks_int + meta.yy_pks_int)
+        if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
+            fail_code = ((meta.sub?:"")=="") ? 0x72 : 0x73
+            return [fail_code, "${meta.sub?:""}_pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"]
+        }
+    }
     if (params.filter_max_pks_int_diff != null && meta.xx_pks_int != null && meta.yy_pks_int != null) {
         def pks_int_diff = (meta.xx_pks_int - meta.yy_pks_int).abs()
         if (pks_int_diff > params.filter_max_pks_int_diff) {
-            return "${meta.sub?:""}_pks_int |xx+yy| (${pks_int_diff}) > max_pks_int_diff(${params.filter_max_pks_int_diff})"
+            fail_code = ((meta.sub?:"")=="") ? 0x74 : 0x75
+            return [fail_code, "${meta.sub?:""}_pks_int |xx-yy| (${pks_int_diff}) > max_pks_int_diff(${params.filter_max_pks_int_diff})"]
         }
     }
-    return null
+    return [fail_code, null]
 }
 
 // IMG	Vrms box	< 0.05	RMS V should be small
@@ -2308,35 +2357,36 @@ def cmt_imgqa_pass(meta) {
 // IMG	XX_sub integ	< 0.5	Integrated remaining flux after subtraction is small
 // IMG	YY_sub integ	< 0.5	Integrated remaining flux after subtraction is small
 def cmt_imgqa_pass_sub(nosubMeta, subMeta) {
-    if (params.filter_max_pks_int_v_ratio != null && nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
-        def pks_int_v_ratio = nosubMeta.v_pks_int / (nosubMeta.xx_pks_int + nosubMeta.yy_pks_int)
-        if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
-            return "pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"
-        }
-    }
+    def fail_code = 0x00
+    // if (params.filter_max_pks_int_v_ratio != null && nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
+    //     def pks_int_v_ratio = nosubMeta.v_pks_int / (nosubMeta.xx_pks_int + nosubMeta.yy_pks_int)
+    //     if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
+    //         return [0x72, "pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"]
+    //     }
+    // }
     if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.xx_pks_int != null && subMeta.xx_pks_int != null) {
         def pks_int_sub_ratio = subMeta.xx_pks_int / nosubMeta.xx_pks_int
         if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
-            return "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"
+            return [0x76, "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"]
         }
     }
     if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.yy_pks_int != null && subMeta.yy_pks_int != null) {
         def pks_int_sub_ratio = subMeta.yy_pks_int / nosubMeta.yy_pks_int
         if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
-            return "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"
+            return [0x77, "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"]
         }
     }
     if (params.filter_max_pks_int_sub != null && subMeta.xx_pks_int != null) {
         if (subMeta.xx_pks_int > params.filter_max_pks_int_sub) {
-            return "${subMeta.sub?:""}_xx_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"
+            return [0x78, "${subMeta.sub?:""}_xx_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"]
         }
     }
     if (params.filter_max_pks_int_sub != null && subMeta.yy_pks_int != null) {
         if (subMeta.yy_pks_int > params.filter_max_pks_int_sub) {
-            return "${subMeta.sub?:""}_yy_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"
+            return [0x79, "${subMeta.sub?:""}_yy_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"]
         }
     }
-    return null
+    return [fail_code, null]
 }
 
 // decompose an image filename into:
@@ -2353,11 +2403,18 @@ def decomposeImg = { img ->
         tokens = tokens[0..-3] + ["uv-${tokens[-1]}"]
     }
     meta.prod = tokens.removeLast()
+    if (tokens.size > 0 && tokens[-1] != "MFS") {
     meta.pol = tokens.removeLast()
+    }
     // channel is only present in multi-frequency imaging
     if (multichannel && (chan_tok = tokens.removeLast()) != "MFS") {
         meta.chan_tok = chan_tok
+        try {
         meta.chan = (chan_tok as int)
+        } catch (java.lang.NumberFormatException e) {
+            print("error parsing channel ${chan_tok} from ${img}. \n${meta}")
+            throw e
+        }
     }
     // suffix without interval
     meta.inter_suffix = [meta.chan_tok, meta.pol, meta.prod].join('-')
@@ -2368,6 +2425,78 @@ def decomposeImg = { img ->
         meta.suffix = "${inter_tok}-${meta.inter_suffix}"
     }
     meta
+}
+
+// mapping from eor1 pointing to sweet pointing
+def eor12sweet = [
+    0: 0, // [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+    1: 2, // [0,1,2,3,0,1,2,3,0,1,2,3,0,1,2,3]
+    2: 4, // [3,2,1,0,3,2,1,0,3,2,1,0,3,2,1,0]
+    3: 10, // [0,2,4,6,0,2,4,6,0,2,4,6,0,2,4,6]
+    4: 12, // [6,4,2,0,6,4,2,0,6,4,2,0,6,4,2,0]
+    5: 26, // [0,3,6,9,0,3,6,9,0,3,6,9,0,3,6,9]
+    6: 28, // [9,6,3,0,9,6,3,0,9,6,3,0,9,6,3,0]
+    7: 51, // [0,4,8,12,1,5,9,13,2,6,10,14,3,7,11,15]
+    8: 54, // [12,8,4,0,13,9,5,1,14,10,6,2,15,11,7,3]
+    9: 83, // [0,5,10,15,1,6,11,16,2,7,12,17,3,8,13,18]
+    10: 87, // [18,13,8,3,17,12,7,2,16,11,6,1,15,10,5,0]
+]
+
+def failCodes = [
+    0x00: "000 - clean",
+
+    // 0x0X - observational
+    0x01: "001 - phase centre",
+    0x02: "002 - channel selection",
+    0x03: "003 - pointing",
+    0x04: "004 - sun elevation",
+    0x05: "005 - capture mode",
+
+    // 0x1X - runtime
+    0x10: "016 - bad tiles",
+    0x11: "017 - dead dipoles",
+
+    // 0x2X - quality
+    0x20: "032 - data quality",
+    0x21: "033 - large iono qa",
+    0x22: "034 - null iono qa",
+
+    // 0x3X - prep
+    0x31: "049 - total occupancy",
+    0x32: "050 - rfi occupancy",
+    0x33: "051 - ssins occupancy",
+    0x34: "052 - ssins streak",
+    0x35: "053 - ssins narrow",
+    0x36: "054 - ssins dab",
+    0x37: "055 - prep status",
+
+    // 0x4X - calibration
+    // 0x5X - visQA
+    // 0x6X - ps_metrics
+    0x60: "096 - large unsub p_win",
+    0x61: "097 - large sub p_win",
+    0x62: "098 - small unsub p_win:p_wg",
+    // 0x63: "099 - small sub p_win:p_wg",
+    0x64: "100 - large sub_p_win:p_wg",
+    // 0x65
+    0x66: "102 - small sub_p_win:p_win",
+    0x67: "103 - large sub_p_win:p_win",
+
+    // 0x7X - imgQA
+    0x70: "112 - large unsub v_rms_box",
+    0x71: "113 - large sub v_rms_box",
+    0x72: "114 - large unsub pks_int v/(xx+yy)",
+    0x73: "115 - large sub pks_int v/(xx+yy)",
+    0x74: "116 - large unsub pks_int |xx-yy|",
+    0x75: "117 - large sub pks_int |xx-yy|",
+    0x76: "118 - large sub_xx_pks_int:xx_pks_int",
+    0x77: "119 - large sub_yy_pks_int:yy_pks_int",
+    0x78: "120 - large sub xx_pks_int",
+    0x79: "121 - large sub yy_pks_int",
+]
+
+def wrap_angle(a) {
+    return (Float.valueOf(a) + 180) % 360 - 180
 }
 
 // use mwa webservices to gate obsids by pointing and faults
@@ -2387,42 +2516,107 @@ workflow ws {
                 [obsid, [dataquality: quality, dataqualitycomment: comment]]
             }
 
+        print(params)
+
         wsSummary = wsMeta.out.join(tapMeta.out).map { obsid, wsJson, filesJson, tapJson ->
-                // parse wsJson
                 def wsStats = parseJson(wsJson)
+                def fileStats = parseJson(filesJson)
+                def tapStats = parseJson(tapJson)
 
                 def obs_name = wsStats.obsname;
                 def groupid = wsStats.groupid;
+                def projectid = wsStats.projectid;
 
                 def ra_phase_center = wsStats.ra_phase_center;
                 if (ra_phase_center == null) {
                     ra_phase_center = wsStats.metadata.ra_pointing
                 }
+                ra_phase_center = wrap_angle(ra_phase_center)
                 def dec_phase_center = wsStats.dec_phase_center;
                 if (dec_phase_center == null) {
                     dec_phase_center = wsStats.metadata.dec_pointing
                 }
+                dec_phase_center = wrap_angle(dec_phase_center)
 
-                def eorfield = null;
-                if (ra_phase_center.round() == 0) {
-                    def nearest_dec = dec_phase_center.round()
-                    if (dec_phase_center.round() == -27) {
-                        eorfield = 0
-                    } else if (dec_phase_center.round() == 30) {
-                        eorfield = 1
-                    }
+                def az_pointing = wsStats.metadata.azimuth_pointing
+                az_pointing = wrap_angle(az_pointing)
+                def el_pointing = wsStats.metadata.elevation_pointing
+                def ew_pointing = null
+                // pointings: east-west vs EOR1 vs sweet:
+                // | EW | E1 | SW |  az |    el |        delays |    lsts  |
+                // |----+----+----+-----+-------+-------------- | -------- |
+                // | -3 |  5 | 26 |  90 | 69.16 | {0,3,6,9,...} | -28..-20 |
+                // | -2 |  3 | 10 |  90 | 76.28 | {0,2,4,6,...} | -19..-12 |
+                // | -1 |  1 |  2 |  90 | 83.19 | {0,1,2,3,...} | -12..-4  |
+                // |  0 |  0 |  0 |   0 | 90.00 | {0,0,0,0,...} |  -4..4   |
+                // | +1 |  2 |  4 | 270 | 83.19 | {3,2,1,0,...} |   4..12  |
+                // | +2 |  4 | 12 | 270 | 76.28 | {6,4,2,0,...} |  11..19  |
+                // | +3 |  6 | 28 | 270 | 69.16 | {9,6,3,0,...} |  19..28  |
+                if ([-90,0,90].contains(az_pointing.round() as int)) {
+                    ew_pointing = ((90-el_pointing) / 7).round() as int
+                    if (az_pointing > 0) ew_pointing *= -1
+                } else {
+                    println "unknown az_pointing ${az_pointing}"
                 }
+                def gridpoint_number = wsStats.metadata.gridpoint_number
+                def gridpoint_name = wsStats.metadata.gridpoint_name
+                def sweet_pointing = null
+                if (gridpoint_name == "sweet") {
+                    sweet_pointing = gridpoint_number
+                } else if (gridpoint_name == "EOR1") {
+                    if (eor12sweet[gridpoint_number] != null) {
+                        sweet_pointing = eor12sweet[gridpoint_number]
+                    } else {
+                        println "unknown EOR1 gridpoint_number ${gridpoint_number}"
+                    }
+                } else {
+                    println "unknown gridpoint_name ${gridpoint_name}"
+                }
+                def lst = wrap_angle(wsStats.metadata.local_sidereal_time_deg.floatValue())
 
                 def coarse_chans = ((wsStats.rfstreams?:[:])["0"]?:[:]).frequencies?:[]
-                def center_chan = coarse_chans[coarse_chans.size()/2]
-                def eorband = null;
-                if (center_chan == 143) {
-                    eorband = 1
-                } else if (center_chan == 108) {
-                    eorband = 0
+                // def center_chan = coarse_chans[coarse_chans.size()/2]
+                def center_chan = tapStats.center_channel_number as int
+
+                eorfield = null;
+                eorband = null;
+                // eor fields
+                // | field | ra h | ra d | dec |
+                // | ----- | ---- | ---- | --- |
+                // | EoR0  | 0    |    0 | -27 |
+                // | EoR1  | 4    |   60 | -30 |
+                // | EoR2  | 10.3 |  155 | -10 |
+                // | EoR3  | 1    |   15 | -27 |
+                def nearest_ra = ra_phase_center.round().intValue()
+                def nearest_dec = dec_phase_center.round().intValue()
+                if (nearest_ra == 0 && nearest_dec == -27) {
+                    eorfield = 0
+                } else if (nearest_ra == 60 && nearest_dec == -30) {
+                    eorfield = 1
+                } else if (nearest_ra == 155 && nearest_dec == -10) {
+                    eorfield = 2
+                } else if (nearest_ra == 15 && nearest_dec == -27) {
+                    eorfield = 3
+                } else {
+                    println "unknown eor field for ${nearest_ra} ${nearest_dec}"
                 }
 
-                def pointing = wsStats.metadata.gridpoint_number
+                // eor bands
+                // |   band | cent          | range                |
+                // | ------ | ------------- | -------------------- |
+                // | 0 low  |  120 (154MHz) | 109-132 (139-170MHz) |
+                // | 1 high |  142 (182MHz) | 131-154 (167-198MHz) |
+                // | 2 ulow |   70  (90MHz) |  59-88   (75-113MHz) |
+
+                if (center_chan == 142) {
+                    eorband = 1
+                } else if (center_chan == 120) {
+                    eorband = 0
+                } else if (center_chan == 70) {
+                    eorband = 2
+                    print("unknown eor band for ${center_chan}")
+                }
+
                 def nscans = ((wsStats.stoptime?:0) - (wsStats.starttime?:0)) / (wsStats.int_time?:1)
                 def delays = (wsStats.alldelays?:[:]).values().flatten()
                 def quality = wsStats.quality?:[:]
@@ -2433,15 +2627,6 @@ workflow ws {
                 def n_tiles = tile_names.size()
                 def n_lb = tile_names.count { it =~ /(?i)lb/ }
                 def n_hex = tile_names.count { it =~ /(?i)hex/ }
-                def config = "ph1"
-                if (n_tiles > 128) {
-                    config = "ph3"
-                } else if (n_lb > 50) {
-                    config = "ph2b"
-                } else if (n_hex > 50) {
-                    config = "ph2a"
-                }
-                config += "-${n_tiles}T"
 
                 def bad_tiles = wsStats.bad_tiles?:[:]
                 def n_bad_tiles = bad_tiles.size()
@@ -2449,8 +2634,13 @@ workflow ws {
                 def n_dead_dipoles = delays.count { it == 32 }
                 def dead_dipole_frac = n_dead_dipoles / delays.size()
                 def quality_update = quality_updates[obsid]?:[:]
-                def dataquality = Float.valueOf(quality_update.dataquality?:wsStats.dataquality?:0)
-                def dataqualitycomment = quality_update.dataqualitycomment?:wsStats.dataqualitycomment?:''
+                def dataquality = Float.valueOf(wsStats.dataquality?:0)
+                def dataqualitycomment = wsStats.dataqualitycomment?:''
+                def manual_dataquality = Float.valueOf(quality_update.dataquality?:0)
+                if (quality_update.dataquality != null && dataquality != manual_dataquality) {
+                    dataquality = manual_dataquality
+                    dataqualitycomment = "manual: ${quality_update.dataqualitycomment?:''}"
+                }
                 def faults = wsStats.faults?:[:]
                 def badstates = (faults.badstates?:[:]).values().flatten()
                 def badpointings = (faults.badpointings?:[:]).values().flatten()
@@ -2458,42 +2648,76 @@ workflow ws {
                 def badgains = (faults.badgains?:[:]).values().flatten()
                 def badbeamshape = (faults.badbeamshape?:[:]).values().flatten()
                 def fail_reasons = []
+                def capture_mode = wsStats.mode
 
-                def fileStats = parseJson(filesJson)
-                def tapStats = parseJson(tapJson)
+                config = tapStats.mwa_array_configuration
                 sun_elevation = Float.valueOf(tapStats.sun_elevation?:'NaN')
 
-                if (params.filter_pointings && !params.filter_pointings.contains(pointing)) {
-                    fail_reasons += ["pointing=${pointing}"]
-                }
+                // fail codes
+                def fail_code = 0x00 // no error
 
-                // TODO: filter_sweets
-                // if (params.filter_sweets != null && !params.filter_sweets.contains()) {
-                //     fail_reasons += ["pointing=${pointing}"]
-                // }
-                if (params.filter_quality != null && dataquality > params.filter_quality) {
-                    fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
-                }
-                if (params.filter_bad_tile_frac != null && bad_tile_frac > params.filter_bad_tile_frac) {
-                    fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
-                }
-                if (params.filter_dead_dipole_frac != null && dead_dipole_frac > params.filter_dead_dipole_frac) {
-                    fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
-                }
+                // 0x0X - observational
                 if (params.filter_eorfield != null && eorfield != params.filter_eorfield) {
-                    fail_reasons += ["phase_radec=(${ra_phase_center}, ${dec_phase_center})"]
+                    fail_reasons += [sprintf("phase_radec(%+.1f,%+.1f)!=eor%d", ra_phase_center, dec_phase_center, params.filter_eorfield)]
+                    fail_code = fail_code==0x00 ? 0x01 : fail_code
+                }
+                if (params.filter_ra != null && (ra_phase_center - params.filter_ra).abs() > 0.1) {
+                    fail_reasons += [sprintf("phase_ra(%+.1f)!=ra(%+.1f)", ra_phase_center, params.filter_ra)]
+                    fail_code = fail_code==0x00 ? 0x01 : fail_code
+                }
+                if (params.filter_dec != null && (dec_phase_center - params.filter_dec).abs() > 0.1) {
+                    fail_reasons += [sprintf("phase_dec(%+.1f)!=dec(%+.1f)", dec_phase_center, params.filter_dec)]
+                    fail_code = fail_code==0x00 ? 0x01 : fail_code
                 }
                 if (params.filter_eorband != null && eorband != params.filter_eorband) {
                     fail_reasons += ["center_chan=${center_chan}"]
+                    fail_code = fail_code==0x00 ? 0x02 : fail_code
                 }
-                if (params.filter_ionoqa != null && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
-                    fail_reasons += ["iono_qa>${params.filter_ionoqa}"]
+                if (params.filter_sweet_pointings != null && !params.filter_sweet_pointings.contains(sweet_pointing)) {
+                    fail_reasons += ["sweet_pointing=${sweet_pointing}"]
+                    fail_code = fail_code==0x00 ? 0x03 : fail_code
+                }
+                if (params.filter_ew_pointings != null && !params.filter_ew_pointings.contains(ew_pointing)) {
+                    fail_reasons += ["ew_pointing=${ew_pointing}"]
+                    fail_code = fail_code==0x00 ? 0x03 : fail_code
                 }
                 if (params.filter_sun_elevation != null && sun_elevation != null && sun_elevation > params.filter_sun_elevation) {
-                    fail_reasons += ["sun_elevation>${params.filter_sun_elevation}"]
+                    fail_reasons += [sprintf("sun_elevation(%+.1f)>%+.1f", sun_elevation, params.filter_sun_elevation)]
+                    fail_code = fail_code==0x00 ? 0x04 : fail_code
+                }
+                if (capture_mode == "NO_CAPTURE") {
+                    fail_reasons += ["no cap fr fr"]
+                    fail_code = fail_code==0x00 ? 0x05 : fail_code
                 }
 
+                // 0x1X - runtime
+                if (params.filter_bad_tile_frac != null && bad_tile_frac > params.filter_bad_tile_frac) {
+                    fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
+                    fail_code = fail_code==0x00 ? 0x10 : fail_code
+                }
+                if (params.filter_dead_dipole_frac != null && dead_dipole_frac > params.filter_dead_dipole_frac) {
+                    fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
+                    fail_code = fail_code==0x00 ? 0x11 : fail_code
+                }
+
+                // 0x2X - quality
+                if (params.filter_quality != null && dataquality > params.filter_quality) {
+                    fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
+                    fail_code = fail_code==0x00 ? 0x20 : fail_code
+                }
+                if (params.filter_ionoqa != null && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
+                    fail_reasons += [sprintf("rts_iono_qa(%.1f)>%.1f", Float.valueOf(quality.iono_qa), Float.valueOf(params.filter_ionoqa))]
+                    fail_code = fail_code==0x00 ? 0x21 : fail_code
+                }
+                if (params.filter_ionoqa != null && quality.iono_qa == null) {
+                    fail_reasons += ["rts_iono_qa is null"]
+                    fail_code = fail_code==0x00 ? 0x22 : fail_code
+                }
+
+                fail_code = failCodes[fail_code]
+
                 def summary = [
+                    fail_code: fail_code,
                     fail_reasons: fail_reasons,
                     // obs metadata
                     obs_name: obs_name,
@@ -2507,18 +2731,20 @@ workflow ws {
                     // pointing
                     ra_pointing: wsStats.metadata.ra_pointing,
                     dec_pointing: wsStats.metadata.dec_pointing,
-                    az_pointing: wsStats.metadata.azimuth_pointing,
-                    el_pointing: wsStats.metadata.elevation_pointing,
+                    az_pointing: az_pointing,
+                    el_pointing: el_pointing,
                     ra_phase_center: ra_phase_center,
                     dec_phase_center: dec_phase_center,
-                    pointing: pointing,
-                    lst: wsStats.metadata.local_sidereal_time_deg,
+                    ew_pointing: ew_pointing,
+                    sweet_pointing: sweet_pointing,
+                    lst: lst,
                     eorfield: eorfield,
 
                     // channels
                     freq_res: wsStats.freq_res,
                     coarse_chans: coarse_chans,
                     eorband: eorband,
+                    centre_freq: ((coarse_chans[0] + coarse_chans[-1]) * 1.28e6 / 2),
 
                     // times
                     int_time: wsStats.int_time,
@@ -2530,9 +2756,9 @@ workflow ws {
                     tile_rxs: tile_rxs,
                     bad_tiles: bad_tiles,
                     // iono quality
-                    iono_magnitude: quality.iono_magnitude?:'',
-                    iono_pca: quality.iono_pca?:'',
-                    iono_qa: quality.iono_qa?:'',
+                    iono_magnitude: quality.iono_magnitude,
+                    iono_pca: quality.iono_pca,
+                    iono_qa: quality.iono_qa,
                     // data quality
                     dataquality: dataquality,
                     dataqualitycomment: dataqualitycomment,
@@ -2559,33 +2785,71 @@ workflow ws {
                 [obsid, summary]
             }
 
-        // display wsSummary
-        wsSummary.map { obsid, summary ->
+        fail_codes = wsSummary
+            // .filter { obsid, meta, uvfits, flagMeta -> (meta.prepFlags?:[]).size() > 0 }
+            .map { obsid, summary ->
                 [
                     obsid,
+                    summary.fail_code
+                ]
+            }
+        fail_codes.groupTuple(by: 1)
+            .map { obsids, fail_code ->
+                [
+                    fail_code,
+                    obsids.size(),
+                ].join("\t")
+            }
+            .collectFile(
+                name: "fail_counts_ws.tsv", newLine: true, sort: true,
+                seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+                storeDir: "${results_dir}"
+            )
+            | view { it.readLines().size() }
+
+        wsSummary.map { obsid, summary ->
+                [obsid, summary.lst.round().intValue()]
+            }
+            .groupTuple(by: 1)
+            .map { obsids, lst ->
+                [
+                    sprintf("%+03d", lst),
+                    obsids.size(),
+                ].join("\t")
+            }
+            .collectFile(
+                name: "lst_counts_ws.tsv", newLine: true, sort: true,
+                seed: ([ "LST", "COUNT" ]).join("\t"),
+                storeDir: "${results_dir}"
+            )
+            | view { it.readLines().size() }
+
+        // display wsSummary
+        wsStats = wsSummary.map { obsid, summary ->
+                [
+                    obsid,
+                    (summary.fail_code==null||summary.fail_code==failCodes[0x00])?'':summary.fail_code,
                     summary.fail_reasons.join('|'),
                     summary.starttime_mjd?:'',
                     summary.starttime_utc?:'',
-                    summary.groupid,
-                    summary.corrmode,
-                    summary.delaymode?:'',
 
                     // pointing
-                    summary.ra_pointing,
-                    summary.dec_pointing,
-                    summary.az_pointing,
-                    summary.el_pointing,
-                    summary.ra_phase_center,
-                    summary.dec_phase_center,
-                    summary.pointing,
-                    summary.lst,
+                    sprintf("%.2f", summary.ra_pointing),
+                    sprintf("%.2f", summary.dec_pointing),
+                    sprintf("%.2f", summary.az_pointing),
+                    sprintf("%.2f", summary.el_pointing),
+                    summary.ra_phase_center==null?'':sprintf("%.2f", summary.ra_phase_center),
+                    summary.dec_phase_center==null?'':sprintf("%.2f", summary.dec_phase_center),
+                    summary.ew_pointing==null?'':summary.ew_pointing,
+                    summary.sweet_pointing==null?'':summary.sweet_pointing,
+                    sprintf("%.2f", summary.lst),
                     summary.obs_name,
-                    summary.eorfield?:'',
+                    summary.eorfield==null?'':summary.eorfield,
 
                     // channels
                     summary.freq_res,
                     displayInts(summary.coarse_chans),
-                    summary.eorband?:'',
+                    summary.eorband==null?'':summary.eorband,
 
                     // times
                     summary.int_time,
@@ -2597,14 +2861,14 @@ workflow ws {
                     summary.dead_dipole_frac,
                     summary.n_bad_tiles,
                     summary.bad_tile_frac,
-                    displayInts(summary.tile_nums),
-                    displayInts(summary.bad_tiles),
-                    displayInts(summary.tile_rxs),
+                    displayInts(summary.tile_nums, delim=' '),
+                    displayInts(summary.bad_tiles, delim=' '),
+                    displayInts(summary.tile_rxs, delim=' '),
 
                     // iono quality
-                    summary.iono_magnitude,
-                    summary.iono_pca,
-                    summary.iono_qa,
+                    summary.iono_magnitude==null?'':summary.iono_magnitude,
+                    summary.iono_pca==null?'':summary.iono_pca,
+                    summary.iono_qa==null?'':summary.iono_qa,
 
                     // archive
                     summary.num_data_files,
@@ -2624,12 +2888,11 @@ workflow ws {
             .collectFile(
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "FAIL REASON", "START MJD", "START UTC",
-                    "GROUP ID", "CORR MODE", "DELAY MODE",
-                    "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "POINT", "LST DEG", "OBS NAME", "EOR FIELD",
+                    "OBS", "FAIL CODE", "FAIL REASON", "START MJD", "START UTC",
+                    "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "EW POINT", "SWEET POINT", "LST DEG", "OBS NAME", "EOR FIELD",
                     "FREQ RES", "COARSE CHANS", "EOR BAND",
                     "TIME RES", "N SCANS",
-                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N FLAG TILES", "FLAG TILES FRAC", "TILE NUMS", "FLAG TILES", "TILE RXS",
+                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N BAD TILES", "BAD TILES FRAC", "TILE NUMS", "FLAG TILES", "TILE RXS",
                     "IONO MAG", "IONO PCA", "IONO QA",
                     "N FILES", "N ARCHIVED",
                     "QUALITY", "QUALITY COMMENT",
@@ -2639,6 +2902,22 @@ workflow ws {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        wsStats.flatMap { file ->
+                [
+                    ["FAIL CODE", "tab10"],
+                    ["IONO QA", "viridis"],
+                    ["N BAD TILES", "viridis"],
+                ].collect { col, palette ->
+                    short_name = col.replaceAll(/\s+/, '_').toLowerCase()
+                    meta = [
+                        name: "ws_${short_name}", title: col, palette: palette,
+                        x: 'OBS', y: 'LST DEG', c: col,
+                    ]
+                    [ meta, file ]
+                }
+            }
+            | tsvScatterPlot
 
         pass = wsSummary
             .filter { _, summary -> summary.fail_reasons == [] }
@@ -2670,8 +2949,10 @@ workflow ws {
         obsMeta = wsSummary.map { obsid, summary ->
             def meta = [:]
             [
-                "groupid", "pointing", "obs_name", "starttime_utc", "starttime_mjd",
+                // "groupid",
+                "ew_pointing", "obs_name", "starttime_utc", "starttime_mjd", "centre_freq",
                 "bad_tiles", "eorband", "eorfield", "lst", "int_time", "freq_res", "tile_nums",
+                "ra_phase_center", "dec_phase_center"
             ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
@@ -2679,6 +2960,8 @@ workflow ws {
             }
             [obsid, meta]
         }
+
+        fail_codes = fail_codes
 }
 
 // ensure preprocessed uvfits are downloaded
@@ -3029,32 +3312,107 @@ workflow prep {
                     newMeta += [prepFlags: (newFlags as ArrayList).sort(false)]
                     }
 
+                    def (fail_code, reason) = prepqa_pass(flagMeta)
+                    // flag fail codes
+
+                    flagMeta.fail_code = failCodes[fail_code]
+                    if (reason) {
+                        flagMeta.reasons = reason
+                    }
+
                     [obsid, deepcopy(meta) + newMeta, uvfits, flagMeta]
                 }
 
-            subobsMetaVisFlags.filter { obsid, meta, uvfits, flagMeta -> (meta.prepFlags?:[]).size() > 0 }
+            fail_codes = subobsMetaVisFlags
+                // .filter { obsid, meta, uvfits, flagMeta -> (meta.prepFlags?:[]).size() > 0 }
+                .map { obsid, meta, uvfits, flagMeta ->
+                    [
+                        obsid,
+                        flagMeta.fail_code
+                    ]
+                }
+
+            fail_codes.filter { _, fail_code -> fail_code != failCodes[0x00] }
+                .groupTuple(by: 0)
+                .map { obsid, fail_codes ->
+                    [
+                        obsid,
+                        coerceList(fail_codes)[0],
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "prep_reasons.tsv", newLine: true, sort: true,
+                    seed: ([ "OBSID", "FAIL CODE" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                | view { it.readLines().size() }
+
+            fail_codes.groupTuple(by: 1)
+                .map { obsids, fail_code ->
+                    [
+                        fail_code,
+                        obsids.size(),
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "fail_counts_prep.tsv", newLine: true, sort: true,
+                    seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                | view { it.readLines().size() }
+
+            prepFlags = subobsMetaVisFlags
+                // .filter { obsid, meta, uvfits, flagMeta -> (meta.prepFlags?:[]).size() > 0 }
                 .map { obsid, meta, uvfits, flagMeta ->
                     ([
                         obsid,
                         meta.subobs?:'',
-                        displayInts(flagMeta.flagAnts?:[]),
-                        displayInts(flagMeta.prepAnts?:[]),
-                        displayInts(flagMeta.manualAnts?:[]),
-                        displayInts(flagMeta.prepFlags?:[]),
+                        meta.lst?:'',
+                        meta.ew_pointing?:'',
+                        flagMeta.fail_code?:'',
+                        flagMeta.reasons?:'',
+                        flagMeta.total_occ==null?'':flagMeta.total_occ,
+                        flagMeta.total_non_preflagged_bl_occ==null?'':flagMeta.total_non_preflagged_bl_occ,
+                        flagMeta.ssins_dab_total==null?'':flagMeta.ssins_dab_total,
+                        flagMeta.ssins_narrow_total==null?'':flagMeta.ssins_narrow_total,
+                        flagMeta.ssins_streak==null?'':flagMeta.ssins_streak,
+                        flagMeta.ssins_total==null?'':flagMeta.ssins_total,
+                        displayInts(flagMeta.flagAnts?:[], delim=' '),
+                        displayInts(flagMeta.prepAnts?:[], delim=' '),
+                        displayInts(flagMeta.manualAnts?:[], delim=' '),
+                        displayInts(meta.prepFlags?:[], delim=' '),
                     ]).join("\t")
                 }
                 .collectFile(
                     name: "prep_flags.tsv", newLine: true, sort: true,
-                    seed: ([ "OBS", "SUBOBS", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
+                    seed: ([ "OBS", "SUBOBS", "LST DEG", "EW POINTING", "FAIL CODE", "REASONS", "PREP OCC", "RFI OCC", "SSINS DAB", "SSINS NARROW", "SSINS STREAK", "SSINS TOTAL", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
                     storeDir: "${results_dir}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
 
+            prepFlags.flatMap { file ->
+                    [
+                        ["FAIL CODE", "tab10"],
+                        ["PREP OCC", "viridis"],
+                        ["RFI OCC", "viridis"],
+                        ["SSINS TOTAL", "viridis"],
+                        ["SSINS STREAK", "viridis"],
+                        ["SSINS NARROW", "viridis"],
+                        ["SSINS DAB", "viridis"],
+                    ].collect { col, palette ->
+                        short_name = col.replaceAll(/\s+/, '_').toLowerCase()
+                        meta = [
+                            name: "prep_${short_name}", title: col, palette: palette,
+                            x: 'OBS', y: 'LST DEG', c: col,
+                        ]
+                        [ meta, file ]
+                    }
+                }
+                | tsvScatterPlot
+
             subobsMetaVisPass = subobsMetaVisFlags.filter { obsid, meta, uvfits, flagMeta ->
-                    (params.flag_occupancy_threshold == null || meta.total_occ?:0 < params.flag_occupancy_threshold)
-                    && (params.ssins_occupancy_threshold == null || meta.ssins_total_occ?:0 < params.ssins_occupancy_threshold)
-                    && (params.noprepqafilter || meta.prep_status == "GOOD")
+                    (flagMeta.reasons?:'') == ''
                 }
                 .map { obsid, meta, uvfits, flagMeta -> [obsid, meta, uvfits]}
         }
@@ -3062,6 +3420,10 @@ workflow prep {
     emit:
         // channel of obsids which pass the flag gate: tuple(obsid, meta, metafits, uvfits)
         subobsMetaVisPass
+        subobsReasons = subobsMetaVisFlags.filter { obsid, meta, uvfits, flagMeta ->
+                (flagMeta.reasons?:'') != ''
+            }
+            .map { obsid, meta, uvfits, flagMeta -> [obsid, meta, flagMeta.reasons]}
         // channel of video name and frames to convert
         frame = plotPrepVisQA.out.flatMap { _, __, imgs ->
                 imgs.collect { img ->
@@ -3100,6 +3462,8 @@ workflow prep {
         zip = prepVisQA.out.map { _, __, json -> ["prepvisqa", json]}
             .mix(flagQA.out.map { _, __, json -> ["flagqa", json]})
             .groupTuple()
+
+        fail_codes = fail_codes
 }
 
 workflow cal {
@@ -3529,13 +3893,14 @@ workflow uvfits {
         // ps_metrics
         if (params.nopsmetrics) {
             obsMetaUVPass_ = obsMetaUVEoR
+            fail_codes = channel.empty()
         } else {
             obsMetaUVEoR | psMetrics
 
             // collect psMetrics as a .dat
             psMetrics.out
                 // read the content of each ps_metrics file including the trailing newline
-                .map { obsid, vis_name, dat -> dat.getText() }
+                .map { obsid, vi_name, dat -> dat.getText() }
                 .collectFile(
                     name: "ps_metrics.dat",
                     storeDir: "${results_dir}${params.cal_suffix}"
@@ -3579,31 +3944,83 @@ workflow uvfits {
                 .groupTuple(by: 0)
                 .flatMap { obsid, metas ->
                     def nosubMeta = metas.find { it.sub == null} ?: [:]
-                    def nosubReason = cmt_ps_metrics_pass(nosubMeta)
+                    def (nosub_fail_code, nosubReason) = cmt_ps_metrics_pass(nosubMeta)
                     def subMetas = metas.findAll { it.sub != null } ?: []
+                    def subReasons = subMetas.collect { subMeta -> cmt_ps_metrics_pass_sub(nosubMeta, subMeta) }
+                    def (asub_fail_code, asubReason) = subReasons.find { fail_code, reason -> fail_code != 0x00 }?:[null, null]
+                    if (nosub_fail_code == 0x00 && asubReason != null) {
+                        nosub_fail_code = asub_fail_code
+                        nosubReason = asubReason
+                    }
                     return [
-                        [obsid, nosubMeta, nosubReason]
-                    ] + subMetas.collect { subMeta ->
-                        [obsid, subMeta, cmt_ps_metrics_pass_sub(nosubMeta, subMeta)?:nosubReason]
+                        [obsid, nosubMeta, failCodes[nosub_fail_code], nosubReason]
+                    ] + [subMetas, subReasons].transpose().collect { subMeta, subReason ->
+                        def (sub_fail_code, sub_reason) = subReason
+                        [obsid, subMeta, failCodes[sub_fail_code], sub_reason?:nosubReason]
                     }
                 }
 
-            passReasons.map { obsid, meta, reason ->
-                    [obsid, meta.name, meta.p_window, meta.p_wedge, meta.num_cells, reason].join("\t")
+            passReasons
+                .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
+                .groupTuple( by: 0 )
+                .map { obsid, _, fail_codes, reasons ->
+                    [
+                        obsid,
+                        // meta.name,
+                        // meta.p_window,
+                        // meta.p_wedge,
+                        // meta.num_cells,
+                        coerceList(fail_codes)[0],
+                        coerceList(reasons)[0]
+                    ].join("\t")
                 }
                 .collectFile(
                     name: "ps_reasons.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBSID", "NAME", "P_WINDOW", "P_WEDGE", "NUM_CELLS", "REASON"
+                        "OBSID",
+                        // "NAME",
+                        // "P_WINDOW", "P_WEDGE", "NUM_CELLS",
+                        "FAIL CODE", "REASON"
                     ].join("\t"),
                     storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
 
+
+            fail_codes = passReasons.map { obsid, meta, fail_code, reason ->
+                    [
+                        obsid,
+                        fail_code
+                    ]
+                }
+                .groupTuple(by: 0)
+                .map { obsid, obs_fail_codes ->
+                    def nonzero_fail_codes = obs_fail_codes.findAll { it != failCodes[0x00] }
+                    def aFailCode = nonzero_fail_codes.sort(false).find{ it }
+                    if (aFailCode == null) {
+                        aFailCode = failCodes[0x00]
+                    }
+                    [obsid, aFailCode]
+                }
+
+            fail_codes.groupTuple(by: 1)
+                .map { obsids, fail_code ->
+                    [
+                        fail_code,
+                        obsids.size(),
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "fail_counts_ps.tsv", newLine: true, sort: true,
+                    seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                | view { it.readLines().size() }
+
             obsMetaPass = passReasons
-                .filter { obsid, meta, reason -> reason == null }
-                .map { obsid, meta, _ -> [obsid, meta] }
+                .filter { obsid, meta, fail_code, reason -> reason == null }
+                .map { obsid, meta, _, __ -> [obsid, meta] }
 
             obsMetaUVPass_ = obsMetaUV.cross(obsMetaPass) { def (obsid, meta) = it; [obsid, meta.name] }
                 .map { obsMetaUV_ , obsMetaPass_ ->
@@ -3636,6 +4053,7 @@ workflow uvfits {
         zip = visQA.out.map { _, meta, json -> ["visqa_${meta.name}", json] }
             .groupTuple()
         obsMetaUVPass = obsMetaUVPass_
+        fail_codes = fail_codes
 }
 
 def wscleanParams = [
@@ -3660,7 +4078,8 @@ def wscleanDConvParams = deepcopy(wscleanParams) + [
     mwa_path: params.img_mwa_path,
 ]
 
-// image measurement sets and QA images
+
+// image visibilities and QA images
 workflow img {
     take:
         obsMetaVis
@@ -3670,7 +4089,7 @@ workflow img {
         if (params.img_split_intervals) {
             // add -t???? suffix to name, to split wsclean over multiple jobs
             splitObsMetaVis = obsMetaVis.flatMap { obsid, meta, vis ->
-                (0..meta.ntimes).collect { i ->
+                (0..(meta.ntimes-1)).collect { i ->
                     def newMeta = deepcopy(meta)
                     newMeta.interval = [i, i+1]
                     // interval token
@@ -3682,6 +4101,7 @@ workflow img {
             splitObsMetaVis = obsMetaVis
         }
 
+        // print("params.nodeconv: ${params.nodeconv}")
         if (params.nodeconv) {
             splitObsMetaVis.map {obsid, meta, vis ->
                     def imgParams = deepcopy(wscleanParams)
@@ -3711,6 +4131,7 @@ workflow img {
                 }
                 .flatMap {obsid, meta, vis, imgParams_, dirtyImgs ->
                     [
+                        // ["", "i"],
                         ["-{XX,YY}", "xx,yy -join-polarizations"],
                         ["-{I,V}", "i,v -join-polarizations"],
                         // ["-{XX,YY,XY,XYi}", "xx,xy,yx,yy -link-polarizations xx,yy"],
@@ -3758,10 +4179,10 @@ workflow img {
                 .map { obsid, meta, hist ->
                     high = parseCsv(hist, true, 2)
                         .find { row -> Float.compare(parseFloatOrNaN(row.quantile), params.thumbnail_quantile as Float) == 0 }
-                    high = parseFloatOrNaN(high.value)
+                    high = parseFloatOrNaN(high == null ? null : high.value)
                     low = parseCsv(hist, true, 2)
                         .find { row -> Float.compare(parseFloatOrNaN(row.quantile), (1-params.thumbnail_quantile) as Float) == 0 }
-                    low = parseFloatOrNaN(low.value)
+                    low = parseFloatOrNaN(low == null ? null : low.value)
                     // subobs = meta.subobs?:''
                     [obsid, meta.inter_tok, meta.name, meta.inter_suffix, high, low]
                 }
@@ -3969,7 +4390,7 @@ workflow img {
                     }
                     [obsid, deepcopy(meta) + newMeta, img]
                 }
-                .view { "thumbnail ${it}" }
+                // .view { "thumbnail ${it}" }
                 | thumbnail
         }
 
@@ -4015,6 +4436,7 @@ workflow img {
             obsMetaImgMfsPass
                 .map { obsid, meta, img -> [obsid, meta.name, meta.inter_tok?:'', meta, img] }
                 .groupTuple(by: 0..2)
+                .filter { obsid, name, _, metas, __ -> metas.find { it.pol == 'I' } != null }
                 .map { obsid, name, interval, metas, imgs ->
                     def iMeta = metas.find { it.pol == 'I' }
                     def (_, iquvImgs) = [metas, imgs].transpose().findAll { meta, img ->
@@ -4046,6 +4468,7 @@ workflow img {
         if (params.noimgqa || params.nodeconv || params.img_split_intervals) {
             channel.empty() | imgQA
             obsMetaImgPass_ = obsMetaImgGroup
+            fail_codes = channel.empty()
         } else {
             obsMetaImgGroup
                 .map { obsid, meta, imgMetas, imgs -> [obsid, meta, imgs] }
@@ -4077,9 +4500,9 @@ workflow img {
                     [
                         obsid,
                         meta.name,
-                        xx.RMS_ALL, xx.RMS_BOX, xx_pks.PEAK_FLUX, xx_pks.INT_FLUX,
-                        yy.RMS_ALL, yy.RMS_BOX, yy_pks.PEAK_FLUX, yy_pks.INT_FLUX,
-                        v.RMS_ALL, v.RMS_BOX, v_pks.PEAK_FLUX, v_pks.INT_FLUX,
+                        xx.RMS_ALL?:"", xx.RMS_BOX?:"", xx_pks.PEAK_FLUX?:"", xx_pks.INT_FLUX?:"",
+                        yy.RMS_ALL?:"", yy.RMS_BOX?:"", yy_pks.PEAK_FLUX?:"", yy_pks.INT_FLUX?:"",
+                        v.RMS_ALL?:"", v.RMS_BOX?:"", v_pks.PEAK_FLUX?:"", v_pks.INT_FLUX?:"",
                         // stats.V_XX?.RMS_RATIO, stats.V_XX?.RMS_RATIO_BOX
                     ].join("\t")
                 }
@@ -4118,27 +4541,77 @@ workflow img {
                 .map { obsid, metas -> [obsid, coerceList(metas)] }
                 .flatMap { obsid, metas ->
                     def nosubMeta = metas.find { meta -> meta.sub == null }
-                    def nosubReason = cmt_imgqa_pass(nosubMeta)
-                    def subMetas = metas.findAll { it.sub != null } ?: []
+                    if (nosubMeta == null) {
+                        return []
+                    }
+                    def (nosub_fail_code, nosubReason) = cmt_imgqa_pass(nosubMeta)
+                    def subMetas = metas.findAll { it != null && it.sub?:"" != "" } ?: []
                     def subReasons = subMetas.collect { subMeta -> cmt_imgqa_pass_sub(nosubMeta, subMeta) }
-                    def asubReason = subReasons.find { it != null }
-                    if (nosubReason == null && asubReason) {
+                    def (asub_fail_code, asubReason) = subReasons.find { fail_code, reason -> fail_code != 0x00 }?:[null, null]
+                    if (nosub_fail_code == 0x00 && asubReason != null) {
+                        nosub_fail_code = asub_fail_code
                         nosubReason = asubReason
                     }
                     return [
-                        [obsid, nosubMeta, nosubReason]
+                        [obsid, nosubMeta, failCodes[nosub_fail_code], nosubReason]
                     ] + [subMetas, subReasons].transpose().collect { subMeta, subReason ->
-                        [obsid, subMeta, subReason?:nosubReason]
+                        def (sub_fail_code, sub_reason) = subReason
+                        [obsid, subMeta, failCodes[sub_fail_code], sub_reason?:nosubReason]
                     }
                 }
 
-            obsMetaReasons.map { obsid, meta, reason ->
-                    [obsid, meta.name, meta.xx_pks_int, meta.yy_pks_int, meta.v_pks_int, meta.v_rms_box, reason].join("\t")
+            fail_codes = obsMetaReasons.map { obsid, meta, fail_code, reason ->
+                    [
+                        obsid,
+                        fail_code
+                    ]
+                }
+                .groupTuple(by: 0)
+                .map { obsid, obs_fail_codes ->
+                    def nonzero_fail_codes = obs_fail_codes.findAll { it != failCodes[0x00] }?:[]
+                    def aFailCode = nonzero_fail_codes.sort(false).find{ it }
+                    if (aFailCode == null) {
+                        aFailCode = failCodes[0x00]
+                    }
+                    [obsid, aFailCode]
+                }
+
+            fail_codes.groupTuple(by: 1)
+                .map { obsids, fail_code ->
+                    [
+                        fail_code,
+                        obsids.size(),
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "fail_counts_imgqa.tsv", newLine: true, sort: true,
+                    seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                | view { it.readLines().size() }
+
+            obsMetaReasons
+                .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
+                .groupTuple( by: 0 )
+                .map { obsid, meta, fail_codes, reasons ->
+                    [
+                        obsid,
+                        // meta.name,
+                        meta.xx_pks_int?:"",
+                        meta.yy_pks_int?:"",
+                        meta.v_pks_int?:"",
+                        meta.v_rms_box?:"",
+                        coerceList(fail_codes)[0],
+                        coerceList(reasons)[0]
+                    ].join("\t")
                 }
                 .collectFile(
                     name: "imgqa_reasons.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBSID", "NAME", "XX PKS INT", "YY PKS INT", "V PKS INT", "V RMS BOX", "REASON"
+                        "OBSID",
+                        // "NAME",
+                        "XX PKS INT", "YY PKS INT", "V PKS INT", "V RMS BOX",
+                        "FAIL CODE", "REASON"
                     ].join("\t"),
                     storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
                 )
@@ -4146,8 +4619,8 @@ workflow img {
                 | view { [it, it.readLines().size()] }
 
             obsMetaPass = obsMetaReasons
-                .filter { obsid, meta, reason -> reason == null }
-                .map { obsid, meta, _ -> [obsid, meta] }
+                .filter { obsid, meta, fail_code, reason -> reason == null }
+                .map { obsid, meta, _, __ -> [obsid, meta] }
 
             obsMetaImgPass_ = obsMetaImgGroup.cross(obsMetaPass) { def (obsid, meta) = it; [obsid, meta.name] }
                 .map { obsMetaImgGroup_, obsMetaPass_ ->
@@ -4195,9 +4668,11 @@ workflow img {
             .groupTuple()
         // channel of files to zip
         zip = imgQA.out.map { _, meta, json -> ["imgqa_${meta.name}", json] }
+            .mix(obsMetaImgMfsPass.map { _, meta, img -> ["img_${meta.name}", img] })
             .groupTuple()
         // channel of tuple (obsid, imgMeta, img) that pass qa
         obsMetaImgPass = obsMetaImgPass_
+        fail_codes = fail_codes
 }
 
 workflow imgCombine {
@@ -4621,6 +5096,56 @@ workflow {
     if (params.tarchive) {
         prep.out.zip.mix(qaPrep.out.zip) | makeTarchives
     }
+
+    all_fail_codes = ws.out.fail_codes.join(prep.out.fail_codes, remainder: true)
+        .map { obsid, ws_fail_code, prep_fail_code ->
+            [obsid, prep_fail_code?:ws_fail_code]
+        }
+        .join(qaPrep.out.fail_codes, remainder: true)
+        .map { obsid, prep_fail_code, prepqa_fail_code ->
+            [obsid, prepqa_fail_code?:prep_fail_code]
+        }
+
+    all_fail_codes
+        .filter { _, fail_code -> fail_code == failCodes[0x00] }
+        .join(ws.out.obsMeta)
+        .map { obsid, fail_code, meta ->
+            [obsid, meta.lst.round().intValue()]
+        }
+        .groupTuple(by: 1)
+        .map { obsids, lst ->
+            [
+                sprintf("%+03d", lst),
+                obsids.size(),
+            ].join("\t")
+        }
+        .collectFile(
+            name: "lst_counts_all.tsv", newLine: true, sort: true,
+            seed: ([ "LST", "COUNT" ]).join("\t"),
+            storeDir: "${results_dir}"
+        )
+        .view { it.readLines().size() }
+        .map { lstCountTSV ->
+            meta = [
+                name: "lst_counts_all", title: "lst counts after qa",
+                x: "LST", y: "COUNT"
+            ]
+            [meta, lstCountTSV]
+        }
+        | tsvScatterPlot
+
+    all_fail_codes.groupTuple(by: 1)
+        .map { obsids, fail_code ->
+            [
+                fail_code,
+                obsids.size(),
+            ].join("\t")
+        }
+        .collectFile(
+            name: "fail_counts_all.tsv", newLine: true, sort: true,
+            seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+            storeDir: "${results_dir}"
+        )
 }
 
 // given a channel of tuple (obs, metafits, vis), calibrate and analyse
@@ -5109,6 +5634,10 @@ workflow qaPrep {
                 .groupTuple()
             )
 
+        fail_codes = uvfits.out.fail_codes.join(img.out.fail_codes, remainder: true)
+            .map { obsid, uv_fail_code, img_fail_code ->
+                [obsid, uv_fail_code?:img_fail_code]
+            }
 }
 
 workflow makeVideos {
