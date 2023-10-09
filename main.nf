@@ -313,9 +313,9 @@ process ssins {
     tuple val(obsid), val(meta), path(uvfits)
     output:
     tuple val(obsid), val(meta),
-        path("${base}__SSINS_mask.h5"),
-        path("${base}_{autos,cross,flagged}_SSINS*.png"),
-        path("${base}_ssins_occ.json")
+        path("${output_prefix}_SSINS_mask.h5"),
+        path("${output_prefix}{autos,cross,flagged}_SSINS*.png"),
+        path("${output_prefix}ssins_occ.json")
         // path(ssins_uvfits)
         // todo: path("ssins_VDH.png"),
         // todo: path("match_events.json"),
@@ -334,9 +334,16 @@ process ssins {
 
     script:
     base = uvfits.baseName
-    // ssins_uvfits = "ssins_${obsid}_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz.uvfits"
-    guard_width = params.prep_freq_res_khz * 500
-    // title = "${obsid}"
+    output_prefix = meta.output_prefix ?: "${base}${meta.subobs?:''}_"
+    args = [
+        plot_title: meta.plot_title ?: "${base}${meta.subobs?:''}",
+        sel_ants: meta.sel_ants ? meta.sel_ants.join(' ') : null,
+        output_prefix: output_prefix,
+        guard_width: meta.guard_width ?: params.prep_freq_res_khz * 500,
+        uvfits: uvfits
+    ].findAll { _, v -> v != null }
+        .collect { k, v -> """--${k} ${v} """ }
+        .join(" ")
     template "ssins.py"
 }
 
@@ -1570,11 +1577,11 @@ process chipsCombine {
     done
 
     echo -n "" > combine_${pol}.${combined_ext}.txt
-        """ + (
-            exts.collect { ext ->
+    """ + (
+        exts.collect { ext ->
             """echo "${pol}.${ext}" >> combine_${pol}.${combined_ext}.txt"""
-            }.join("\n")
-        ) + """
+        }.join("\n")
+    ) + """
 
     combine_data "combine_${pol}.${combined_ext}.txt" ${nchans} "${pol}.${combined_ext}" 1
 
@@ -1983,6 +1990,45 @@ process stackThumbnail {
     template "thumbnail.py"
 }
 
+// process updateQuality {
+//     input:
+//         tuple val(obsid), val(name), val(params)
+//     output:
+//         tuple val(obsid), val(name), path("quality_${name}.json")
+
+//     storeDir "${params.outdir}/${obsid}/meta"
+
+//     tag "${obsid}.${name}"
+// }
+
+process tsvScatterPlot {
+    input:
+        tuple val(meta), path(tsv)
+    output:
+        path(plot)
+
+    storeDir "${results_dir}${params.img_suffix}${params.cal_suffix}"
+    stageInMode "copy"
+
+    label "python"
+
+    tag "${meta.name}"
+
+    script:
+    plot = "${meta.name}.png"
+    argstr = ([plot: plot, tsv: tsv] + meta).findAll { k, v ->
+            v != null && [
+                'tsv', 'x', 'y', 'c', 'plot', 'title', 'dpi', 'palette',
+                'figwidth', 'figheight'
+            ].contains(k)
+        }
+        .collect { k, v -> ["--${k}"] + coerceList(v) }
+        .flatten()
+        .collect { token -> "\"${token}\"" }
+        .join(' ')
+    template "plot_tsv.py"
+}
+
 process tarchive {
     input:
         tuple val(name), path(files), val(cachebust)
@@ -2267,10 +2313,6 @@ def prepqa_pass(flagMeta) {
         reasons += "prep_status=${flagMeta.prep_status}"
         fail_code = fail_code==0x00 ? 0x37 : fail_code
     }
-    if (params.wilensky_mode && Float.valueOf(flagMeta.ssins_narrow_total?:0.0) + Float.valueOf(flagMeta.ssins_dab_total?:0.0) < 0.1) {
-        reasons += "ssins_narrow_total(${String.format('%.2f', flagMeta.ssins_narrow_total)}) + ssins_dab_total(${String.format('%.2f', flagMeta.ssins_dab_total)})<0.1"
-        fail_code = fail_code==0x00 ? 0x35 : fail_code
-    }
 
     if (reasons.size() > 0) {
         reason = reasons.join('|')
@@ -2404,13 +2446,13 @@ def decomposeImg = { img ->
     }
     meta.prod = tokens.removeLast()
     if (tokens.size > 0 && tokens[-1] != "MFS") {
-    meta.pol = tokens.removeLast()
+        meta.pol = tokens.removeLast()
     }
     // channel is only present in multi-frequency imaging
     if (multichannel && (chan_tok = tokens.removeLast()) != "MFS") {
         meta.chan_tok = chan_tok
         try {
-        meta.chan = (chan_tok as int)
+            meta.chan = (chan_tok as int)
         } catch (java.lang.NumberFormatException e) {
             print("error parsing channel ${chan_tok} from ${img}. \n${meta}")
             throw e
@@ -2514,6 +2556,13 @@ workflow ws {
             .collectEntries { line ->
                 def (obsid, quality, comment) = line.split(',')
                 [obsid, [dataquality: quality, dataqualitycomment: comment]]
+            }
+
+        tile_updates = file(params.tile_updates_path)
+            .readLines()
+            .collect { line ->
+                def (firstObsid, lastObsid, tileIdxs) = line.split(',') + ['', '']
+                [firstObsid as int, lastObsid as int, (tileIdxs as String).split("\\|").collect {it as Integer} ]
             }
 
         print(params)
@@ -2653,6 +2702,17 @@ workflow ws {
                 config = tapStats.mwa_array_configuration
                 sun_elevation = Float.valueOf(tapStats.sun_elevation?:'NaN')
 
+                bad_ants = bad_tiles.collect { tile_nums.indexOf(it) + 1 }
+
+                manualAnts = ([]) as Set
+                tile_updates.each {
+                    def (firstObsid, lastObsid, tileIdxs, comment) = it
+                    if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
+                        manualAnts.addAll(tileIdxs)
+                    }
+                }
+                // manualAnts.removeAll((bad_ants) as Set)
+
                 // fail codes
                 def fail_code = 0x00 // no error
 
@@ -2724,7 +2784,7 @@ workflow ws {
                     groupid: groupid,
                     corrmode: wsStats.mode,
                     delaymode: wsStats.delaymode_name,
-                    starttime_mjd: tapStats.starttime_mjd,
+                    starttime_mjd: Float.valueOf(tapStats.starttime_mjd),
                     starttime_utc: tapStats.starttime_utc,
                     sun_elevation: sun_elevation,
 
@@ -2752,9 +2812,12 @@ workflow ws {
 
                     // tiles
                     config: config,
+                    n_tiles: n_tiles,
                     tile_nums: tile_nums,
                     tile_rxs: tile_rxs,
                     bad_tiles: bad_tiles,
+                    bad_ants: bad_ants,
+                    manual_ants: (manualAnts as ArrayList),
                     // iono quality
                     iono_magnitude: quality.iono_magnitude,
                     iono_pca: quality.iono_pca,
@@ -2830,26 +2893,26 @@ workflow ws {
                     obsid,
                     (summary.fail_code==null||summary.fail_code==failCodes[0x00])?'':summary.fail_code,
                     summary.fail_reasons.join('|'),
-                    summary.starttime_mjd?:'',
+                    isNaN(summary.starttime_mjd)?'':sprintf("%.5f", summary.starttime_mjd),
                     summary.starttime_utc?:'',
 
                     // pointing
-                    sprintf("%.2f", summary.ra_pointing),
-                    sprintf("%.2f", summary.dec_pointing),
-                    sprintf("%.2f", summary.az_pointing),
-                    sprintf("%.2f", summary.el_pointing),
-                    summary.ra_phase_center==null?'':sprintf("%.2f", summary.ra_phase_center),
-                    summary.dec_phase_center==null?'':sprintf("%.2f", summary.dec_phase_center),
-                    summary.ew_pointing==null?'':summary.ew_pointing,
-                    summary.sweet_pointing==null?'':summary.sweet_pointing,
-                    sprintf("%.2f", summary.lst),
+                    sprintf("% 5.2f", summary.ra_pointing),
+                    sprintf("% 5.2f", summary.dec_pointing),
+                    sprintf("% 5.2f", summary.az_pointing),
+                    sprintf("% 5.2f", summary.el_pointing),
+                    isNaN(summary.ra_phase_center)?'':sprintf("% 5.2f", summary.ra_phase_center),
+                    isNaN(summary.dec_phase_center)?'':sprintf("% 5.2f", summary.dec_phase_center),
+                    isNaN(summary.ew_pointing)?'':sprintf("% 2d", summary.ew_pointing),
+                    isNaN(summary.sweet_pointing)?'':sprintf("% 2d", summary.sweet_pointing),
+                    sprintf("% 5.2f", summary.lst),
                     summary.obs_name,
-                    summary.eorfield==null?'':summary.eorfield,
+                    isNaN(summary.eorfield)?'':summary.eorfield,
 
                     // channels
                     summary.freq_res,
                     displayInts(summary.coarse_chans),
-                    summary.eorband==null?'':summary.eorband,
+                    isNaN(summary.eorband)?'':summary.eorband,
 
                     // times
                     summary.int_time,
@@ -2866,9 +2929,9 @@ workflow ws {
                     displayInts(summary.tile_rxs, delim=' '),
 
                     // iono quality
-                    summary.iono_magnitude==null?'':summary.iono_magnitude,
-                    summary.iono_pca==null?'':summary.iono_pca,
-                    summary.iono_qa==null?'':summary.iono_qa,
+                    isNaN(summary.iono_magnitude)?'':summary.iono_magnitude,
+                    isNaN(summary.iono_pca)?'':summary.iono_pca,
+                    isNaN(summary.iono_qa)?'':summary.iono_qa,
 
                     // archive
                     summary.num_data_files,
@@ -2951,7 +3014,8 @@ workflow ws {
             [
                 // "groupid",
                 "ew_pointing", "obs_name", "starttime_utc", "starttime_mjd", "centre_freq",
-                "bad_tiles", "eorband", "eorfield", "lst", "int_time", "freq_res", "tile_nums",
+                "n_tiles", "bad_ants", "manual_ants", "tile_nums",
+                "eorband", "eorfield", "lst", "int_time", "freq_res",
                 "ra_phase_center", "dec_phase_center"
             ].each { key ->
                 if (summary[key] != null) {
@@ -2995,10 +3059,67 @@ workflow prep {
             subobsMetaMetafitsPrep | prepVisQA
         }
 
+        // analyse aoflagger occupancy
+        if (params.noprepqa) {
+            channel.empty() | flagQA
+        } else {
+            subobsMetaMetafitsPrep | flagQA
+        }
+
+        // mapping of receiver to antenna objects
+        def obsRxAnts = flagQA.out.map { obsid, meta, flagJson ->
+                def flagStats = parseJson(flagJson)
+                bad_ants = (meta.bad_ants?:[]) as Set
+                manual_ants = (meta.manual_ants?:[]) as Set
+                def rxAnts = (flagStats.INPUTS?:[])
+                    .findAll {
+                        ant_idx = it['Antenna'];
+                        it['Pol'] == "X" \
+                            && it["Flag"] == 0 \
+                            && !manual_ants.contains(ant_idx)
+                            // && !bad_ants.contains(ant_idx)
+                    }
+                    .groupBy { it['Rx'] }
+                    .collectEntries { it }
+                [obsid, rxAnts]
+            }
+            .view()
+
+        // ssins
         if (params.nossins) {
             channel.empty() | ssins
         } else {
-            subobsMetaVis | ssins
+            subobsMetaVis.join(obsRxAnts).flatMap { obsid, meta, uvfits, rxAnts ->
+                allAnts = rxAnts.collect { rx, ants -> ants }.flatten()
+                subobsAnts = [[meta.subobs, allAnts]]
+                // subobsAnts += (rxAnts.collect {rx, ants ->
+                //     [(meta.subobs?:'') + sprintf("_rx%02d", rx), ants]
+                // })
+                base = uvfits.baseName
+                // subobsAnts = subobsAnts.collect { subobs, ants ->
+                //     bad_ants = (meta.bad_ants?:[]) as Set
+                //     manual_ants = (meta.manual_ants?:[]) as Set
+                //     sel_ants = ants.findAll { it ->
+                //             ant_idx = it['Antenna'];
+                //             it["Flag"] == 0 && !bad_ants.contains(ant_idx) && !manual_ants.contains(ant_idx)
+                //         }
+                //     [subobs, sel_ants]
+                // }
+                subobsAnts.findAll { _, ants -> ants.size() > 1 }
+                    .collect { subobs, ants ->
+                        tile_idxs = ants.collect { it['Tile'] } as ArrayList
+                        ant_nums = ants.collect { it['Antenna'] + 1 } as ArrayList
+                        def ssinsMeta = [
+                            subobs: subobs,
+                            plot_title: "\"${base}${subobs?:''}\\ntiles=${tile_idxs.join(' ')}\"",
+                            output_prefix: "${base}${subobs?:''}_",
+                            sel_ants: ant_nums
+                        ]
+                        [obsid, deepcopy(meta) + ssinsMeta, uvfits]
+                    }
+            }
+            | view()
+            | ssins
         }
 
         // collect prepVisQA results as .tsv
@@ -3067,27 +3188,17 @@ workflow prep {
         // plot prepvisQA
         prepVisQA.out | plotPrepVisQA
 
-        // analyse aoflagger occupancy
-        if (params.noprepqa) {
-            channel.empty() | flagQA
-        } else {
-            subobsMetaMetafitsPrep | flagQA
-        }
+        // auto plots
         if (params.noautoplot) {
             channel.empty() | autoplot
         } else {
-            subobsMetaMetafitsPrep.join(flagQA.out).flatMap { obsid, meta, metafits, uvfits, flagJson ->
-                    def flagStats = parseJson(flagJson)
-                    def rxTiles = (flagStats.INPUTS?:[])
-                        .findAll { it['Pol'] == "X" }
-                        .collect { [it['Rx'], it['Antenna']] }
-                        .groupBy { rx, tile -> rx }
-                        .collect { rx, rx_tiles -> [rx, rx_tiles.collect { it[1] }] };
-                    rxTiles.collect { rx, tiles ->
+            subobsMetaMetafitsPrep.join(obsRxAnts).flatMap { obsid, meta, metafits, uvfits, rxAnts ->
+                    rxAnts.collect { rx, ants ->
                         def suffix = sprintf("_rx%02d", rx);
+                        sel_ants = ants.collect{it['Antenna']}
                         def plotMeta = [
                             suffix: suffix,
-                            "autoplot_args": "${params.autoplot_args} --sel_ants ${tiles.join(' ')} --plot_title '${obsid}${suffix}'"
+                            "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
                         ]
                         [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
                     }
@@ -3245,25 +3356,12 @@ workflow prep {
             subobsMetaVisFlags = channel.empty()
             fail_codes = channel.empty()
         } else {
-            tileUpdates = file(params.tile_updates_path)
-                .readLines()
-                .collect { line ->
-                    def (firstObsid, lastObsid, tileIdxs) = line.split(',') + ['', '']
-                    [firstObsid as int, lastObsid as int, (tileIdxs as String).split("\\|").collect {it as Integer} ]
-                }
-
             subobsMetaVisFlags = (subobsMetaVis.map { obsid, meta, uvfits -> [obsid, meta.subobs?:'', meta, uvfits ]})
                 .join(flagQA.out.map { obsid, meta, flagJson -> [obsid, meta.subobs?:'', parseJson(flagJson) ]}, by: 0..1)
                 .join(prepVisQA.out.map { obsid, meta, prepJson -> [obsid, meta.subobs?:'', parseJson(prepJson) ]}, by: 0..1)
-                .join(ssinsOcc.map { it-> def (obsid, meta, occ) = it ; [ obsid, meta.subobs?:'', occ ]}, by: 0..1, remainder: true)
+                .join(ssinsOcc.map { it-> def (obsid, meta, occ) = it ; [ obsid, meta.subobs?:'', occ ]}, by: 0..1, remainder: false)
                 .map { obsid, subobs, meta, uvfits, flagStats, prepStats, ssinsStats ->
-                    def manualAnts = ([]) as Set
-                    tileUpdates.each {
-                        def (firstObsid, lastObsid, tileIdxs, comment) = it
-                        if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
-                            manualAnts.addAll(tileIdxs)
-                        }
-                    }
+                    def manualAnts = (meta.manual_ants?:[]) as Set
                     def newMeta = [:]
                     def flagMeta = [manualAnts: (manualAnts as ArrayList).sort(false)]
                     def newFlags = ([]) as Set
@@ -3296,20 +3394,20 @@ workflow prep {
                         }
                         if (flagAnts.size() > 0) {
                             // println("${obsid} newFlags -= flagAnts:${displayInts(flagAnts)}")
-                        newFlags.removeAll(flagAnts)
-                    }
+                            newFlags.removeAll(flagAnts)
+                        }
                     }
                     if (ssinsStats != null) {
                         [ "dab_total", "narrow_total", "streak", "total" ].each { key ->
                             if (ssinsStats[key]) {
                                 flagMeta[ "ssins_${key}" ] = ssinsStats[key]
-                    }
+                            }
                         }
                     }
 
                     if (newFlags.size() > 0) {
                         // println("${obsid} newFlags:${displayInts(newFlags)}")
-                    newMeta += [prepFlags: (newFlags as ArrayList).sort(false)]
+                        newMeta += [prepFlags: (newFlags as ArrayList).sort(false)]
                     }
 
                     def (fail_code, reason) = prepqa_pass(flagMeta)
@@ -3607,10 +3705,13 @@ workflow cal {
         } else {
             calQA.out | plotCalQA
 
-            calQA.out.map { _, meta, json -> [meta.ew_pointing?sprintf("ewp%+02d", meta.ew_pointing):"", json] }
+            calQA.out.map { _, meta, json ->
+                    name = meta.ew_pointing?sprintf("ewp%+02d", meta.ew_pointing):""
+                    name = meta.name
+                    [name, json] }
                 .groupTuple(by: 0)
-                .map { ew_pointing, jsons ->
-                    [ew_pointing, jsons.sort(false)]
+                .map { name, jsons ->
+                    [name, jsons.sort(false)]
                 }
                 | plotCalJsons
         }
@@ -4472,10 +4573,11 @@ workflow img {
         } else {
             obsMetaImgGroup
                 .map { obsid, meta, imgMetas, imgs -> [obsid, meta, imgs] }
-                .filter { _, meta, __ ->
+                .filter { _, meta, imgs ->
                     // imgQA looks at pks flux, which needs to be deconvolved, only works with eor0
                     // meta.prod == 'image' &&
-                    meta.eorfield == 0
+                    meta.eorfield == 0 &&
+                    imgs.size() == 3
                 }
                 // .map { obsid, meta, img -> [obsid, meta.name, meta, img] }
                 // .groupTuple(by: 0..1)
