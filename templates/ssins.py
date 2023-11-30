@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# TODO: FREQUENCY BROADCAST
+
 import os
 import json
 
@@ -10,6 +12,7 @@ import numpy as np
 import pylab
 from pyuvdata import UVData, UVFlag, utils as uvutils
 import sys
+import shlex
 
 
 def get_parser():
@@ -29,6 +32,8 @@ def get_parser():
                             help="Optional title for the plot")
     plot_group.add_argument('--guard_width', default=0, type=int,
                             help="Guard width of RFI bands in Hz. Half a fine channel width is recommended.")
+    plot_group.add_argument('--sel_ants', default=[], nargs='*', type=int,
+                            help="antenna indices to select")
 
     return parser
 
@@ -38,12 +43,25 @@ def main():
     example:
 
     ```bash
-    singularity exec /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
-        /astro/mwaeor/dev/MWAEoR-Pipeline/templates/ssins.py \
-        --uvfits=/astro/mwaeor/dev/nfdata/1061315448/prep/birli_1061315448_2s_40kHz.uvfits \
-        --output_prefix=/astro/mwaeor/dev/nfdata/1061315448/prep/test \
-        --plot_title="1061315448" \
-        --guard_width=20000
+    cp /astro/mwaeor/dev/nfdata-important/1379177304/prep/birli_1379177304_2s_40kHz.uvfits .
+    singularity exec \
+        --bind ${PWD} --cleanenv --home /astro/mwaeor/dev/mplhome \
+        /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
+        /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/ssins.py \
+        --uvfits=birli_1379177304_2s_40kHz.uvfits \
+        --output_prefix=test \
+        --plot_title="1379177304" \
+        --guard_width=20000 \
+        --sel_ants 1 2 3   5 6 7 8 9 10 11 12 13 14 15 \
+            16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 \
+            32 33 34 35 36 37 38 39    41 42 43 44 45 46 47 \
+            48 49 50 51 52 53 54 55 56 57 58 59 60 61 62 63 \
+            64 65 66 67 68 69 70 71 72 73 74 75 76 77 78 79 \
+            80 81 82 83 84 85 86 87 88 89 90 91 92 93 94 95 \
+            96 97 98 99 100 101 102 103 104 105 106 107 108 \
+            109 110 111 112 113 114 115 116 117 118 119 120 \
+            121 122 123 124 125 126 127 128 129 130 131 132 \
+            133 134 135 136 137 138 139 140 141 142 143 144
     """
 
     parser = get_parser()
@@ -52,13 +70,9 @@ def main():
         args = parser.parse_args()
     else:
         # is being called directly from nextflow
-        args = parser.parse_args([
-            "--uvfits=${uvfits}",
-            "--plot_title=${base}",
-            "--guard_width=${guard_width}",
-            "--output_prefix=${base}_",
-        ])
+        args = parser.parse_args(shlex.split("""${args}"""))
 
+    print(vars(args))
     ins_plot_args = {
         "file_ext": "png",
         "title": args.plot_title,
@@ -107,7 +121,13 @@ def main():
 
     # discaring the first and last tiemstamp
     times = np.unique(ss.time_array)[1:-1]
-    ss.read(args.uvfits, read_data=True, times=times, diff=True)
+    print(np.sort(np.unique(ss.ant_1_array)))
+    kwargs = {
+        "times": times,
+    }
+    if args.sel_ants:
+        kwargs["antenna_nums"] = args.sel_ants
+    ss.read(args.uvfits, read_data=True, diff=True, **kwargs)
     ss.apply_flags(flag_choice='original')
 
     # cp.VDH_plot(ss, 'ssins_vdh', file_ext='png',

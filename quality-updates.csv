@@ -1,3 +1,49 @@
+1059500328,2,fully flagged
+1059500448,2,fully flagged
+1059500568,2,fully flagged
+1059500688,2,fully flagged
+1059500816,2,fully flagged
+1059500936,2,fully flagged
+1059501056,2,fully flagged
+1059501176,2,fully flagged
+1059501304,2,fully flagged
+1059501424,2,fully flagged
+1059501544,2,fully flagged
+1059501664,2,fully flagged
+1059501792,2,fully flagged
+1059501912,2,fully flagged
+1059502032,2,fully flagged
+1059502152,2,fully flagged
+1059502280,2,fully flagged
+1059502400,2,fully flagged
+1059502520,2,fully flagged
+1059502640,2,fully flagged
+1059502768,2,fully flagged
+1059502888,2,fully flagged
+1059503008,2,fully flagged
+1059503128,2,fully flagged
+1059503256,2,fully flagged
+1059503376,2,fully flagged
+1059503496,2,fully flagged
+1059503616,2,fully flagged
+1059503744,2,fully flagged
+1059503864,2,fully flagged
+1059503984,2,fully flagged
+1059504104,2,fully flagged
+1059504232,2,fully flagged
+1059504352,2,fully flagged
+1059504472,2,fully flagged
+1059504592,2,fully flagged
+1059504720,2,fully flagged
+1059504840,2,fully flagged
+1059504960,2,fully flagged
+1059505080,2,fully flagged
+1059505208,2,fully flagged
+1059505328,2,fully flagged
+1059505448,2,fully flagged
+1059505568,2,fully flagged
+1059505696,2,fully flagged
+1059505816,2,fully flagged
 1059505936,3,bad MILLITIM header
 1059506056,3,bad MILLITIM header
 1059506184,3,bad MILLITIM header
@@ -124,6 +170,45 @@
 1065458576,2,ends early
 1065458704,2,ends early
 1065458824,2,ends early
+1066576032,2,FitsError252
+1088194920,2,fully flagged
+1088195168,2,fully flagged
+1088195288,2,fully flagged
+1088195408,2,fully flagged
+1088195536,2,fully flagged
+1088195656,2,fully flagged
+1088195776,2,fully flagged
+1088195896,2,fully flagged
+1088196024,2,fully flagged
+1088196144,2,fully flagged
+1088196264,2,fully flagged
+1088196512,2,fully flagged
+1088196632,2,fully flagged
+1088196752,2,fully flagged
+1088196872,2,fully flagged
+1088197120,2,fully flagged
+1088197240,2,fully flagged
+1088197360,2,fully flagged
+1088197488,2,fully flagged
+1088197608,2,fully flagged
+1088197728,2,fully flagged
+1088197976,2,fully flagged
+1088198096,2,fully flagged
+1088198216,2,fully flagged
+1088198336,2,fully flagged
+1088200416,2,fully flagged
+1088200656,2,fully flagged
+1088200776,2,fully flagged
+1088200904,2,fully flagged
+1088201024,2,fully flagged
+1088201144,2,fully flagged
+1088201264,2,fully flagged
+1088201392,2,fully flagged
+1088201512,2,fully flagged
+1088201632,2,fully flagged
+1088201752,2,fully flagged
+1088201880,2,fully flagged
+1088202120,2,fully flagged
 1088198584,2,ends early
 1088198704,2,ends early
 1088198824,2,ends early
@@ -139,6 +224,21 @@
 1088200048,2,ends early
 1088200168,2,ends early
 1088200288,2,ends early
+# 1088200416,2,fully flagged
+# 1088200536,2,?
+# 1088200656,2,fully flagged
+# 1088200776,2,fully flagged
+# 1088200904,2,fully flagged
+# 1088201024,2,fully flagged
+# 1088201144,2,fully flagged
+# 1088201264,2,fully flagged
+# 1088201392,2,fully flagged
+# 1088201512,2,fully flagged
+# 1088201632,2,fully flagged
+# 1088201752,2,fully flagged
+# 1088201880,2,fully flagged
+# 1088202000,2,?
+# 1088202120,2,fully flagged
 1088202240,2,ends early
 1088202368,2,ends early
 1088202488,2,ends early
@@ -147,6 +247,51 @@
 1088202856,2,ends early
 1088202976,2,ends early
 1088203096,2,ends early
+1088453416,2,inconsistent TIME header
+1088453536,2,inconsistent TIME header
+1088453656,2,inconsistent TIME header
+1088453784,2,inconsistent TIME header
+1088453904,2,inconsistent TIME header
+1088454024,2,inconsistent TIME header
+1088454144,2,inconsistent TIME header
+1088454272,2,inconsistent TIME header
+1088454392,2,inconsistent TIME header
+1088454512,2,inconsistent TIME header
+1088454632,2,inconsistent TIME header
+1088454760,2,inconsistent TIME header
+1088454880,2,inconsistent TIME header
+1088455000,2,inconsistent TIME header
+1088455120,2,inconsistent TIME header
+1088455248,2,inconsistent TIME header
+1088455248,2,Inconsistent TIME header
+1088455368,2,inconsistent TIME header
+1088455368,2,Inconsistent TIME header
+1088455488,2,inconsistent TIME header
+1088455488,2,Inconsistent TIME header
+1088455608,2,inconsistent TIME header
+1088455608,2,Inconsistent TIME header
+1088455736,2,inconsistent TIME header
+1088455736,2,Inconsistent TIME header
+1088455856,2,inconsistent TIME header
+1088455856,2,Inconsistent TIME header
+1088455976,2,inconsistent TIME header
+1088455976,2,Inconsistent TIME header
+1088456096,2,inconsistent TIME header
+1088456096,2,Inconsistent TIME header
+1088456224,2,inconsistent TIME header
+1088456224,2,Inconsistent TIME header
+1088456344,2,inconsistent TIME header
+1088456344,2,Inconsistent TIME header
+1088456464,2,inconsistent TIME header
+1088456464,2,Inconsistent TIME header
+1088456584,2,inconsistent TIME header
+1088456584,2,Inconsistent TIME header
+1088456712,2,inconsistent TIME header
+1088456712,2,Inconsistent TIME header
+1088456832,2,inconsistent TIME header
+1088456832,2,Inconsistent TIME header
+1088456952,2,inconsistent TIME header
+1088456952,2,Inconsistent TIME header
 1088457072,2,inconsistent TIME header
 1088457200,2,inconsistent TIME header
 1088457320,2,inconsistent TIME header
@@ -162,6 +307,35 @@
 1088458536,2,inconsistent TIME header
 1088458664,2,inconsistent TIME header
 1088458784,2,inconsistent TIME header
+1088458904,2,inconsistent TIME header
+1088458904,2,Inconsistent TIME header
+1088459024,2,inconsistent TIME header
+1088459024,2,Inconsistent TIME header
+1088459152,2,inconsistent TIME header
+1088459152,2,Inconsistent TIME header
+1088459272,2,inconsistent TIME header
+1088459272,2,Inconsistent TIME header
+1088459392,2,inconsistent TIME header
+1088459392,2,Inconsistent TIME header
+1088459512,2,inconsistent TIME header
+1088459512,2,Inconsistent TIME header
+1088459640,2,inconsistent TIME header
+1088459640,2,Inconsistent TIME header
+1088459760,2,inconsistent TIME header
+1088459760,2,Inconsistent TIME header
+1088459880,2,inconsistent TIME header
+1088459880,2,Inconsistent TIME header
+1088460000,2,inconsistent TIME header
+1088460000,2,Inconsistent TIME header
+1088460128,2,inconsistent TIME header
+1088460248,2,inconsistent TIME header
+1088460248,2,Inconsistent TIME header
+1088460368,2,inconsistent TIME header
+1088460368,2,Inconsistent TIME header
+1088460488,2,inconsistent TIME header
+1088460488,2,Inconsistent TIME header
+1088460616,2,inconsistent TIME header
+1088460616,2,Inconsistent TIME header
 1088460736,2,inconsistent TIME header
 1088460856,2,inconsistent TIME header
 1088460976,2,inconsistent TIME header
@@ -175,11 +349,143 @@
 1088461952,2,inconsistent TIME header
 1088462080,2,inconsistent TIME header
 1088462200,2,inconsistent TIME header
+1088884232,2,Inconsistent TIME header
+1088884360,2,Inconsistent TIME header
+1088884480,2,Inconsistent TIME header
+1088884600,2,Inconsistent TIME header
+1088884720,2,Inconsistent TIME header
+1088884848,2,Inconsistent TIME header
+1088884968,2,Inconsistent TIME header
+1088885088,2,Inconsistent TIME header
+1088885216,2,Inconsistent TIME header
+1088885336,2,Inconsistent TIME header
+1088885456,2,Inconsistent TIME header
+1088885576,2,Inconsistent TIME header
+1088885704,2,Inconsistent TIME header
+1088885824,2,Inconsistent TIME header
+1088885944,2,Inconsistent TIME header
+1088886064,2,Inconsistent TIME header
+1088886192,2,Inconsistent TIME header
+1088886312,2,Inconsistent TIME header
+1088886432,2,Inconsistent TIME header
+1088886552,2,Inconsistent TIME header
+1088886672,2,Inconsistent TIME header
+1088886800,2,Inconsistent TIME header
+1088886920,2,Inconsistent TIME header
+1088887040,2,Inconsistent TIME header
+1088887160,2,Inconsistent TIME header
+1088887288,2,Inconsistent TIME header
+1088887408,2,Inconsistent TIME header
+1088887528,2,Inconsistent TIME header
+1088887656,2,Inconsistent TIME header
+1088887776,2,Inconsistent TIME header
+1088887896,2,Inconsistent TIME header
+1088888016,2,Inconsistent TIME header
+1088888144,2,Inconsistent TIME header
+1088888264,2,Inconsistent TIME header
+1088888384,2,Inconsistent TIME header
+1088888504,2,Inconsistent TIME header
+1088888632,2,Inconsistent TIME header
+1088888752,2,Inconsistent TIME header
+1088888872,2,Inconsistent TIME header
+1088888992,2,Inconsistent TIME header
+1088889120,2,Inconsistent TIME header
+1088889240,2,Inconsistent TIME header
+1088889360,2,Inconsistent TIME header
+1088889480,2,Inconsistent TIME header
+1088889608,2,inconsistent TIME header
+1088889728,2,Inconsistent TIME header
+1088889848,2,Inconsistent TIME header
+1088889968,2,Inconsistent TIME header
+1088890096,2,Inconsistent TIME header
+1088890216,2,Inconsistent TIME header
+1088890336,2,Inconsistent TIME header
+1088890456,2,Inconsistent TIME header
+1088890576,2,Inconsistent TIME header
+1088890704,2,Inconsistent TIME header
+1088890824,2,Inconsistent TIME header
+1088890944,2,Inconsistent TIME header
+1088891064,2,Inconsistent TIME header
+1088891192,2,Inconsistent TIME header
+1088891312,2,Inconsistent TIME header
+1088891432,2,Inconsistent TIME header
+1088891552,2,Inconsistent TIME header
+1088891680,2,Inconsistent TIME header
+1088891800,2,Inconsistent TIME header
+1088891920,2,Inconsistent TIME header
+1088892040,2,Inconsistent TIME header
+1088892168,2,Inconsistent TIME header
+1088892288,2,Inconsistent TIME header
+1088892408,2,Inconsistent TIME header
+1088892528,2,Inconsistent TIME header
+1088892656,2,Inconsistent TIME header
+1088892776,2,Inconsistent TIME header
+1088892896,2,Inconsistent TIME header
+1088893016,2,Inconsistent TIME header
+1088893144,2,Inconsistent TIME header
+1088893264,2,Inconsistent TIME header
+1088893384,2,Inconsistent TIME header
+1089839728,2,ends early
+1089142728,2,Inconsistent TIME header
+1089142848,2,Inconsistent TIME header
+1089142968,2,Inconsistent TIME header
+1089143096,2,Inconsistent TIME header
+1089143216,2,Inconsistent TIME header
+1089143336,2,Inconsistent TIME header
+1089143456,2,Inconsistent TIME header
+1089143584,2,Inconsistent TIME header
+1089143704,2,Inconsistent TIME header
+1089143824,2,Inconsistent TIME header
+1089143944,2,Inconsistent TIME header
+1089144072,2,Inconsistent TIME header
+1089144192,2,Inconsistent TIME header
+1089144312,2,Inconsistent TIME header
+1089144432,2,Inconsistent TIME header
+1089144560,2,Inconsistent TIME header
+1089144680,2,Inconsistent TIME header
+1089144800,2,Inconsistent TIME header
+1089144920,2,Inconsistent TIME header
+1089145048,2,Inconsistent TIME header
+1089145168,2,Inconsistent TIME header
+1089145288,2,Inconsistent TIME header
+1089145408,2,Inconsistent TIME header
+1089145536,2,Inconsistent TIME header
+1089145656,2,Inconsistent TIME header
+1089145776,2,Inconsistent TIME header
+1089145896,2,Inconsistent TIME header
+1089146024,2,Inconsistent TIME header
+1089146144,2,Inconsistent TIME header
+1089146264,2,Inconsistent TIME header
+1089146384,2,inconsistent TIME header
+1089146512,2,Inconsistent TIME header
+1089146632,2,inconsistent TIME header
+1089146752,2,inconsistent TIME header
+1089146880,2,Inconsistent TIME header
+1089147000,2,inconsistent TIME header
+1089147120,2,inconsistent TIME header
+1089147240,2,Inconsistent TIME header
+1089147368,2,inconsistent TIME header
+1089147488,2,inconsistent TIME header
 1089147608,2,inconsistent TIME header
 1089147728,2,inconsistent TIME header
 1089147856,2,inconsistent TIME header
 1089147976,2,inconsistent TIME header
 1089148096,2,inconsistent TIME header
+1089148216,2,Inconsistent TIME header
+1089148336,2,Inconsistent TIME header
+1089148464,2,Inconsistent TIME header
+1089148584,2,Inconsistent TIME header
+1089148704,2,Inconsistent TIME header
+1089148824,2,Inconsistent TIME header
+1089148952,2,Inconsistent TIME header
+1089149072,2,Inconsistent TIME header
+1089149192,2,Inconsistent TIME header
+1089149312,2,Inconsistent TIME header
+1089149440,2,Inconsistent TIME header
+1089149560,2,Inconsistent TIME header
+1089149680,2,Inconsistent TIME header
+1089149808,2,Inconsistent TIME header
+1089149928,2,Inconsistent TIME header
 1089150048,2,inconsistent TIME header
 1089150168,2,inconsistent TIME header
 1089150296,2,inconsistent TIME header
@@ -196,8 +502,186 @@
 1089151632,2,inconsistent TIME header
 1089151752,2,inconsistent TIME header
 1089151880,2,inconsistent TIME header
+1089662152,2,Inconsistent TIME header
+1089662272,2,Inconsistent TIME header
+1089662400,2,Inconsistent TIME header
+1089662520,2,Inconsistent TIME header
+1089662640,2,Inconsistent TIME header
+1089662760,2,Inconsistent TIME header
+1089662888,2,Inconsistent TIME header
+1089663008,2,Inconsistent TIME header
+1089663128,2,Inconsistent TIME header
+1089663248,2,Inconsistent TIME header
+1089663376,2,Inconsistent TIME header
+1089663496,2,Inconsistent TIME header
+1089663616,2,Inconsistent TIME header
+1089663736,2,Inconsistent TIME header
+1089663864,2,Inconsistent TIME header
+1089663984,2,Inconsistent TIME header
+1089664104,2,Inconsistent TIME header
+1089664224,2,Inconsistent TIME header
+1089664352,2,Inconsistent TIME header
+1089664472,2,inconsistent TIME header
+1089664592,2,Inconsistent TIME header
+1089664712,2,Inconsistent TIME header
+1089664840,2,Inconsistent TIME header
+1089664960,2,Inconsistent TIME header
+1089665080,2,Inconsistent TIME header
+1089665200,2,Inconsistent TIME header
+1089665328,2,Inconsistent TIME header
+1089665448,2,Inconsistent TIME header
+1089665568,2,Inconsistent TIME header
+1089665688,2,Inconsistent TIME header
+1089665816,2,Inconsistent TIME header
+1089665936,2,Inconsistent TIME header
+1089666056,2,Inconsistent TIME header
+1089666176,2,Inconsistent TIME header
+1089666304,2,Inconsistent TIME header
+1089666424,2,Inconsistent TIME header
+1089666544,2,Inconsistent TIME header
+1089666664,2,Inconsistent TIME header
+1089666792,2,Inconsistent TIME header
+1089666912,2,Inconsistent TIME header
+1089667032,2,Inconsistent TIME header
+1089667152,2,Inconsistent TIME header
+1089667280,2,Inconsistent TIME header
+1089667400,2,Inconsistent TIME header
+1089667520,2,Inconsistent TIME header
+1089667640,2,Inconsistent TIME header
+1089667768,2,Inconsistent TIME header
+1089667888,2,Inconsistent TIME header
+1089668008,2,Inconsistent TIME header
+1089668128,2,Inconsistent TIME header
+1089668256,2,Inconsistent TIME header
+1089668376,2,Inconsistent TIME header
+1089668496,2,Inconsistent TIME header
+1089668616,2,Inconsistent TIME header
+1089668744,2,Inconsistent TIME header
+1089668864,2,Inconsistent TIME header
+1089750880,2,Inconsistent TIME header
+1089751000,2,Inconsistent TIME header
+1089751120,2,Inconsistent TIME header
+1089751248,2,Inconsistent TIME header
+1089751368,2,Inconsistent TIME header
+1089751488,2,Inconsistent TIME header
+1089751608,2,Inconsistent TIME header
+1089751736,2,Inconsistent TIME header
+1089751856,2,Inconsistent TIME header
+1089751976,2,Inconsistent TIME header
+1089752096,2,Inconsistent TIME header
+1089752224,2,Inconsistent TIME header
+1089752344,2,Inconsistent TIME header
+1089752464,2,Inconsistent TIME header
+1089752584,2,Inconsistent TIME header
+1089752712,2,Inconsistent TIME header
+1089752832,2,Inconsistent TIME header
+1089752952,2,Inconsistent TIME header
+1089753072,2,Inconsistent TIME header
+1089753200,2,Inconsistent TIME header
+1089753320,2,Inconsistent TIME header
+1089753440,2,Inconsistent TIME header
+1089753560,2,Inconsistent TIME header
+1089753688,2,Inconsistent TIME header
+1089753808,2,Inconsistent TIME header
+1089753928,2,Inconsistent TIME header
+1089754048,2,Inconsistent TIME header
+1089754176,2,Inconsistent TIME header
+1089754296,2,Inconsistent TIME header
+1089754416,2,Inconsistent TIME header
+1089754536,2,Inconsistent TIME header
+1089754664,2,Inconsistent TIME header
+1089754784,2,Inconsistent TIME header
+1089754904,2,Inconsistent TIME header
+1089755024,2,Inconsistent TIME header
+1090091512,2,ends early
+1090091872,2,ends early
+1090351584,2,ends early
+1090438240,2,Inconsistent TIME header
+1090438360,2,Inconsistent TIME header
+1090438480,2,Inconsistent TIME header
+1090438608,2,Inconsistent TIME header
+1090438728,2,Inconsistent TIME header
+1090438848,2,Inconsistent TIME header
+1090438968,2,Inconsistent TIME header
+1090439096,2,Inconsistent TIME header
+1090439216,2,Inconsistent TIME header
+1090439336,2,Inconsistent TIME header
+1090439456,2,Inconsistent TIME header
+1090439584,2,Inconsistent TIME header
+1090439704,2,Inconsistent TIME header
+1090439824,2,Inconsistent TIME header
+1090439944,2,Inconsistent TIME header
+1090440072,2,Inconsistent TIME header
+1090440192,2,Inconsistent TIME header
+1090440312,2,Inconsistent TIME header
+1090440432,2,Inconsistent TIME header
+1090440560,2,Inconsistent TIME header
+1090440560,2,Inconsistent TIME header
+1090440680,2,Inconsistent TIME header
+1090440800,2,Inconsistent TIME header
+1090440920,2,Inconsistent TIME header
+1090441048,2,Inconsistent TIME header
+1090441048,2,Inconsistent TIME header
+1090441168,2,Inconsistent TIME header
+1090441288,2,Inconsistent TIME header
+1090441408,2,Inconsistent TIME header
+1090441536,2,Inconsistent TIME header
+1090441656,2,Inconsistent TIME header
+1090441776,2,Inconsistent TIME header
+1090441896,2,Inconsistent TIME header
+1090442024,2,Inconsistent TIME header
+1090442144,2,Inconsistent TIME header
+1090442264,2,Inconsistent TIME header
+1090442384,2,Inconsistent TIME header
+1090442512,2,Inconsistent TIME header
+1090442632,2,Inconsistent TIME header
+1090442752,2,Inconsistent TIME header
+1090442880,2,Inconsistent TIME header
+1090443000,2,Inconsistent TIME header
+1090443120,2,Inconsistent TIME header
+1090443240,2,Inconsistent TIME header
+1090443368,2,Inconsistent TIME header
+1090443488,2,Inconsistent TIME header
+1090443608,2,Inconsistent TIME header
+1090443728,2,Inconsistent TIME header
+1090443856,2,Inconsistent TIME header
+1090443976,2,Inconsistent TIME header
+1090444096,2,Inconsistent TIME header
 1090444216,2,inconsistent TIME header
 1090444336,2,inconsistent TIME header
+1092590208,2,ends early
+1092072248,2,Inconsistent TIME header
+1092072368,2,Inconsistent TIME header
+1092072488,2,Inconsistent TIME header
+1092072616,2,Inconsistent TIME header
+1092072736,2,Inconsistent TIME header
+1092072856,2,Inconsistent TIME header
+1092072976,2,Inconsistent TIME header
+1092073096,2,Inconsistent TIME header
+1092073224,2,Inconsistent TIME header
+1092073344,2,Inconsistent TIME header
+1092073464,2,Inconsistent TIME header
+1092073584,2,Inconsistent TIME header
+1092073712,2,Inconsistent TIME header
+1092073832,2,Inconsistent TIME header
+1092073952,2,Inconsistent TIME header
+1092074072,2,Inconsistent TIME header
+1092074200,2,Inconsistent TIME header
+1092074320,2,Inconsistent TIME header
+1092074320,2,Inconsistent TIME header
+1092074440,2,Inconsistent TIME header
+1092074568,2,Inconsistent TIME header
+1092074688,2,Inconsistent TIME header
+1092074808,2,Inconsistent TIME header
+1092074928,2,Inconsistent TIME header
+1092075056,2,Inconsistent TIME header
+1092075176,2,Inconsistent TIME header
+1092075296,2,Inconsistent TIME header
+1092075416,2,Inconsistent TIME header
+1092075544,2,Inconsistent TIME header
+1092075664,2,Inconsistent TIME header
+1092075784,2,Inconsistent TIME header
+1092075904,2,Inconsistent TIME header
 1092076032,2,inconsistent TIME header
 1092076152,2,inconsistent TIME header
 1092076272,2,inconsistent TIME header
@@ -213,6 +697,21 @@
 1092077496,2,inconsistent TIME header
 1092077616,2,inconsistent TIME header
 1092077736,2,inconsistent TIME header
+1092077856,2,Inconsistent TIME header
+1092077984,2,Inconsistent TIME header
+1092078104,2,Inconsistent TIME header
+1092078224,2,Inconsistent TIME header
+1092078344,2,Inconsistent TIME header
+1092078472,2,Inconsistent TIME header
+1092078592,2,Inconsistent TIME header
+1092078712,2,Inconsistent TIME header
+1092078832,2,Inconsistent TIME header
+1092078960,2,Inconsistent TIME header
+1092079080,2,Inconsistent TIME header
+1092079200,2,Inconsistent TIME header
+1092079320,2,Inconsistent TIME header
+1092079440,2,Inconsistent TIME header
+1092079568,2,Inconsistent TIME header
 1092079688,2,inconsistent TIME header
 1092079808,2,inconsistent TIME header
 1092079928,2,inconsistent TIME header
@@ -230,6 +729,21 @@
 1092163168,2,inconsistent TIME header
 1092163288,2,inconsistent TIME header
 1092163904,2,inconsistent TIME header
+1092164024,2,Inconsistent TIME header
+1092164144,2,Inconsistent TIME header
+1092164264,2,Inconsistent TIME header
+1092164392,2,Inconsistent TIME header
+1092164512,2,Inconsistent TIME header
+1092164632,2,Inconsistent TIME header
+1092164752,2,Inconsistent TIME header
+1092164880,2,Inconsistent TIME header
+1092165000,2,Inconsistent TIME header
+1092165120,2,Inconsistent TIME header
+1092165240,2,Inconsistent TIME header
+1092165368,2,Inconsistent TIME header
+1092165488,2,Inconsistent TIME header
+1092165608,2,Inconsistent TIME header
+1092165728,2,Inconsistent TIME header
 1092165856,2,inconsistent TIME header
 1092165976,2,inconsistent TIME header
 1092166096,2,inconsistent TIME header
@@ -237,4 +751,22 @@
 1092166344,2,inconsistent TIME header
 1092166464,2,inconsistent TIME header
 1092166584,2,inconsistent TIME header
-1066576032,2,FitsError252
+1093969440,2,ends early
+1127146616,2,ends early
+1128522920,2,ends early
+1254668544,2,ends early
+1254669680,2,ends early
+1255786952,2,ends early
+1227526432,2,1227526432_20181129113511_gpubox17_00.fits HDU 8: FitsError107
+1227872048,2,1227872048_20181203113459_gpubox17_00.fits HDU 22: FitsError107
+1228131256,2,1228131256_20181206113503_gpubox17_00.fits HDU 24: FitsError107
+1228390472,2,1228390472_20181209113417_gpubox24_00.fits HDU 24: FitsError107
+1228649680,2,1228649680_20181212113425_gpubox24_00.fits HDU 22: FitsError107
+1253203408,2,1253203408_20190922160503_gpubox17_00.fits HDU 5: FitsError107
+1253808280,2,1253808280_20190929160425_gpubox24_00.fits HDU 22: FitsError107
+1254067440,2,1254067440_20191002160517_gpubox17_00.fits HDU 14: FitsError107
+1254240296,2,1254240296_20191004160441_gpubox24_00.fits HDU 15: FitsError107
+1254495864,2,1254495864_20191007150517_gpubox17_00.fits HDU 26: FitsError107
+1254927896,2,1254927896_20191012150441_gpubox24_00.fits HDU 16: FitsError107
+1255100640,2,1255100640_20191014150513_gpubox17_00.fits HDU 16: FitsError107
+1255532680,2,1255532680_20191019150425_gpubox24_00.fits HDU 27: FitsError107

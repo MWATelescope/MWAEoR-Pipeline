@@ -12,7 +12,6 @@ import pandas as pd
 import copy
 from math import ceil
 import shlex
-import os
 
 """
 example:
@@ -130,6 +129,7 @@ def autoplot(args):
     )[0]
 
     sel_ant_names = metafits_ants['TileName'].values
+    sel_ants = metafits_ants['Antenna'].values
     if args.sel_ants is not None:
         sel_ants = list(map(int, args.sel_ants))
         sel_ant_names = sel_ant_names[sel_ants]
@@ -225,10 +225,10 @@ def autoplot(args):
                       norm=norm, cmap=cmap, aspect=6)
             ax.set_ylabel("Antenna")
         elif args.plot_style == "lines":
-            for ant_name, line in zip(sel_ant_names, rms_ant_freq):
+            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rms_ant_freq):
                 ax.plot(freqs, np.log(line) if args.log_scale else line,
                         alpha=(0.2 if args.highlight_ants else 0.5),
-                        label=ant_name)
+                        label=f"{ant_idx}|{ant_name}")
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
                 for line in rms_ant_freq[highlight_idxs, :]:

@@ -141,7 +141,7 @@ process metaJson {
     storeDir "${params.outdir}/${obsid}/meta"
     tag "${obsid}"
 
-    errorStrategy 'terminate'
+    errorStrategy 'ignore'
 
     label "python"
 
@@ -206,15 +206,17 @@ process asvoPrep {
 
     script:
     prefix = "birli_"
-    suffix = "_${params.prep_time_res_s}s_${params.prep_freq_res_khz}kHz"
+    suffix = ""
     args = [
         output: "uvfits"
     ]
     if (params.prep_time_res_s != null) {
         args.avg_time_res = "${params.prep_time_res_s}"
+        suffix += "_${params.prep_time_res_s}s"
     }
     if (params.prep_freq_res_khz != null) {
         args.avg_freq_res = "${params.prep_freq_res_khz}"
+        suffix += "_${params.prep_freq_res_khz}kHz"
     }
     if (params.prep_rfi != null && !params.prep_rfi) {
         args.no_rfi = "true"
@@ -225,9 +227,8 @@ process asvoPrep {
 
     """
     #!/bin/bash -eux
-
     export MWA_ASVO_API_KEY="${params.asvo_api_key}"
-
+    echo \$'meta=${meta}'
     ${params.proxy_prelude} # ensure proxy is set if needed
 
     """ + ( params.pullPrep ? """
@@ -339,7 +340,7 @@ process ssins {
         plot_title: meta.plot_title ?: "${base}${meta.subobs?:''}",
         sel_ants: meta.sel_ants ? meta.sel_ants.join(' ') : null,
         output_prefix: output_prefix,
-        guard_width: meta.guard_width ?: params.prep_freq_res_khz * 500,
+        guard_width: meta.guard_width ?: (params.prep_freq_res_khz?:10) * 500,
         uvfits: uvfits
     ].findAll { _, v -> v != null }
         .collect { k, v -> """--${k} ${v} """ }
@@ -538,7 +539,7 @@ process hypCalSol {
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
     flag_args = ""
-    prepFlags = meta.prepflags?:[]
+    prepFlags = meta.prepFlags?:[]
     fineChanFlags = meta.fineChanFlags?:[]
     if (prepFlags.size() > 0) {
         flag_args += " --tile-flags ${prepFlags.join(' ')}"
@@ -549,6 +550,7 @@ process hypCalSol {
 
     """
     #!/bin/bash -eux
+    echo \$'meta=${meta}'
     """ + (para ? "export CUDA_VISIBLE_DEVICES=0" : "") + """
     export num_gpus="\$(nvidia-smi -L | wc -l)"
     if [ \$num_gpus -eq 0 ]; then
@@ -582,6 +584,8 @@ process hypCalSol {
         # hyperdrive di-cal backgrounded in a subshell
         (
             ${params.hyperdrive} di-calibrate \${args} \
+                ${params.hyp_srclist_args} \
+                ${params.hyp_dical_args} \
                 --data "${metafits}" ${uvfits} \
                 --beam-file "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
@@ -616,27 +620,57 @@ process hypCalSol {
 // meta is a map containing calibration solution metadata, fields:
 // - name: name of the calibration (dical_name)
 // - cal_prog: name of the calibration program (hyp or rex)
-process polyFit {
+// process polyFit {
+//     input:
+//     tuple val(obsid), val(meta), path(soln)
+//     output:
+//     tuple val(obsid), val(meta), path(poly_soln), path(logs)
+
+//     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+//     tag "${obsid}${meta.subobs?:''}.${meta.dical_name}"
+
+//     label "python"
+
+//     script:
+//     meta = deepcopy(meta) + [name: "poly_${meta.name}"]
+//     poly_soln = "${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}_${meta.name}.fits"
+//     logs = "polyfit_${obsid}${meta.subobs?:''}_${meta.name}.log"
+//     """
+//     #!/bin/bash -eux
+//     run_polyfit.py "${soln}" --outfile "${poly_soln}" | tee "${logs}"
+//     ps=("\${PIPESTATUS[@]}")
+//     if [ \${ps[0]} -ne 0 ]; then
+//         echo "run_polyfit.py failed. status=\${ps[0]}"
+//         exit \${ps[0]}
+//     fi
+//     """
+// }
+
+// do fourier fit of calibration solution phases
+// meta is a map containing calibration solution metadata, fields:
+// - name: name of the calibration (dical_name)
+// - cal_prog: name of the calibration program (hyp or rex)
+process phaseFit {
     input:
     tuple val(obsid), val(meta), path(soln)
     output:
-    tuple val(obsid), val(meta), path(poly_soln), path(logs)
+    tuple val(obsid), val(meta), path(fit_soln) // , path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}${meta.subobs?:''}.${meta.dical_name}"
 
-    label "python"
+    label "fitcal"
 
     script:
-    meta = deepcopy(meta) + [name: "poly_${meta.name}"]
-    poly_soln = "${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}_${meta.name}.fits"
-    logs = "polyfit_${obsid}${meta.subobs?:''}_${meta.name}.log"
+    meta = deepcopy(meta) + [name: "${meta.name}_fitted", fitted: true]
+    base = soln.baseName
+    fit_soln = "${base}_fitted.fits"
     """
     #!/bin/bash -eux
-    run_polyfit.py "${soln}" --outfile "${poly_soln}" | tee "${logs}"
+    run_fitting.py "${soln}" --phase
     ps=("\${PIPESTATUS[@]}")
     if [ \${ps[0]} -ne 0 ]; then
-        echo "run_polyfit.py failed. status=\${ps[0]}"
+        echo "run_fitting.py failed. status=\${ps[0]}"
         exit \${ps[0]}
     fi
     """
@@ -837,33 +871,36 @@ process hypSubMS {
 // - sub: set to "ionosub"
 process hypIonoSubUV {
     input:
-    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(oldMeta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(newMeta), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}${meta.subobs?:''}.${old_name}"
+    tag "${obsid}${oldMeta.subobs?:''}.${oldMeta.name}_i${oldMeta.ionosub_nsrcs}"
     label "hyperdrive"
     label "cpu_half"
+    label "mem_full" // need a full node otherwise gpu runs out of memory
     label "gpu"
 
-    time 45.minute
+    time 6.hour
 
     script:
-    old_name = meta.name
-    newMeta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
-    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}.uvfits"
-    logs = "hyp_vis-${newMeta.name}_uv.log"
-    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}_uv.json"
+    meta = deepcopy(oldMeta) + [sub: "ionosub"]
+    meta.name = "ionosub_${meta.name}_i${meta.ionosub_nsrcs}"
+    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${meta.name}.uvfits"
+    logs = "hyp_vis-${meta.name}_uv.log"
+    json = "hyp_peel_${obsid}${meta.subobs?:''}_${meta.name}_uv.json"
     """
     #!/bin/bash -eux
-    ${params.hyperdrive} peel \
+    export RUST_BACKTRACE=1
+    ${params.hyperdrive} peel ${params.hyp_peel_args} \
+        ${params.hyp_srclist_args} \
         --data "${metafits}" "${vis}" \
         --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
-        --iono-sub ${newMeta.ionosub_nsrcs} \
-        --sub ${newMeta.sub_nsrcs} \
+        --iono-sub ${meta.ionosub_nsrcs} \
+        --sub ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
         | tee "${logs}"
     ps=("\${PIPESTATUS[@]}")
@@ -884,31 +921,33 @@ process hypIonoSubUV {
 // - sub: set to "ionosub"
 process hypIonoSubMS {
     input:
-    tuple val(obsid), val(meta), path(metafits), path(vis), path(srclist)
+    tuple val(obsid), val(oldMeta), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(newMeta), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
-    tag "${obsid}${meta.subobs?:''}.${old_name}"
+    tag "${obsid}${oldMeta.subobs?:''}.${oldMeta.name}_i${oldMeta.ionosub_nsrcs}"
     label "hyperdrive"
     label "cpu_half"
     label "gpu"
 
     script:
-    old_name = meta.name
-    newMeta = deepcopy(meta) + [sub: "ionosub", name: "ionosub_${meta.name}"]
-    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}.ms"
-    logs = "hyp_vis-${newMeta.name}_ms.log"
-    json = "hyp_peel_${obsid}${meta.subobs?:''}_${newMeta.name}_i${newMeta.ionosub_nsrcs}_ms.json"
+    meta = deepcopy(oldMeta) + [sub: "ionosub"]
+    meta.name = "ionosub_${meta.name}_i${meta.ionosub_nsrcs}"
+    sub_vis = "hyp_${obsid}${meta.subobs?:''}_${meta.name}.ms"
+    logs = "hyp_vis-${meta.name}_ms.log"
+    json = "hyp_peel_${obsid}${meta.subobs?:''}_${meta.name}_ms.json"
     """
     #!/bin/bash -eux
-    ${params.hyperdrive} peel \
+    export RUST_BACKTRACE=1
+    ${params.hyperdrive}peel ${params.hyp_peel_args} \
+        ${params.hyp_srclist_args} \
         --data "${metafits}" "${vis}" \
         --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
-        --iono-sub ${newMeta.ionosub_nsrcs} \
-        --sub ${newMeta.sub_nsrcs} \
+        --iono-sub ${meta.ionosub_nsrcs} \
+        --sub ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
         -v \
         | tee "${logs}"
@@ -1029,13 +1068,15 @@ process uvMeta {
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
-    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    tag "${base}"
 
     label "python"
-    time 15.minute
+    time 30.minute
+    stageInMode "symlink"
 
     script:
-    uvmeta = "uvmeta_${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}.json"
+    base = vis.baseName
+    uvmeta = "uvmeta_${base}.json"
     template "uvmeta.py"
 }
 
@@ -1064,7 +1105,7 @@ process phaseFits {
     input:
     tuple val(obsid), val(meta), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(meta), path("${obsid}*${name}*phase_fits.tsv"), path("${obsid}*${name}*.png")
+    tuple val(obsid), val(meta), path("${obsid}* ${name} phase_fits.tsv"), path("${obsid}*${name}*.png")
 
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
 
@@ -1135,7 +1176,7 @@ process plotSols {
     script:
     plots_glob = "${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}*_${meta.name}_{phases,amps}.png"
     """
-    hyperdrive solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
+    ${params.hyperdrive} solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
     """
 }
 
@@ -1184,7 +1225,7 @@ process plotImgQA {
     output:
     tuple val(name), path("${base}_*.png")
 
-    storeDir "${results_dir}"
+    storeDir "${results_dir}${params.img_suffix}${params.cal_suffix}"
     stageInMode "symlink"
 
     tag "${name}"
@@ -1311,13 +1352,14 @@ process wscleanDConv {
 
     storeDir "${params.outdir}/${obsid}/img${img_params.suffix}${params.cal_suffix}"
 
-    tag "${obsid}${meta.subobs?:''}${meta.inter_tok?:''}.${meta.name}"
+    tag "${obsid}${meta.subobs?:''}${meta.inter_tok?:''}.${meta.name}.${(img_params.pol?:'').split(' ')[0]}"
     label "wsclean"
     label "cpu_half"
     label "mem_half"
     label "nvme"
+    stageInMode "symlink"
 
-    time { [23.hour, 13.min * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult))].min() }
+    time { [23.hour, 1.hour * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult))].min() }
 
     script:
     multiplier = Math.sqrt(vis.collect().size())
@@ -1349,7 +1391,7 @@ process wscleanDConv {
         if (img_params.pol) {
             img_glob += "-{XX,YY,XY,XYi,I,Q,U,V}"
         }
-        img_glob += "-image.fits"
+        img_glob += "-{image,psf,residual}.fits"
     }
     img_args = img_params.args
     if (img_params.weight) {
@@ -1360,6 +1402,8 @@ process wscleanDConv {
     }
     """
     #!/bin/bash -eux
+    echo \$'meta=${meta}, img_params=${img_params}, img_glob=${img_glob}'
+    df -h .
     """ + (
             // convert any uvfits to ms
             [vis, vis_ms].transpose().collect { uv, ms ->
@@ -1387,7 +1431,8 @@ process wscleanDConv {
         -auto-threshold ${img_params.auto_threshold} -auto-mask ${img_params.auto_mask} \
         -mwa-path ${img_params.mwa_path} \
         -circular-beam \
-    """ + ((meta.interval) ? "-interval ${meta.interval[0]} ${meta.interval[1]}" : "") + """ \
+        """ + ((meta.interval) ? "-interval ${meta.interval[0]} ${meta.interval[1]}" : "") + """ \
+        """ + ((meta.chan) ? "-channel-range ${meta.chan[0]} ${meta.chan[1]}" : "") + """ \
     """ + vis_ms.join(' ')
 }
 
@@ -1433,9 +1478,11 @@ process psMetrics {
     out_metrics = "output_metrics_${uvbase}.dat"
     """
     #!/bin/bash -eux
+    echo \$'${meta}'
     export DATADIR="\$PWD"
     export OUTPUTDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
+    which ${params.ps_metrics}
     ${params.ps_metrics} "${uvbase}" "${eorband}" "${nchans}" "${uvbase}" 2>&1 \
         | tee "${uvbase}.log"
     ps=("\${PIPESTATUS[@]}")
@@ -1482,7 +1529,7 @@ process chipsGrid {
     label "cpu_full"
     label "mem_full"
 
-    time { 15.minute * obsids.size() }
+    time { 30.minute * obsids.size() }
 
     script:
     ext = meta.ext
@@ -1498,7 +1545,7 @@ process chipsGrid {
     newMeta = deepcopy(meta) + [lowfreq: lowfreq]
 
     """
-    #!/bin/bash -eux
+    #!/bin/bash -ux
 
     echo "meta=${meta}"
     """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 68" : "" ) + """
@@ -1514,16 +1561,38 @@ process chipsGrid {
         [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
     done
 
+    which gridvisdiff
+
     """ + (
         [coerceList(obsids), coerceList(viss)].transpose().collect { obsid, vis ->
-            """gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
-                2>&1 > syslog_gridvisdiff_${obsid}.txt """
+            """
+    gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
+        2>&1 | tee syslog_gridvisdiff_${obsid}.txt
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ] && [ \${ps[0]} -ne 42 ]; then
+        echo "gridvisdiff failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
+    """
         }.join("\n")
     ) + """
 
+    which prepare_diff
+
     for pol in xx yy; do
         prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "\${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
-            2>&1 > syslog_prepare_diff_\${pol}.txt
+            2>&1 | tee syslog_prepare_diff_\${pol}.txt
+        if [ \${ps[0]} -ne 0 ] && [ \${ps[0]} -ne 42 ]; then
+            echo "prepare_diff failed. pol=\${pol}, status=\${ps[0]}"
+            exit \${ps[0]}
+        fi
+        # check for nulls
+        # for dat in *_\${pol}.${ext}.dat; do
+        #     if ! grep -m1 -qP "[^\\0]" \$dat; then
+        #         echo "oops, all nulls \$dat"
+        #         exit 69
+        #     fi
+        # done
     done
     """
 }
@@ -1544,15 +1613,19 @@ process chipsCombine {
     label "cpu_full"
     label "mem_full"
     label "nvme_full"
-    stageInMode "symlink"
+    stageInMode { (exts.size() > 80) ? "symlink" : "copy" }
 
-    // takes about 6 hours for 300, 16 hours for 1000, double it for safety
+    // takes about 6 hours for 300, 16 hours for 1000,
+    // double it for safety
+    // clamp 1h < x < 24h
     time {
+        t = 1.hour
         if (exts.size() < 1000) {
-            [1.hour, 6.hour * (exts.size() - 0.5) / 300].max()
+            t = [1.hour, 6.hour * (exts.size() - 0.5) / 300].max()
         } else {
-            [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
-        } * 2
+            t = [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
+        }
+        [[t * 2, 1.hour].max(), 24.95.hour].min()
     }
 
     script:
@@ -1583,7 +1656,11 @@ process chipsCombine {
         }.join("\n")
     ) + """
 
+    # check error code, allow 0 or 42
+    set +e
     combine_data "combine_${pol}.${combined_ext}.txt" ${nchans} "${pol}.${combined_ext}" 1
+    export chips_return=\$?
+    [ \$chips_return -eq 0 ] || [ \$chips_return -eq 42 ] || exit \$chips_return
 
     # check for nulls
     for dat in *_${pol}.${combined_ext}.dat; do
@@ -1624,7 +1701,7 @@ process chipsLssa {
     maxu = 300
     nbins = 80
     freq_idx_start = 0
-    bias_mode = 0
+    bias_mode = params.lssa_bias_mode
 
     newMeta = deepcopy(meta) + [nbins: nbins, maxu: maxu]
 
@@ -1641,7 +1718,7 @@ process chipsLssa {
 
     for pol in xx yy; do
         lssa_fg_simple "${ext}" "${nchans}" "${nbins}" "\${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
-            2>&1 > syslog_lssa_simple_\${pol}.txt
+            2>&1 | tee syslog_lssa_simple_\${pol}.txt
 
         export cross_size="\$(stat -c%s crosspower_\${pol}_${bias_mode}.iter.${ext}.dat)"
         if (( cross_size < 4097 )); then
@@ -1921,7 +1998,7 @@ process plotCalJsons {
     output:
         path("cal_qa*.png")
 
-    storeDir "${results_dir}"
+    storeDir "${results_dir}${params.cal_suffix}"
     stageInMode "symlink"
 
     label "python"
@@ -2325,7 +2402,7 @@ def prepqa_pass(flagMeta) {
 // POWER	P_win_sub, P_win	< 20	Small window power overall
 def cmt_ps_metrics_pass(meta) {
     def fail_code = 0x00
-    if (meta.p_window != null) {
+    if (params.filter_max_ps_window != null && meta.p_window != null) {
         if (meta.p_window > params.filter_max_ps_window) {
             fail_code = ((meta.sub?:"")=="") ? 0x60 : 0x61
             return [fail_code, "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window(${params.filter_max_ps_window})"]
@@ -2342,13 +2419,13 @@ def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
     if (fail_code != 0x00) {
         return [fail_code, subReason]
     }
-    if (nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
+    if (params.filter_max_ps_ratio != null && nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
         def p_win_p_wg = nosubMeta.p_window / nosubMeta.p_wedge
         if (p_win_p_wg > params.filter_max_ps_ratio) {
             return [0x62, "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio(${params.filter_max_ps_ratio})"]
         }
     }
-    if (subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
+    if (params.filter_max_ps_wedge_sub != null && subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
         def sub_p_wg = subMeta.p_wedge / nosubMeta.p_wedge
         if (sub_p_wg > params.filter_max_ps_wedge_sub) {
             return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_sub{${params.filter_max_ps_wedge_sub}}"]
@@ -2356,10 +2433,10 @@ def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
     }
     if (subMeta.p_window != null && nosubMeta.p_window != null) {
         def sub_p_win = subMeta.p_window / nosubMeta.p_window
-        if (sub_p_win < 0.1) {
+        if (params.filter_min_ps_win_sub != null && sub_p_win < params.filter_min_ps_win_sub) {
             return [0x66, "sub_p_win:p_win(${sub_p_win}) < min_ps_win_sub(${params.filter_min_ps_win_sub})"]
         }
-        if (sub_p_win < 0.1) {
+        if (params.filter_max_ps_win_sub != null && sub_p_win > params.filter_max_ps_win_sub) {
             return [0x67, "sub_p_win:p_win(${sub_p_win}) > max_ps_win_sub(${params.filter_max_ps_win_sub})"]
         }
     }
@@ -2605,7 +2682,7 @@ workflow ws {
                     ew_pointing = ((90-el_pointing) / 7).round() as int
                     if (az_pointing > 0) ew_pointing *= -1
                 } else {
-                    println "unknown az_pointing ${az_pointing}"
+                    println "unknown azel pointing az=${az_pointing} el=${el_pointing}"
                 }
                 def gridpoint_number = wsStats.metadata.gridpoint_number
                 def gridpoint_name = wsStats.metadata.gridpoint_name
@@ -2681,7 +2758,10 @@ workflow ws {
                 def n_bad_tiles = bad_tiles.size()
                 def bad_tile_frac = n_bad_tiles / n_tiles
                 def n_dead_dipoles = delays.count { it == 32 }
-                def dead_dipole_frac = n_dead_dipoles / delays.size()
+                dead_dipole_frac = null
+                if (delays.size() != null && delays.size() > 0) {
+                    dead_dipole_frac = n_dead_dipoles / delays.size()
+                }
                 def quality_update = quality_updates[obsid]?:[:]
                 def dataquality = Float.valueOf(wsStats.dataquality?:0)
                 def dataqualitycomment = wsStats.dataqualitycomment?:''
@@ -2701,6 +2781,7 @@ workflow ws {
 
                 config = tapStats.mwa_array_configuration
                 sun_elevation = Float.valueOf(tapStats.sun_elevation?:'NaN')
+                sun_pointing_distance = Float.valueOf(tapStats.sun_pointing_distance?:'NaN')
 
                 bad_ants = bad_tiles.collect { tile_nums.indexOf(it) + 1 }
 
@@ -2742,7 +2823,11 @@ workflow ws {
                     fail_code = fail_code==0x00 ? 0x03 : fail_code
                 }
                 if (params.filter_sun_elevation != null && sun_elevation != null && sun_elevation > params.filter_sun_elevation) {
-                    fail_reasons += [sprintf("sun_elevation(%+.1f)>%+.1f", sun_elevation, params.filter_sun_elevation)]
+                    fail_reasons += [sprintf("sun_elevation(%+.1f)>%+.1f", Float.valueOf(sun_elevation), Float.valueOf(params.filter_sun_elevation))]
+                    fail_code = fail_code==0x00 ? 0x04 : fail_code
+                }
+                if (params.filter_min_sun_pointing_distance != null && sun_pointing_distance != null && sun_pointing_distance > params.filter_min_sun_pointing_distance) {
+                    fail_reasons += [sprintf("sun_pointing_distance(%+.1f)>%+.1f", Float.valueOf(sun_pointing_distance), Float.valueOf(params.filter_min_sun_pointing_distance))]
                     fail_code = fail_code==0x00 ? 0x04 : fail_code
                 }
                 if (capture_mode == "NO_CAPTURE") {
@@ -2765,11 +2850,11 @@ workflow ws {
                     fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
                     fail_code = fail_code==0x00 ? 0x20 : fail_code
                 }
-                if (params.filter_ionoqa != null && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
+                if (params.filter_ionoqa && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
                     fail_reasons += [sprintf("rts_iono_qa(%.1f)>%.1f", Float.valueOf(quality.iono_qa), Float.valueOf(params.filter_ionoqa))]
                     fail_code = fail_code==0x00 ? 0x21 : fail_code
                 }
-                if (params.filter_ionoqa != null && quality.iono_qa == null) {
+                if (params.filter_ionoqa && quality.iono_qa == null) {
                     fail_reasons += ["rts_iono_qa is null"]
                     fail_code = fail_code==0x00 ? 0x22 : fail_code
                 }
@@ -2787,6 +2872,7 @@ workflow ws {
                     starttime_mjd: Float.valueOf(tapStats.starttime_mjd),
                     starttime_utc: tapStats.starttime_utc,
                     sun_elevation: sun_elevation,
+                    sun_pointing_distance: sun_pointing_distance,
 
                     // pointing
                     ra_pointing: wsStats.metadata.ra_pointing,
@@ -2908,6 +2994,8 @@ workflow ws {
                     sprintf("% 5.2f", summary.lst),
                     summary.obs_name,
                     isNaN(summary.eorfield)?'':summary.eorfield,
+                    isNaN(summary.sun_elevation)?'':summary.sun_elevation,
+                    isNaN(summary.sun_pointing_distance)?'':summary.sun_pointing_distance,
 
                     // channels
                     summary.freq_res,
@@ -2952,7 +3040,8 @@ workflow ws {
                 name: "ws_stats.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS", "FAIL CODE", "FAIL REASON", "START MJD", "START UTC",
-                    "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE", "EW POINT", "SWEET POINT", "LST DEG", "OBS NAME", "EOR FIELD",
+                    "RA POINT", "DEC POINT", "AZ POINT", "EL POINT", "RA PHASE", "DEC PHASE",
+                    "EW POINT", "SWEET POINT", "LST DEG", "OBS NAME", "EOR FIELD", "SUN ELEV", "SUN POINT",
                     "FREQ RES", "COARSE CHANS", "EOR BAND",
                     "TIME RES", "N SCANS",
                     "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N BAD TILES", "BAD TILES FRAC", "TILE NUMS", "FLAG TILES", "TILE RXS",
@@ -2995,17 +3084,14 @@ workflow ws {
 
         wsMetafits.out | metaJson
 
-        obsPass = wsSummary.filter { _, summary -> summary.fail_reasons == '' }
-            .map { obsid, _ -> obsid }
-
     emit:
         // channel of good obsids with their metafits: tuple(obsid, metafits)
         obsMetafits = wsMetafits.out
 
         // channel of video name and frames to convert
-        frame = obsPass.join(wsSkyMap.out)
+        frame = pass.join(wsSkyMap.out)
             .map { _, png -> ["skymap", png] }
-            .mix( obsPass.join(wsPPDs.out.map { _, png -> ["ppd", png] }) )
+            .mix( pass.join(wsPPDs.out.map { _, png -> ["ppd", png] }) )
             .groupTuple()
 
         // channel of (obsid, metadata hashmap)
@@ -3037,6 +3123,36 @@ workflow prep {
         // download preprocessed uvfits
         obsMetaMetafits.map { obsid, meta, __ -> [obsid, meta] }
             | asvoPrep
+
+        asvoPrep.out.flatMap { obsid, meta, uvfits ->
+                coerceList(uvfits).collect { f ->
+                    newMeta = [:]
+                    base_tokens = f.baseName.split('_') as ArrayList
+                    if (base_tokens.size() > 2 && base_tokens[2] =~ /ch\d+/ ) {
+                        newMeta['subobs'] = base_tokens[2]
+                    }
+                    [obsid, deepcopy(meta) + newMeta, f]
+                }
+            }
+            | uvMeta
+
+        // subobsMetaMetafitsPrep = obsMetaUV.cross(uvMeta.out) {[it[0], it[1].name]}
+        //     .map { obsMetaUV_, uvMeta_ ->
+        //         def (obsid, meta, vis) = obsMetaUV_; def (_, __, json) = uvMeta_;
+        //         def jsonMeta = parseJson(json)
+        //         def newMeta = [
+        //             lowfreq:jsonMeta.freqs[0],
+        //             first_lst: jsonMeta.times[0]['lst_rad'],
+        //             first_jd: jsonMeta.times[0]['jd1'],
+        //             nchans:jsonMeta.freqs.size(),
+        //             ntimes:jsonMeta.times.size(),
+        //         ];
+        //         ['eorband', 'eorfield', 'config', 'total_weight'].each { key ->
+        //             if (jsonMeta[key] != null) {
+        //                 newMeta[key] = jsonMeta[key]
+        //             }
+        //         }
+        //         [obsid, deepcopy(meta) + newMeta, vis] }
 
         subobsMetaMetafitsPrep = obsMetaMetafits.join(asvoPrep.out).flatMap { obsid, _, metafits, meta, uvfits_ ->
                 def uvfits = coerceList(uvfits_)
@@ -3083,7 +3199,24 @@ workflow prep {
                     .collectEntries { it }
                 [obsid, rxAnts]
             }
-            .view()
+
+        // mapping of flavor to antenna objects
+        def obsFlavorAnts = flagQA.out.map { obsid, meta, flagJson ->
+                def flagStats = parseJson(flagJson)
+                bad_ants = (meta.bad_ants?:[]) as Set
+                manual_ants = (meta.manual_ants?:[]) as Set
+                def flavorAnts = (flagStats.INPUTS?:[])
+                    .findAll {
+                        ant_idx = it['Antenna'];
+                        it['Pol'] == "X" \
+                            && it["Flag"] == 0 \
+                            && !manual_ants.contains(ant_idx)
+                            // && !bad_ants.contains(ant_idx)
+                    }
+                    .groupBy { it['Flavors'] }
+                    .collectEntries { it }
+                [obsid, flavorAnts]
+            }
 
         // ssins
         if (params.nossins) {
@@ -3092,19 +3225,24 @@ workflow prep {
             subobsMetaVis.join(obsRxAnts).flatMap { obsid, meta, uvfits, rxAnts ->
                 allAnts = rxAnts.collect { rx, ants -> ants }.flatten()
                 subobsAnts = [[meta.subobs, allAnts]]
-                // subobsAnts += (rxAnts.collect {rx, ants ->
-                //     [(meta.subobs?:'') + sprintf("_rx%02d", rx), ants]
-                // })
-                base = uvfits.baseName
-                // subobsAnts = subobsAnts.collect { subobs, ants ->
-                //     bad_ants = (meta.bad_ants?:[]) as Set
-                //     manual_ants = (meta.manual_ants?:[]) as Set
-                //     sel_ants = ants.findAll { it ->
-                //             ant_idx = it['Antenna'];
-                //             it["Flag"] == 0 && !bad_ants.contains(ant_idx) && !manual_ants.contains(ant_idx)
-                //         }
-                //     [subobs, sel_ants]
+                if (params.ssins_by_rx) {
+                    subobsAnts += (rxAnts.collect {rx, ants ->
+                        [(meta.subobs?:'') + sprintf("_rx%02d", rx), ants]
+                    })
+                }
+                // if (params.ssins_unflagged_only) {
+                //     subobsAnts = subobsAnts.collect { subobs, ants ->
+                //         bad_ants = (meta.bad_ants?:[]) as Set
+                //         manual_ants = (meta.manual_ants?:[]) as Set
+                //         sel_ants = ants.findAll { it ->
+                //                 ant_idx = it['Antenna'];
+                //                 it["Flag"] == 0 && !bad_ants.contains(ant_idx) && !manual_ants.contains(ant_idx)
+                //             }
+                //         [subobs, sel_ants]
+                //     }
                 // }
+                base = uvfits.baseName
+
                 subobsAnts.findAll { _, ants -> ants.size() > 1 }
                     .collect { subobs, ants ->
                         tile_idxs = ants.collect { it['Tile'] } as ArrayList
@@ -3118,7 +3256,6 @@ workflow prep {
                         [obsid, deepcopy(meta) + ssinsMeta, uvfits]
                     }
             }
-            | view()
             | ssins
         }
 
@@ -3192,7 +3329,7 @@ workflow prep {
         if (params.noautoplot) {
             channel.empty() | autoplot
         } else {
-            subobsMetaMetafitsPrep.join(obsRxAnts).flatMap { obsid, meta, metafits, uvfits, rxAnts ->
+            autoplotByRx = subobsMetaMetafitsPrep.join(obsRxAnts).flatMap { obsid, meta, metafits, uvfits, rxAnts ->
                     rxAnts.collect { rx, ants ->
                         def suffix = sprintf("_rx%02d", rx);
                         sel_ants = ants.collect{it['Antenna']}
@@ -3203,6 +3340,18 @@ workflow prep {
                         [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
                     }
                 }
+            autoplotByFlavor = subobsMetaMetafitsPrep.join(obsFlavorAnts).flatMap { obsid, meta, metafits, uvfits, flavorAnts ->
+                    flavorAnts.collect { flavor, ants ->
+                        def suffix = sprintf("_flavor-%s", flavor);
+                        sel_ants = ants.collect{it['Antenna']}
+                        def plotMeta = [
+                            suffix: suffix,
+                            "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
+                        ]
+                        [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
+                    }
+                }
+            autoplotByRx.mix(autoplotByFlavor)
                 | autoplot
         }
 
@@ -3272,20 +3421,20 @@ workflow prep {
 
         ssinsOcc.map { it -> def (obsid, meta, occ) = it;
                     ([
-                    obsid,
-                    meta.subobs?:'',
+                        obsid,
+                        meta.subobs?:'',
                         occ.total?:'',
                         occ.streak?:'',
                         occ.dab_total?:'',
                         occ.narrow_total?:'',
                     ]).join("\t")
-            }
-            .collectFile(
-                name: "ssins_occupancy.tsv", newLine: true, sort: true,
+                }
+                .collectFile(
+                    name: "ssins_occupancy.tsv", newLine: true, sort: true,
                     seed: (["OBS", "SUBOBS", "TOTAL", "STREAK", "DAB TOTAL", "NARROW TOTAL"]).join("\t"),
-                storeDir: "${results_dir}"
-            )
-            | view { [it, it.readLines().size()] }
+                    storeDir: "${results_dir}"
+                )
+                | view { [it, it.readLines().size()] }
 
         def allDABs = ssinsOcc.flatMap { obs, meta, occ ->
                 occ.findAll { it.key.startsWith("DAB") }.collect { it.key }
@@ -3392,6 +3541,12 @@ workflow prep {
                         if (flagStats.flagged_fchan_idxs) {
                             newMeta += [ fineChanFlags: flagStats.flagged_fchan_idxs?:[] ]
                         }
+                        if (flagStats.times != null) {
+                            newMeta += [ ntimes: flagStats.num_times ]
+                        }
+                        if (flagStats.freqs != null) {
+                            newMeta += [ nchans: flagStats.num_chans ]
+                        }
                         if (flagAnts.size() > 0) {
                             // println("${obsid} newFlags -= flagAnts:${displayInts(flagAnts)}")
                             newFlags.removeAll(flagAnts)
@@ -3461,7 +3616,7 @@ workflow prep {
 
             prepFlags = subobsMetaVisFlags
                 // .filter { obsid, meta, uvfits, flagMeta -> (meta.prepFlags?:[]).size() > 0 }
-                .map { obsid, meta, uvfits, flagMeta ->
+                .map { obsid, meta, _, flagMeta ->
                     ([
                         obsid,
                         meta.subobs?:'',
@@ -3513,6 +3668,21 @@ workflow prep {
                     (flagMeta.reasons?:'') == ''
                 }
                 .map { obsid, meta, uvfits, flagMeta -> [obsid, meta, uvfits]}
+
+            subobsMetaVisPass.map { obsid, meta, _ ->
+                    ([
+                        obsid,
+                        meta.subobs?:'',
+                        meta.lst?:'',
+                        meta.ew_pointing?:'',
+                        displayInts(meta.prepFlags?:[], delim=' '),
+                    ]).join("\t")
+                }
+                .collectFile(
+                    name: "pass_prep.tsv", newLine: true, sort: true,
+                    seed: ([ "OBS", "SUBOBS", "LST DEG", "EW POINTING", "PREP OCC", "RFI OCC", "SSINS DAB", "SSINS NARROW", "SSINS STREAK", "SSINS TOTAL", "ORIGINAL ANTS", "PREP ANTS", "MANUAL ANTS", "NEW ANTS" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
         }
 
     emit:
@@ -3651,15 +3821,15 @@ workflow cal {
         // generate json from solns
         eachCal | solJson
 
-        // do polyFit unless --nopoly is set
-        if (params.nopoly) {
-            channel.empty() | polyFit
+        // do phaseFit unless --fitphase is set
+        if (params.fitphase) {
+            eachCal | phaseFit
         } else {
-            eachCal | polyFit
+            channel.empty() | phaseFit
         }
         // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
         allCal = eachCal.mix(
-            polyFit.out.map { obsid, meta, soln, _ -> [obsid, meta, soln] }
+            phaseFit.out.map { obsid, meta, soln -> [obsid, meta, soln] }
         )
 
         // collect solJson results as .tsv
@@ -3671,6 +3841,7 @@ workflow cal {
                 def (nans, convergences) = results.split { it == "NaN" }
                 [
                     obsid,
+                    meta.lst,
                     meta.name,
                     meta.subobs?:'',
                     nans.size() / results.size(),
@@ -3680,7 +3851,7 @@ workflow cal {
             .collectFile(
                 name: "cal_results${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "CAL NAME", "SUBOBS", "NAN FRAC", "RESULTS BY CH"
+                    "OBS", "LST", "CAL NAME", "SUBOBS", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
                 storeDir: "${results_dir}${params.cal_suffix}"
             )
@@ -3706,7 +3877,6 @@ workflow cal {
             calQA.out | plotCalQA
 
             calQA.out.map { _, meta, json ->
-                    name = meta.ew_pointing?sprintf("ewp%+02d", meta.ew_pointing):""
                     name = meta.name
                     [name, json] }
                 .groupTuple(by: 0)
@@ -3780,7 +3950,7 @@ workflow cal {
                         "OBS",
                         metric,
                     ].join("\t"),
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
@@ -3804,13 +3974,13 @@ workflow cal {
             "chi2dof_xx", "chi2dof_yy",
             "sigma_resid_xx", "sigma_resid_yy",
         ].collect { key ->
-            channel.of("OBS").concat(allTiles.flatten())
+            channel.of("OBS", "LST").concat(allTiles.flatten())
                 .toList()
                 .map { it.join("\t") }
                 .concat(
                     phaseFits.out.combine(allTiles).map { obsid, meta, tsv, _, tiles ->
-                            def phaseFits = parseCsv(tsv, true, 0, '\t')
-                            ([obsid] + tiles.collect { tile ->
+                            def phaseFits = parseCsv(coerceList(tsv)[0], true, 0, '\t')
+                            ([obsid, meta.lst] + tiles.collect { tile ->
                                 def tilePhaseFits = phaseFits.find { "${it['tile_id']}" == "${tile}" }?:[:]
                                 tilePhaseFits[key]?:''
                             }).join("\t")
@@ -3819,7 +3989,7 @@ workflow cal {
                         .flatten()
                 ).collectFile(
                     name: "phase_fits_${key}.tsv", newLine: true, sort: false,
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 .view { [it, it.readLines().size()] }
         }
@@ -3834,14 +4004,14 @@ workflow cal {
             .map { obsid, meta, stats ->
                 def newMeta = [:];
                 if (stats.BAD_ANTS) {
-                    def prepflags = (meta.prepflags?:[]) as Set
-                    def calflags = ([]) as Set
+                    def prepFlags = (meta.prepFlags?:[]) as Set
+                    def calFlags = ([]) as Set
                     if (!params.noCalFlags) {
-                        calflags.addAll(stats.BAD_ANTS?:[])
+                        calFlags.addAll(stats.BAD_ANTS?:[])
                     }
-                    def newflags = (calflags - prepflags) as ArrayList
+                    def newflags = (calFlags - prepFlags) as ArrayList
                     if (newflags) {
-                        newMeta.calflags = deepcopy(newflags.sort(false))
+                        newMeta.calFlags = deepcopy(newflags.sort(false))
                     }
                 }
                 [obsid, deepcopy(meta) + newMeta, stats]
@@ -4063,24 +4233,27 @@ workflow uvfits {
 
             passReasons
                 .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
-                .groupTuple( by: 0 )
-                .map { obsid, _, fail_codes, reasons ->
+                .map { obsid, meta, fail_code, reason ->
+                    [obsid, meta.name, meta, fail_code, reason]
+                }
+                // .groupTuple( by: 0 )
+                .map { obsid, name, meta, fail_code, reason ->
                     [
                         obsid,
-                        // meta.name,
-                        // meta.p_window,
-                        // meta.p_wedge,
-                        // meta.num_cells,
-                        coerceList(fail_codes)[0],
-                        coerceList(reasons)[0]
+                        name,
+                        meta.p_window,
+                        meta.p_wedge,
+                        meta.num_cells,
+                        fail_code,
+                        reason
                     ].join("\t")
                 }
                 .collectFile(
                     name: "ps_reasons.tsv", newLine: true, sort: true,
                     seed: [
                         "OBSID",
-                        // "NAME",
-                        // "P_WINDOW", "P_WEDGE", "NUM_CELLS",
+                        "NAME",
+                        "P_WINDOW", "P_WEDGE", "NUM_CELLS",
                         "FAIL CODE", "REASON"
                     ].join("\t"),
                     storeDir: "${results_dir}${params.cal_suffix}"
@@ -4115,7 +4288,7 @@ workflow uvfits {
                 .collectFile(
                     name: "fail_counts_ps.tsv", newLine: true, sort: true,
                     seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.cal_suffix}"
                 )
                 | view { it.readLines().size() }
 
@@ -4154,7 +4327,7 @@ workflow uvfits {
         zip = visQA.out.map { _, meta, json -> ["visqa_${meta.name}", json] }
             .groupTuple()
         obsMetaUVPass = obsMetaUVPass_
-        fail_codes = fail_codes
+        fail_codes = fail_codes.filter { obsid, fail_code -> fail_code != failCodes[0x00] }
 }
 
 def wscleanParams = [
@@ -4266,12 +4439,16 @@ workflow img {
                 // target product is uv grids
                 gridMfs: meta.prod ==~ /uv-.*/ && meta.chan == -1
                 gridNoMfs: meta.prod ==~ /uv-.*/
-                // other potential products: psf, residual, model
+                // target product is psf
+                psfMfs: meta.prod == "psf" && meta.chan == -1
+                psfNoMfs: meta.prod == "psf"
+                // other potential products: residual, model
             }
 
         if (!params.nopolcomp || params.thumbnail_limits) {
             // calculate quantiles (what values are at nth percentile)
             obsMetaImg.imgMfs \
+                .mix(obsMetaImg.psfMfs)
                 // .mix(obsMetaGrid) \
                 | imgQuantiles
 
@@ -4355,34 +4532,40 @@ workflow img {
             suffLimits = imgLimits.combine(suffs_)
                 .flatMap{ obsid, interval, name, limits, suffs ->
                     suffs.collect { suff ->
-                        hilo = [Float.NaN, Float.NaN]
-                        if (limits[suff]) {
-                            hilo = limits[suff]
-                        }
+                        hilo = limits[suff]?: [Float.NaN, Float.NaN]
                         [new Tuple(name, suff)] + hilo
                     }
                 }
                 .groupTuple(by: 0)
                 .map { group, highs_, lows_ ->
-                    highs = coerceList(highs_)
-                        .findAll { !isNaN(it) }
-                        .sort(false)
-                    high_index = ((highs.size() - 1) * params.thumbnail_quantile).round() as Integer
+                    thumbnail_vmax = params.thumbnail_vmax?: {
+                        highs = coerceList(highs_)
+                            .findAll { !isNaN(it) }
+                            .sort(false)
+                        high_index = ((highs.size() - 1) * params.thumbnail_quantile).round() as Integer
+                        highs[high_index]
+                    }()
 
-                    lows = coerceList(lows_)
-                        .findAll { !isNaN(it) }
-                        .sort(false)
-                    low_index = (lows.size() * (1-params.thumbnail_quantile)).round() as Integer
-                    [group, [highs[high_index], lows[low_index]]]
+                    thumbnail_vmin = params.thumbnail_vmin ?: {
+                        lows = coerceList(lows_)
+                            .findAll { !isNaN(it) }
+                            .sort(false)
+                        low_index = (lows.size() * (1-params.thumbnail_quantile)).round() as Integer
+                        lows[low_index]
+                    }()
+
+                    [group, [thumbnail_vmax.toFloat(), thumbnail_vmin.toFloat()]]
                 }
                 .toList()
                 .map { it.collectEntries() }
         } else {
             suffLimits = channel.from([:])
             obsMetaImgMfsPass = obsMetaImg.imgMfs
+            obsMetaGrid = obsMetaImg.gridMfs
+            obsMetaPsf = obsMetaImg.psfMfs
         }
 
-        suffLimits.view { "suffLimits \n${it.collect().join('\n')}"}
+        // suffLimits.view { "suffLimits \n${it.collect().join('\n')}"}
 
         // do a polcomp for each allowed prod
         if (params.nopolcomp) {
@@ -4452,6 +4635,7 @@ workflow img {
         } else {
             obsMetaImgMfsPass
                 .mix(params.thumbnail_uvs ? obsMetaGrid : channel.empty())
+                .mix(params.thumbnail_psfs ?obsMetaPsf : channel.empty())
                 // look up the sufflimit for each suffix
                 .combine(params.thumbnail_limits ? suffLimits : channel.from([:]))
                 // .view { "thumbnail limit ${it}"}
@@ -4688,7 +4872,7 @@ workflow img {
                 .collectFile(
                     name: "fail_counts_imgqa.tsv", newLine: true, sort: true,
                     seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
-                    storeDir: "${results_dir}"
+                    storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
                 )
                 | view { it.readLines().size() }
 
@@ -4795,7 +4979,9 @@ workflow imgCombine {
             .map { obsMetaUV_, chunkMetaObs_ ->
                 def (obsid, obsMeta, vis) = obsMetaUV_
                 def (__, chunkMeta, chunk) = chunkMetaObs_
-                [chunk, chunkMeta.name, chunkMeta, vis]
+                newMeta = deepcopy(chunkMeta)
+                // newMeta.nchans = obsMeta.nchans
+                [chunk, chunkMeta.name, newMeta, vis]
             }
             .groupTuple(by: 0..1)
             // .view { it -> "\n -> imgCombine obsMetaUV x chunkMetaObs ${it}\n" }
@@ -4805,12 +4991,53 @@ workflow imgCombine {
             // .view { it -> "\n -> imgCombine before filter ${it}\n" }
             .filter { chunk, chunkMeta, viss, imgParams -> chunkMeta.name }
 
+        if (params.img_split_coarse_chans && !params.noimgcombine) {
+            if (params.sky_chans == null || params.sky_chans.size == 0) {
+                throw new Exception("img_split_coarse_chans is enabled but params.sky_chans=${params.sky_chans}")
+            }
+            nCoarseChans = params.sky_chans.size
+            print(" -> deleteme nCoarseChans=${nCoarseChans}")
+            fineChansPerCoarse = obsMetaUV.map { obsid, meta, uvfits ->
+                    if (meta.nchans == null || meta.nchans % nCoarseChans != 0) {
+                        throw new Exception("nchans ${meta.nchans} is not a multiple of ${nCoarseChans}")
+                    }
+                    meta.nchans
+                }
+                .unique()
+                // .collect()
+                .toList()
+                .map { it ->
+                    if (it.size() > 1) {
+                        throw new Exception("obsMetaUV has multiple nchans ${it}")
+                    }
+                    if (it[0] == null) {
+                        throw new Exception("nchans is null ${it}")
+                    }
+                    it[0] / nCoarseChans
+                }
+
+            splitGroupMetaVisImgParams = groupMetaVisImgParams.combine(fineChansPerCoarse)
+                .flatMap { chunk, chunkMeta, viss, imgParams, fchans ->
+                    // println("  -> deleteme fchans=${fchans} chunk=${chunk} chunkMeta=${chunkMeta} imgParams=${imgParams}")
+                    params.sky_chans.withIndex().collect { ch, idx ->
+                        // println("   -> deleteme ch=${ch} idx=${idx}")
+                        def newMeta = deepcopy(chunkMeta)
+                        newMeta.chan = [idx * fchans, (idx+1) * fchans]
+                        newMeta.chan_tok = sprintf("-ch%03d", ch)
+                        newMeta.subobs = "${newMeta.subobs?:''}${newMeta.chan_tok}"
+                        [chunk, newMeta, viss, imgParams]
+                    }
+                }
+        } else {
+            splitGroupMetaVisImgParams = groupMetaVisImgParams
+        }
+
         if (params.nodeconv) {
-            groupMetaVisImgParams | wscleanDirty
+            splitGroupMetaVisImgParams | wscleanDirty
             channel.empty() | wscleanDConv
         } else {
             channel.empty() | wscleanDirty
-            groupMetaVisImgParams.map { chunk, meta, vis, imgParams ->
+            splitGroupMetaVisImgParams.map { chunk, meta, vis, imgParams ->
                     [chunk, meta, vis, deepcopy(wscleanDConvParams) + imgParams, []]
                 }
                 | wscleanDConv
@@ -4820,15 +5047,30 @@ workflow imgCombine {
         // - only MFS images unless thumbnail_all_chans
         // - exclude dirty if deconv is enabled
         wscleanDConv.out.mix(wscleanDirty.out)
-            .flatMap { obsid, meta, imgs ->
+            .flatMap { group, meta, imgs ->
                 imgs.collect { img ->
-                    [obsid, deepcopy(meta) + decomposeImg(img), img] }}
+                    [group, deepcopy(meta) + decomposeImg(img), img] }}
             .filter { _, meta, img ->
                 meta.prod !=~ /uv-.*/ \
                 && (meta.chan?:-1 == -1 || params.thumbnail_all_chans) \
                 && (meta.prod == (params.nodeconv ? "dirty" : "image"))
             }
             | thumbnail
+
+        if (params.img_split_coarse_chans) {
+            frame = thumbnail.out
+                .filter { group, meta, png ->
+                    meta.name =~ /ionosub/
+                }
+                .map { group, meta, png ->
+                    ["imgCombine_${group}_${meta.name}", png]
+                }
+            }
+        else {
+            frame = channel.empty()
+        }
+    emit:
+        frame = frame.groupTuple()
 }
 
 // make combined grids and images using chips and wsclean
@@ -5156,7 +5398,6 @@ workflow {
             }
             [obsid, meta]
         }
-        .view()
 
     obsids = obsCSV.map { obsid, meta -> obsid }
 
@@ -5208,6 +5449,7 @@ workflow {
             [obsid, prepqa_fail_code?:prep_fail_code]
         }
 
+    // do lst counts, scatterplot
     all_fail_codes
         .filter { _, fail_code -> fail_code == failCodes[0x00] }
         .join(ws.out.obsMeta)
@@ -5224,17 +5466,37 @@ workflow {
         .collectFile(
             name: "lst_counts_all.tsv", newLine: true, sort: true,
             seed: ([ "LST", "COUNT" ]).join("\t"),
-            storeDir: "${results_dir}"
+            storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
         )
         .view { it.readLines().size() }
-        .map { lstCountTSV ->
+        .map { tsv ->
             meta = [
                 name: "lst_counts_all", title: "lst counts after qa",
                 x: "LST", y: "COUNT"
             ]
-            [meta, lstCountTSV]
+            [meta, tsv]
         }
         | tsvScatterPlot
+
+    // do ewp counts
+    all_fail_codes
+        .filter { _, fail_code -> fail_code == failCodes[0x00] }
+        .join(ws.out.obsMeta)
+        .map { obsid, fail_code, meta ->
+            [obsid, meta.ew_pointing]
+        }
+        .groupTuple(by: 1)
+        .map { obsids, ewp ->
+            [
+                ewp == null ? "" : sprintf("%+1d", ewp),
+                obsids.size(),
+            ].join("\t")
+        }
+        .collectFile(
+            name: "ewp_counts_all.tsv", newLine: true, sort: true,
+            seed: ([ "LST", "COUNT" ]).join("\t"),
+            storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+        )
 
     all_fail_codes.groupTuple(by: 1)
         .map { obsids, fail_code ->
@@ -5246,7 +5508,7 @@ workflow {
         .collectFile(
             name: "fail_counts_all.tsv", newLine: true, sort: true,
             seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
-            storeDir: "${results_dir}"
+            storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
         )
 }
 
@@ -5308,11 +5570,11 @@ workflow qaPrep {
 
         cal.out.obsMetaCalPass
             .map { it -> def (obsid, meta, soln) = it;
-                def calflags = deepcopy(meta.calflags?:[])
-                ([obsid, meta.name, meta.subobs?:'', displayInts(meta.prepflags?:[]), displayInts(calflags)]).join("\t")
+                def calFlags = deepcopy(meta.calFlags?:[])
+                ([obsid, meta.name, meta.subobs?:'', displayInts(meta.prepFlags?:[]), displayInts(calFlags)]).join("\t")
             }
             .collectFile(
-                name: "passcal.tsv", newLine: true, sort: true,
+                name: "pass_cal.tsv", newLine: true, sort: true,
                 seed: ([ "OBS", "NAME", "SUBOBS", "PREPFLAGS", "CALFLAGS" ]).join("\t"),
                 storeDir: "${results_dir}${params.cal_suffix}"
             )
@@ -5324,21 +5586,22 @@ workflow qaPrep {
         if (params.noapply) {
             allApply = channel.empty()
         } else {
-            allApply = obsMetafitsVis
-                .join(cal.out.obsMetaCalPass)
-                .map { obsid, metafits, prepUVFits, meta, soln ->
+            allApply = obsMetafitsVis.cross(cal.out.obsMetaCalPass)
+                .map { obsMetafitsVis_, obsMetaCalPass_ ->
+                    def (obsid, metafits, prepUVFits) = obsMetafitsVis_
+                    def (_, meta, soln) = obsMetaCalPass_
                     def newMeta = [
                         time_res: params.apply_time_res,
                         freq_res: params.apply_freq_res,
                         nodut1: params.nodut1,
                         apply_args: params.apply_args,
                     ]
-                    def calflags = deepcopy(meta.calflags?:[])
-                    if (calflags) {
-                        newMeta.apply_args = "${params.apply_args} --tile-flags ${calflags.join(' ')}"
+                    def calFlags = deepcopy(meta.calFlags?:[])
+                    if (calFlags) {
+                        newMeta.apply_args = "${params.apply_args} --tile-flags ${calFlags.join(' ')}"
                     }
-                    // calflags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
-                    // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calflags.join(' ')}"
+                    // calFlags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
+                    // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calFlags.join(' ')}"
                     newMeta.apply_name = "${newMeta.time_res}s_${newMeta.freq_res}kHz"
                     [obsid, deepcopy(meta) + deepcopy(newMeta), metafits, prepUVFits, soln]
                 }
@@ -5692,10 +5955,14 @@ workflow qaPrep {
             imgCombine(obsMetaUVPass, chunkMetaPass)
         }
 
-        if (params.nochipscombine) {
-            chips(obsMetaUVPass, channel.empty())
+        if (params.nochips) {
+            chips(channel.empty(), channel.empty())
         } else {
-            chips(obsMetaUVPass, chunkMetaPass)
+            if (params.nochipscombine) {
+                chips(obsMetaUVPass, channel.empty())
+            } else {
+                chips(obsMetaUVPass, chunkMetaPass)
+            }
         }
 
         // stack images from chunks
@@ -5750,6 +6017,7 @@ workflow qaPrep {
                 def (_, meta, pngs, __, ___, tecs) = it;
                 pngs.collect { png -> ["cthulhuplot_${meta.name}", png] } + tecs.collect { tec -> ["tec_${meta.name}", tec] }
             }.groupTuple())
+            .mix(imgCombine.out.frame)
         zip = cal.out.zip
             .mix(uvfits.out.zip)
             .mix(img.out.zip)
