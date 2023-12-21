@@ -35,6 +35,8 @@ process wsMeta {
     // tag to identify job in squeue and nf logs
     tag "${obsid}"
 
+    time {5.minute * task.attempt}
+
     script:
     wsmeta = "${obsid}_wsmeta.json"
     wsfiles = "${obsid}_files.json"
@@ -173,17 +175,19 @@ process asvoPrep {
 
     if (params.pullPrep) {
         label "rclone"
+    } else {
+        // label "datamover"
     }
 
     label "rate_limit"
     label "nvme"
-    label "mem_half"
+    // label "mem_full"
 
-    time { 2.hour * task.attempt }
+    time { 6.hour * task.attempt }
 
     // allow multiple retries
     maxRetries 5
-    // exponential backoff: sleep for 2^attempt hours after each fail
+    // exponential backoff: sleep for 5^attempt minutes after each fail
     errorStrategy {
         failure_reason = [
             5: "I/O error or hash mismatch",
@@ -198,9 +202,9 @@ process asvoPrep {
             11: "Resource temporarily unavailable",
             75: "Temporary failure, try again"
         ][task.exitStatus] ?: "unknown"
-        wait_hours = Math.pow(2, task.attempt)
-        println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
-        sleep(wait_hours * 60*60*1000 as long)
+        wait_minutes = Math.pow(5, task.attempt)
+        println "sleeping for ${wait_minutes} minutes and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
+        sleep(wait_minutes * 60*1000 as long)
         return 'retry'
     }
 
@@ -302,7 +306,18 @@ process flagQA {
 
     label "python"
     label "nvme"
-    label "mem_half"
+    // label "mem_half"
+    memory = {
+        // max 30G Virtual for 60ts, 144T, 768chans
+        [
+            (30.GB * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
+                / (60 * 144 * 768)),
+            360.GB
+        ].min()
+    }
+    time {10.minute * task.attempt}
+
+    when: !params.noprepqa
 
     script:
     metrics = "occupancy_${uvfits.baseName}.json"
@@ -327,11 +342,15 @@ process ssins {
 
     label "ssins"
     label "nvme"
-    label "mem_half"
+    label "mem_full"
 
-    time { 30.min }
+    time { 2.hour }
+    // can't do this because no ntimes in prep meta
+    // time { 30.min * ((meta.ntimes?:15) * (meta.nchans?:384) / (15 * 384) ) }
 
     // errorStrategy "terminate"
+
+    when: !params.nossins
 
     script:
     base = uvfits.baseName
@@ -361,6 +380,8 @@ process autoplot {
     label "python"
     label "nvme"
     label "mem_half"
+
+    when: !params.noautoplot
 
     script:
     suffix = meta.suffix?:""
@@ -532,7 +553,7 @@ process hypCalSol {
     //     label "rclone"
     // }
 
-    time { 45.minutes }
+    time { 1.hour }
 
     script:
     dical_names = dical_args.keySet().collect()
@@ -661,6 +682,8 @@ process phaseFit {
 
     label "fitcal"
 
+    when: params.fitphase
+
     script:
     meta = deepcopy(meta) + [name: "${meta.name}_fitted", fitted: true]
     base = soln.baseName
@@ -711,6 +734,8 @@ process hypApplyUV {
     label "nvme"
     label "mem_half"
 
+    when: !params.nouv && !params.noapply
+
     script:
     newMeta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
     cal_vis = "hyp_${obsid}${meta.subobs?:''}_${newMeta.name}.uvfits"
@@ -753,6 +778,8 @@ process hypApplyMS {
     label "hyperdrive"
     label "cpu_half"
     label "gpu"
+
+    when: !params.noms && !params.noapply
 
     script:
     newMeta = deepcopy(meta) + [name: "${meta.name}_${meta.apply_name}"]
@@ -797,6 +824,8 @@ process hypSubUV {
     label "cpu_half"
     label "gpu"
 
+    when: !params.nosub
+
     script:
     old_name = meta.name
     newMeta = deepcopy(meta) + [sub: "sub", name: "sub_${meta.name}"]
@@ -838,6 +867,8 @@ process hypSubMS {
     label "hyperdrive"
     label "cpu_half"
     label "gpu"
+
+    when: !params.nosub
 
     script:
     old_name = meta.name
@@ -885,6 +916,8 @@ process hypIonoSubUV {
 
     time 6.hour
 
+    when: !params.noionosub
+
     script:
     meta = deepcopy(oldMeta) + [sub: "ionosub"]
     meta.name = "ionosub_${meta.name}_i${meta.ionosub_nsrcs}"
@@ -931,6 +964,8 @@ process hypIonoSubMS {
     label "hyperdrive"
     label "cpu_half"
     label "gpu"
+
+    when: !params.noionosub
 
     script:
     meta = deepcopy(oldMeta) + [sub: "ionosub"]
@@ -980,7 +1015,7 @@ process cthulhuPlot {
     tec = "tec_${title}.png"
     csv = "ionoqa_${title}.csv"
     json = "ionoqa_${title}.json"
-    extra = "--plot-altaz 90 0 --offset-type arrow --show-axes"
+    extra = "--plot-altaz 90 0 --offset-type arrow --show-axes --resolution 1024 --dpi 100"
     if (meta.time_res) {
         extra += " --time-res=${meta.time_res}"
     }
@@ -1027,7 +1062,18 @@ process prepVisQA {
 
     label "python"
     label "nvme"
-    label "mem_half"
+    // label "mem_half"
+    memory = {
+        // max 50G Virtual for 60ts, 144T, 768chans
+        [
+            (50.GB * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
+                / (60 * 144 * 768)),
+            360.GB
+        ].min()
+    }
+    time {10.minute * task.attempt}
+
+    when: !params.noprepqa
 
     script:
     base = uvfits.baseName
@@ -1071,7 +1117,15 @@ process uvMeta {
     tag "${base}"
 
     label "python"
-    time 30.minute
+    // time 30.minute
+    time = {
+        // max 20 min for 60ts, 144T, 768chans
+        [
+            (20.minute * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
+                / (60 * 128 * 768)),
+            4.hour
+        ].min()
+    }
     stageInMode "symlink"
 
     script:
@@ -1113,6 +1167,8 @@ process phaseFits {
 
     label "mwax_mover"
 
+    when: !params.nophasefits
+
     script:
     name = "${meta.cal_prog}_${meta.name}"
     """
@@ -1120,7 +1176,8 @@ process phaseFits {
     python /app/scripts/cal_analysis.py \
         --name "${name}" \
         --metafits "${metafits}" --solns ${soln} \
-        --phase-diff-path=/app/phase_diff.txt
+        --phase-diff-path=/app/phase_diff.txt \
+        --plot-residual --residual-vmax=0.5
     """
 }
 
@@ -1152,6 +1209,7 @@ process plotPrepVisQA {
     tag "${obsid}${meta.subobs?:''}"
 
     label "python"
+    time {5.minute * task.attempt}
 
     script:
     base = "prepvis_metrics_${metrics.baseName}"
@@ -1192,6 +1250,8 @@ process plotCalQA {
 
     label "python"
 
+    when: !params.noplotcalqa
+
     script:
     plot_base = "calmetrics_${obsid}${meta.subobs?:''}_${meta.name}"
     """
@@ -1211,6 +1271,8 @@ process plotVisQA {
     tag "${obsid}"
 
     label "python"
+
+    when: !params.noplotvisqa
 
     script:
     """
@@ -1252,6 +1314,8 @@ process delaySpec {
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
 
     label "python"
+
+    when: !params.nodelayspec
 
     script:
     title = "${obsid}${meta.subobs?:''}_${meta.name}"
@@ -1501,7 +1565,7 @@ process storeManifest {
 
     tag "${group}"
 
-    time 5.minutes
+    time {5.minute * task.attempt}
 
     storeDir "${params.outdir}/${group}"
 
@@ -1531,16 +1595,18 @@ process chipsGrid {
 
     time { 30.minute * obsids.size() }
 
+    when: (!params.nopowerspec && !params.nochips)
+
     script:
     ext = meta.ext
     nchans = meta.nchans
     eorband = meta.eorband
     eorfield = meta.eorfield
     lowfreq = meta.lowfreq
-    period = "8.0"
+    period = meta.period?:"8.0"
     freq_res = "${(meta.freq_res?:80) * 1000}"
     // pol = meta.pol?:"xx"
-    freq_idx_start = 0
+    freq_idx_start = meta.freq_idx_start?:0
 
     newMeta = deepcopy(meta) + [lowfreq: lowfreq]
 
@@ -1883,6 +1949,8 @@ process uvPlot {
 
     label "python"
 
+    when: !params.nouvplot
+
     script:
     title = "${obsid}${meta.subobs?:''}_${meta.name}"
     uvplot = "uvplot_${uvfits.baseName}"
@@ -1901,7 +1969,7 @@ process thumbnail {
     tag "${obsid}${meta.subobs?:''}.${meta.name}.${meta.suffix}"
 
     label "python"
-    time {10.min * task.attempt}
+    time {5.min * task.attempt}
 
     script:
     thumb = "${obsid}${meta.subobs?:''}_${meta.name}_${meta.suffix}.png"
@@ -2003,6 +2071,8 @@ process plotCalJsons {
 
     label "python"
     tag "${name}"
+
+    when: !params.noplotcalqa
 
     script:
     """
@@ -2267,9 +2337,13 @@ def deepcopy(orig) {
 def parseFloatOrNaN(s) {
     if (s == null) {
         return Float.NaN
+    } else if (s instanceof Float) {
+        return s
+    } else if (s instanceof java.math.BigDecimal) {
+        return s.floatValue()
     }
     try {
-        return Float.parseFloat(s) // .toFloat()?
+        return Float.parseFloat(s) // .toFloat()? .floatValue()?
     } catch (NumberFormatException e) {
         return Float.NaN
     }
@@ -2756,6 +2830,7 @@ workflow ws {
 
                 def bad_tiles = wsStats.bad_tiles?:[:]
                 def n_bad_tiles = bad_tiles.size()
+                def n_good_tiles = n_tiles - n_bad_tiles
                 def bad_tile_frac = n_bad_tiles / n_tiles
                 def n_dead_dipoles = delays.count { it == 32 }
                 dead_dipole_frac = null
@@ -2899,6 +2974,7 @@ workflow ws {
                     // tiles
                     config: config,
                     n_tiles: n_tiles,
+                    n_good_tiles: n_good_tiles,
                     tile_nums: tile_nums,
                     tile_rxs: tile_rxs,
                     bad_tiles: bad_tiles,
@@ -3011,6 +3087,7 @@ workflow ws {
                     summary.n_dead_dipoles,
                     summary.dead_dipole_frac,
                     summary.n_bad_tiles,
+                    summary.n_good_tiles,
                     summary.bad_tile_frac,
                     displayInts(summary.tile_nums, delim=' '),
                     displayInts(summary.bad_tiles, delim=' '),
@@ -3044,7 +3121,8 @@ workflow ws {
                     "EW POINT", "SWEET POINT", "LST DEG", "OBS NAME", "EOR FIELD", "SUN ELEV", "SUN POINT",
                     "FREQ RES", "COARSE CHANS", "EOR BAND",
                     "TIME RES", "N SCANS",
-                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N BAD TILES", "BAD TILES FRAC", "TILE NUMS", "FLAG TILES", "TILE RXS",
+                    "CONFIG", "N DEAD DIPOLES", "DEAD DIPOLE FRAC", "N BAD TILES", "N GOOD TILES", "BAD TILES FRAC",
+                    "TILE NUMS", "FLAG TILES", "TILE RXS",
                     "IONO MAG", "IONO PCA", "IONO QA",
                     "N FILES", "N ARCHIVED",
                     "QUALITY", "QUALITY COMMENT",
@@ -3169,18 +3247,8 @@ workflow prep {
 
         subobsMetaVis = subobsMetaMetafitsPrep.map { obsid, meta, _, uvfits -> [ obsid, meta, uvfits] }
 
-        if (params.noprepqa) {
-            channel.empty() | prepVisQA
-        } else {
-            subobsMetaMetafitsPrep | prepVisQA
-        }
-
-        // analyse aoflagger occupancy
-        if (params.noprepqa) {
-            channel.empty() | flagQA
-        } else {
-            subobsMetaMetafitsPrep | flagQA
-        }
+        // analyse preprocessed vis qa and aoflagger occupancy
+        subobsMetaMetafitsPrep | (prepVisQA & flagQA)
 
         // mapping of receiver to antenna objects
         def obsRxAnts = flagQA.out.map { obsid, meta, flagJson ->
@@ -3219,10 +3287,7 @@ workflow prep {
             }
 
         // ssins
-        if (params.nossins) {
-            channel.empty() | ssins
-        } else {
-            subobsMetaVis.join(obsRxAnts).flatMap { obsid, meta, uvfits, rxAnts ->
+        subobsMetaVis.join(obsRxAnts).flatMap { obsid, meta, uvfits, rxAnts ->
                 allAnts = rxAnts.collect { rx, ants -> ants }.flatten()
                 subobsAnts = [[meta.subobs, allAnts]]
                 if (params.ssins_by_rx) {
@@ -3230,19 +3295,7 @@ workflow prep {
                         [(meta.subobs?:'') + sprintf("_rx%02d", rx), ants]
                     })
                 }
-                // if (params.ssins_unflagged_only) {
-                //     subobsAnts = subobsAnts.collect { subobs, ants ->
-                //         bad_ants = (meta.bad_ants?:[]) as Set
-                //         manual_ants = (meta.manual_ants?:[]) as Set
-                //         sel_ants = ants.findAll { it ->
-                //                 ant_idx = it['Antenna'];
-                //                 it["Flag"] == 0 && !bad_ants.contains(ant_idx) && !manual_ants.contains(ant_idx)
-                //             }
-                //         [subobs, sel_ants]
-                //     }
-                // }
                 base = uvfits.baseName
-
                 subobsAnts.findAll { _, ants -> ants.size() > 1 }
                     .collect { subobs, ants ->
                         tile_idxs = ants.collect { it['Tile'] } as ArrayList
@@ -3257,7 +3310,6 @@ workflow prep {
                     }
             }
             | ssins
-        }
 
         // collect prepVisQA results as .tsv
         prepVisQA.out
@@ -3326,34 +3378,30 @@ workflow prep {
         prepVisQA.out | plotPrepVisQA
 
         // auto plots
-        if (params.noautoplot) {
-            channel.empty() | autoplot
-        } else {
-            autoplotByRx = subobsMetaMetafitsPrep.join(obsRxAnts).flatMap { obsid, meta, metafits, uvfits, rxAnts ->
-                    rxAnts.collect { rx, ants ->
-                        def suffix = sprintf("_rx%02d", rx);
-                        sel_ants = ants.collect{it['Antenna']}
-                        def plotMeta = [
-                            suffix: suffix,
-                            "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
-                        ]
-                        [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
-                    }
+        autoplotByRx = subobsMetaMetafitsPrep.join(obsRxAnts).flatMap { obsid, meta, metafits, uvfits, rxAnts ->
+                rxAnts.collect { rx, ants ->
+                    def suffix = sprintf("_rx%02d", rx);
+                    sel_ants = ants.collect{it['Antenna']}
+                    def plotMeta = [
+                        suffix: suffix,
+                        "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
+                    ]
+                    [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
                 }
-            autoplotByFlavor = subobsMetaMetafitsPrep.join(obsFlavorAnts).flatMap { obsid, meta, metafits, uvfits, flavorAnts ->
-                    flavorAnts.collect { flavor, ants ->
-                        def suffix = sprintf("_flavor-%s", flavor);
-                        sel_ants = ants.collect{it['Antenna']}
-                        def plotMeta = [
-                            suffix: suffix,
-                            "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
-                        ]
-                        [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
-                    }
+            }
+        autoplotByFlavor = subobsMetaMetafitsPrep.join(obsFlavorAnts).flatMap { obsid, meta, metafits, uvfits, flavorAnts ->
+                flavorAnts.collect { flavor, ants ->
+                    def suffix = sprintf("_flavor-%s", flavor);
+                    sel_ants = ants.collect{it['Antenna']}
+                    def plotMeta = [
+                        suffix: suffix,
+                        "autoplot_args": "${params.autoplot_args} --sel_ants ${sel_ants.join(' ')} --plot_title '${obsid}${suffix}'"
+                    ]
+                    [obsid, deepcopy(meta) + plotMeta, metafits, uvfits]
                 }
-            autoplotByRx.mix(autoplotByFlavor)
-                | autoplot
-        }
+            }
+        autoplotByRx.mix(autoplotByFlavor)
+            | autoplot
 
         // collect flagQA results
         // TODO: collect sky_chans from flagQA
@@ -3822,8 +3870,12 @@ workflow cal {
         eachCal | solJson
 
         // do phaseFit unless --fitphase is set
-        if (params.fitphase) {
             eachCal | phaseFit
+            eachCal | phaseFit
+        } else {
+            channel.empty() | phaseFit
+        }
+        eachCal | phaseFit
         } else {
             channel.empty() | phaseFit
         }
@@ -3870,21 +3922,19 @@ workflow cal {
             | (plotSols & calQA)
 
         // plot each calQA result
-        if (params.noplotcalqa) {
-            channel.empty() | plotCalQA
-            channel.empty() | plotCalJsons
-        } else {
+            calQA.out | plotCalQA
             calQA.out | plotCalQA
 
-            calQA.out.map { _, meta, json ->
-                    name = meta.name
-                    [name, json] }
-                .groupTuple(by: 0)
-                .map { name, jsons ->
-                    [name, jsons.sort(false)]
-                }
-                | plotCalJsons
-        }
+        calQA.out | plotCalQA
+
+        calQA.out.map { _, meta, json ->
+                name = meta.name
+                [name, json] }
+            .groupTuple(by: 0)
+            .map { name, jsons ->
+                [name, jsons.sort(false)]
+            }
+            | plotCalJsons
 
         // collect calQA results as .tsv
         calQA.out
@@ -4066,10 +4116,10 @@ workflow uvfits {
             .filter { obsid, meta, __ -> meta.sub == null && meta.config =~ /phase2a.*/ }
             | visQA
 
-        if (params.nouvplot) {
-            channel.empty() | uvPlot
-        } else {
             obsMetaUV | uvPlot
+            obsMetaUV | uvPlot
+        }
+        obsMetaUV | uvPlot
         }
 
         // collect visQA results as .tsv
@@ -4148,10 +4198,10 @@ workflow uvfits {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-        if (params.noplotvisqa) {
-            channel.empty() | plotVisQA
-        } else {
             visQA.out | plotVisQA
+            visQA.out | plotVisQA
+        }
+        visQA.out | plotVisQA
         }
 
         if (params.noeor) {
@@ -4305,10 +4355,10 @@ workflow uvfits {
         }
 
         // delay spectrum
-        if (params.nodelayspec) {
-            channel.empty() | delaySpec
-        } else {
             obsMetaUVEoR | delaySpec
+            obsMetaUVEoR | delaySpec
+        }
+        obsMetaUVEoR | delaySpec
         }
 
     emit:
@@ -5583,56 +5633,27 @@ workflow qaPrep {
         // channel of arguments for hypApply{UV,MS}
         // - take tuple(obsid, meta, soln) from cal.out.obsMetaCalPass
         // - match with tuple(obsid, metafits, prepUVFits) by obsid
-        if (params.noapply) {
-            allApply = channel.empty()
-        } else {
-            allApply = obsMetafitsVis.cross(cal.out.obsMetaCalPass)
-                .map { obsMetafitsVis_, obsMetaCalPass_ ->
-                    def (obsid, metafits, prepUVFits) = obsMetafitsVis_
-                    def (_, meta, soln) = obsMetaCalPass_
-                    def newMeta = [
-                        time_res: params.apply_time_res,
-                        freq_res: params.apply_freq_res,
-                        nodut1: params.nodut1,
-                        apply_args: params.apply_args,
-                    ]
-                    def calFlags = deepcopy(meta.calFlags?:[])
-                    if (calFlags) {
-                        newMeta.apply_args = "${params.apply_args} --tile-flags ${calFlags.join(' ')}"
-                    }
-                    // calFlags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
-                    // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calFlags.join(' ')}"
-                    newMeta.apply_name = "${newMeta.time_res}s_${newMeta.freq_res}kHz"
-                    [obsid, deepcopy(meta) + deepcopy(newMeta), metafits, prepUVFits, soln]
-                }
-        }
 
         // apply calibration solutions to uvfits and ms unless --nouv or --noms
-        if (params.nouv) {
-            channel.empty() | hypApplyUV
-        } else {
-            allApply | hypApplyUV
-        }
-        if (params.noms) {
-            channel.empty() | hypApplyMS
-        } else {
-            allApply | hypApplyMS
-        }
-        // get uvfits subtraction arguments from apply output.
-        // subArgsUV = obsMetafitsSrclist.cross(hypApplyUV.out)
-        //     .map { obsMetafitsSrclist_, hypApplyUV_ ->
-        //         def (obsid, metafits, srclist) = obsMetafitsSrclist_
-        //         def (__, meta, vis) = hypApplyUV_;
-        //         def newMeta = [sub_nsrcs: params.sub_nsrcs]
-        //         [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
-        //     }
-        // subArgsMS = obsMetafitsSrclist.cross(hypApplyMS.out)
-        //     .map { obsMetafitsSrclist_, hypApplyUV_ ->
-        //         def (obsid, metafits, srclist) = obsMetafitsSrclist_
-        //         def (__, meta, vis) = hypApplyUV_;
-        //         def newMeta = [sub_nsrcs: params.sub_nsrcs]
-        //         [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
-        //     }
+        obsMetafitsVis.cross(cal.out.obsMetaCalPass).map { obsMetafitsVis_, obsMetaCalPass_ ->
+                def (obsid, metafits, prepUVFits) = obsMetafitsVis_
+                def (_, meta, soln) = obsMetaCalPass_
+                def newMeta = [
+                    time_res: params.apply_time_res,
+                    freq_res: params.apply_freq_res,
+                    nodut1: params.nodut1,
+                    apply_args: params.apply_args,
+                ]
+                def calFlags = deepcopy(meta.calFlags?:[])
+                if (calFlags) {
+                    newMeta.apply_args = "${params.apply_args} --tile-flags ${calFlags.join(' ')}"
+                }
+                // calFlags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
+                // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calFlags.join(' ')}"
+                newMeta.apply_name = "${newMeta.time_res}s_${newMeta.freq_res}kHz"
+                [obsid, deepcopy(meta) + deepcopy(newMeta), metafits, prepUVFits, soln]
+            }
+            | (hypApplyUV & hypApplyMS)
         // TODO: make hyperdrive not crash if there are not num srcs
         subArgsUV = obsMetafits.cross(hypApplyUV.out)
             .map { obsMetafits_, hypApplyUV_ ->
@@ -5650,24 +5671,17 @@ workflow qaPrep {
                 def newMeta = [sub_nsrcs: params.sub_nsrcs]
                 [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]
             }
-        if (params.nosub) {
-            channel.empty() | (hypSubUV & hypSubMS)
-        } else {
-            subArgsUV | hypSubUV
-            subArgsMS | hypSubMS
-        }
-        if (params.noionosub) {
-            channel.empty() | (hypIonoSubUV & hypIonoSubMS)
-        } else {
-            subArgsUV.map {obsid, meta, metafits, vis, srclist ->
-                def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
-                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
-                | hypIonoSubUV
-            subArgsMS.map {obsid, meta, metafits, vis, srclist ->
-                def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
-                [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
-                | hypIonoSubMS
-        }
+        subArgsUV | hypSubUV
+        subArgsMS | hypSubMS
+        subArgsUV.map {obsid, meta, metafits, vis, srclist ->
+            def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
+            [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
+            | hypIonoSubUV
+        subArgsMS.map {obsid, meta, metafits, vis, srclist ->
+            def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
+            [obsid, deepcopy(meta) + newMeta, metafits, vis, srclist]}
+            | hypIonoSubMS
+
         // make cthulhu plots
         hypIonoSubUV.out.cross(hypSrclistYaml.out) {it[0]}
             .map { hypIonoSubUV_, hypSrclistYaml_ ->
@@ -5955,14 +5969,10 @@ workflow qaPrep {
             imgCombine(obsMetaUVPass, chunkMetaPass)
         }
 
-        if (params.nochips) {
-            chips(channel.empty(), channel.empty())
+        if (params.nochipscombine) {
+            chips(obsMetaUVPass, channel.empty())
         } else {
-            if (params.nochipscombine) {
-                chips(obsMetaUVPass, channel.empty())
-            } else {
-                chips(obsMetaUVPass, chunkMetaPass)
-            }
+            chips(obsMetaUVPass, chunkMetaPass)
         }
 
         // stack images from chunks
