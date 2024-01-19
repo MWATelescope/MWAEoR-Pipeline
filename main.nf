@@ -1,6 +1,8 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
 
+// TODO: evaluate(new File('./lib/lib.groovy'))
+
 def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.parent}/${obsids_file.baseName}${params.obsids_suffix}.${obsids_file.extension}")
@@ -189,6 +191,7 @@ process asvoPrep {
     maxRetries 5
     // exponential backoff: sleep for 5^attempt minutes after each fail
     errorStrategy {
+        return 'ignore'
         failure_reason = [
             5: "I/O error or hash mismatch",
             28: "No space left on device",
@@ -1108,9 +1111,10 @@ process visQA {
 
 process uvMeta {
     input:
-    tuple val(obsid), val(meta), path(vis)
+        tuple val(obsid), val(meta), path(vis)
     output:
-    tuple val(obsid), val(meta), path(uvmeta)
+        tuple val(obsid), val(meta), path(uvmeta)
+        // tuple val(obsid), val(meta), path(vis), path(uvmeta), emit: obsMetaVisJson
 
     storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
 
@@ -1365,6 +1369,10 @@ process wscleanDirty {
     if (multiinterval && !meta.inter_tok) {
         img_glob += "-t????"
     }
+    img_channels_out = (params.img_channels_out instanceof String ? \
+        params.img_channels_out.split(' ')[0] :\
+        params.img_channels_out)
+    multichannel = (img_channels_out as int > 1)
     if (multichannel) {
         img_glob += "-{MFS,????}"
         // img_glob += "-*"
@@ -1407,6 +1415,14 @@ process wscleanDirty {
 
 // deconvolved images with wsclean
 // note: I can't get `-reuse-dirty` to work with multi-interval data
+// TODO: use IDG from Jack
+// wsclean -name ./images/test_compact_idg -niter 10000 \
+//    -scale 0.02 -size 2048 2048 \
+//    -auto-threshold 0.5 -auto-mask 3 \
+//    -pol I -multiscale -weight briggs 0  -j 10 -mgain 0.85 \
+//    -no-update-model-required -abs-mem 30 \
+//    -grid-with-beam -use-idg -idg-mode cpu -pb-undersampling 4 -mwa-path /astro/mwaeor/jline/software/ \
+//    data/1088285720/compact_list-sky-model_8s_80kHz_fee-interp_band*.ms
 process wscleanDConv {
     input:
     tuple val(obsid), val(meta), path(vis), val(img_params), path(dirtyImgs)
@@ -1449,6 +1465,10 @@ process wscleanDConv {
         if (multiinterval && !meta.inter_tok) {
             img_glob += "-t????"
         }
+        img_channels_out = (params.img_channels_out instanceof String ? \
+            params.img_channels_out.split(' ')[0] :\
+            params.img_channels_out)
+        multichannel = (img_channels_out as int > 1)
         if (multichannel) {
             img_glob += "-MFS"
         }
@@ -1894,6 +1914,162 @@ process chipsPlot {
     template "jline_plotchips.py"
 }
 
+
+process chips1d_tsv {
+    input:
+    tuple val(group), val(meta), path(grid)
+    output:
+    tuple val(group), val(meta), path("1D_power_${pol}.${suffix}.tsv")
+
+    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+
+    tag "${group}.${meta.name}.${pol}"
+
+    label "python"
+
+    time 15.minute
+
+    script:
+    pol = meta.pol?:"null"
+
+    suffix = "${meta.ext}"
+    basedir = "/astro/mwaeor/dev/nfdata/eor0high_phase2a-128T_lst+04_06a3107b/ps_metrics/ionosub_30l_src4k_300it_8s_80kHz_i1000./"
+    args = [
+        title: meta.title,
+        // file group
+        basedir: "./",
+        chips_tag: meta.ext,
+        polarisation: meta.pol,
+
+        wedge_factor: meta.wedge_factor,
+        low_k_edge: meta.low_k_edge,
+        high_k_edge: meta.high_k_edge,
+        num_k_edges: meta.nbins,
+        kperp_max: meta.kperp_max,
+        kperp_min: meta.kperp_min,
+        kparra_min: meta.kparra_min,
+
+        // chips group
+        lowerfreq: meta.lowfreq,
+        chan_width: (meta.freq_res * 1e3),
+        umax: meta.maxu,
+        // density_correction: meta.density_correction,
+        // omega_matter: meta.omega_matter,
+        // omega_baryon: meta.omega_baryon,
+        // omega_lambda: meta.omega_lambda,
+        // hubble: meta.hubble,
+
+    ].findAll { _, v -> v != null }
+        .collect { k, v -> """--${k} "${v}" """ }
+        .join(" ")
+    if (meta.nchans) {
+        args += " --N_chan ${meta.nchans}"
+    }
+    if (meta.kperp) {
+        args += " --K_perp ${meta.kperp}"
+    }
+
+    template "chips1D_tsv.py"
+}
+
+// process CMTChipsPlot1D {
+//     input:
+//     tuple val(group), val(meta), path(grid)
+//     output:
+//     tuple val(group), val(meta), path("chips${dims}D_${pol}_${suffix}.png")
+
+//     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+
+//     tag "${group}.${meta.name}.${ptype}"
+
+//     label "python"
+
+//     time 15.minute
+
+//     script:
+//     pol = meta.pol?:"both"
+//     if (pol == "both") {
+//         pol = "xx+yy"
+//     }
+//     ptype = meta.ptype?:""
+//     dims = ptype[0]?:2
+//     suffix = ""
+//     if (ptype =~ /.*comp/) {
+//         suffix = "_comparison"
+//     } else if (ptype =~ /.*diff/) {
+//         suffix = "_diff"
+//     } else if (ptype =~ /.*ratio/) {
+//         suffix = "_ratio"
+//     } else if (ptype[0] == "2") {
+//         suffix = "_crosspower"
+//     }
+//     if ((meta.tags?:[])[1]) {
+//         suffix = "_${meta.tags[1]}${suffix}"
+//     }
+//     if ((meta.tags?:[])[0]) {
+//         suffix = "${meta.tags[0]}${suffix}"
+//     } else {
+//         suffix = "${meta.ext}${suffix}"
+//     }
+//     basedir = "./"
+//     args = [
+//         title: meta.title,
+//         // file group
+//         basedir: "./",
+//         chips_tag: meta.ext,
+//         chips_tag_one: (meta.tags?:[])[0],
+//         chips_tag_two: (meta.tags?:[])[1],
+//         chips_tag_three: (meta.tags?:[])[2],
+//         // plot group
+//         plot_type: ptype,
+//         polarisation: meta.pol,
+//         min_power: meta.min_power,
+//         max_power: meta.max_power,
+//         // plot group 2D
+//         colourscale: meta.colourscale,
+//         max_neg_power: meta.max_neg_power,
+//         min_neg_power: meta.min_neg_power,
+//         // plot group 1D
+//         wedge_factor: meta.wedge_factor,
+//         low_k_edge: meta.low_k_edge,
+//         high_k_edge: meta.high_k_edge,
+//         num_k_edges: meta.nbins,
+//         kperp_max: meta.kperp_max,
+//         kperp_min: meta.kperp_min,
+//         kparra_min: meta.kparra_min,
+//         plot_wedge_cut_2D: meta.plot_wedge_cut_2D,
+//         chips_tag_one_label: (meta.labels?:[])[0],
+//         chips_tag_two_label: (meta.labels?:[])[1],
+//         chips_tag_three_label: (meta.labels?:[])[2],
+//         // chips group
+//         lowerfreq: meta.lowfreq,
+//         chan_width: (meta.freq_res * 1e3),
+//         umax: meta.maxu,
+//         // density_correction: meta.density_correction,
+//         // omega_matter: meta.omega_matter,
+//         // omega_baryon: meta.omega_baryon,
+//         // omega_lambda: meta.omega_lambda,
+//         // hubble: meta.hubble,
+
+//     ].findAll { _, v -> v != null }
+//         .collect { k, v -> """--${k} "${v}" """ }
+//         .join(" ")
+//     if (meta.plot_delta) {
+//         args += " --plot_delta"
+//     }
+//     if (meta.plot_wedge_cut) {
+//         args += " --plot_wedge_cut_2D"
+//     }
+//     if (meta.nchans) {
+//         args += " --N_chan ${meta.nchans}"
+//     }
+//     if (meta.kperp) {
+//         args += " --K_perp ${meta.kperp}"
+//     }
+
+//     template "jline_plotchips.py"
+// }
+
 // analyse images of V,XX,YY
 process imgQA {
     input:
@@ -1906,6 +2082,7 @@ process imgQA {
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
 
     label "python"
+    time {5.minute * task.attempt}
 
     script:
     json = "wsclean_hyp_${obsid}${meta.subobs?:''}_${meta.name}-MFS.json"
@@ -2238,6 +2415,9 @@ process archive {
 
     // label "rclone"
     label "datamover"
+
+    // TODO: use size of File x to determine memory
+    // memory = (x.size() * 1.5)
 
     script:
     bucket = "${params.bucket_prefix}.${bucket_suffix}"
@@ -2587,7 +2767,7 @@ def cmt_imgqa_pass_sub(nosubMeta, subMeta) {
 // - channel of multiple channels or -1 if combined
 // - polarization
 // - image product name (dirty, image, model, uv-{real,imag})
-def decomposeImg = { img ->
+def decomposeImg(img) {
     def tokens = img.baseName.split('-').collect()
     // defaults:
     def meta = [chan: -1, inter: -1, chan_tok: "MFS"]
@@ -2600,6 +2780,10 @@ def decomposeImg = { img ->
         meta.pol = tokens.removeLast()
     }
     // channel is only present in multi-frequency imaging
+    img_channels_out = (params.img_channels_out instanceof String ? \
+        params.img_channels_out.split(' ')[0] :\
+        params.img_channels_out)
+    multichannel = (img_channels_out as int > 1)
     if (multichannel && (chan_tok = tokens.removeLast()) != "MFS") {
         meta.chan_tok = chan_tok
         try {
@@ -2612,12 +2796,59 @@ def decomposeImg = { img ->
     // suffix without interval
     meta.inter_suffix = [meta.chan_tok, meta.pol, meta.prod].join('-')
     meta.suffix = meta.inter_suffix
+    multiinterval = (params.img_intervals_out as int > 1) || params.img_split_intervals
     if (multiinterval && (inter_tok = tokens.removeLast()) =~ /t\d{4}/) {
         meta.inter_tok = inter_tok
         meta.inter = inter_tok[1..-1] as int
         meta.suffix = "${inter_tok}-${meta.inter_suffix}"
     }
     meta
+}
+
+def groupMeta(meta) {
+    def newMeta = [:]
+    newMeta.sort = 1
+    if (meta.p_window?:Float.NaN != Float.NaN && meta.p_wedge?:Float.NaN != Float.NaN) {
+        newMeta.sort *= parseFloatOrNaN(meta.p_window) / parseFloatOrNaN(meta.p_wedge)
+    }
+    if (meta.total_weight?:Float.NaN != Float.NaN) {
+        def weight = parseFloatOrNaN(meta.total_weight) / 1e9
+        newMeta.sort /= weight
+    }
+    // group by field, band, config
+    def group_tokens = []
+    def first_token = ""
+    if (meta.eorfield != null) {
+        first_token += "eor${meta.eorfield}"
+    }
+    if (meta.eorband != null) {
+        first_token += (meta.eorband == 0 ? "low" : "high")
+    }
+    if (first_token.size() > 0) {
+        group_tokens << first_token
+    }
+    if (meta.config != null) {
+        group_tokens << meta.config
+    }
+    if (params.groupByPointing && meta.ew_pointing != null) {
+        group_tokens << sprintf("ewp%+1d", meta.ew_pointing)
+    }
+    if (params.groupByLst && meta.lst != null) {
+        def nearest_lst = ((meta.lst.round().intValue() + 180) % 360 - 180)
+        group_tokens << sprintf("lst%+03d", nearest_lst)
+    }
+
+    newMeta.group = group_tokens.join('_')
+
+    [
+        "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
+        "eorband", "eorfield", "config", "name",
+    ].each { key ->
+        if (meta[key] != null) {
+            newMeta[key] = meta[key]
+        }
+    }
+    deepcopy(newMeta)
 }
 
 // mapping from eor1 pointing to sweet pointing
@@ -3870,15 +4101,7 @@ workflow cal {
         eachCal | solJson
 
         // do phaseFit unless --fitphase is set
-            eachCal | phaseFit
-            eachCal | phaseFit
-        } else {
-            channel.empty() | phaseFit
-        }
         eachCal | phaseFit
-        } else {
-            channel.empty() | phaseFit
-        }
         // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
         allCal = eachCal.mix(
             phaseFit.out.map { obsid, meta, soln -> [obsid, meta, soln] }
@@ -3922,11 +4145,7 @@ workflow cal {
             | (plotSols & calQA)
 
         // plot each calQA result
-            calQA.out | plotCalQA
-            calQA.out | plotCalQA
-
         calQA.out | plotCalQA
-
         calQA.out.map { _, meta, json ->
                 name = meta.name
                 [name, json] }
@@ -4116,11 +4335,7 @@ workflow uvfits {
             .filter { obsid, meta, __ -> meta.sub == null && meta.config =~ /phase2a.*/ }
             | visQA
 
-            obsMetaUV | uvPlot
-            obsMetaUV | uvPlot
-        }
         obsMetaUV | uvPlot
-        }
 
         // collect visQA results as .tsv
         visQA.out
@@ -4198,11 +4413,7 @@ workflow uvfits {
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
 
-            visQA.out | plotVisQA
-            visQA.out | plotVisQA
-        }
         visQA.out | plotVisQA
-        }
 
         if (params.noeor) {
             obsMetaUVEoR = obsMetaUV
@@ -4355,11 +4566,7 @@ workflow uvfits {
         }
 
         // delay spectrum
-            obsMetaUVEoR | delaySpec
-            obsMetaUVEoR | delaySpec
-        }
         obsMetaUVEoR | delaySpec
-        }
 
     emit:
         // channel of files to archive, and their buckets
@@ -4403,9 +4610,50 @@ def wscleanDConvParams = deepcopy(wscleanParams) + [
 ]
 
 
+// img considerations
+//
+// ## pol
+// Default: 'I'. Possible values: XX, XY, YX, YY, I, Q, U, V, RR, RL, LR or LL (case insensitive).
+// It is allowed but not necessary to separate with commas, e.g.: 'xx,xy,yx,yy'.
+// Two or four polarizations can be joinedly cleaned (see '-joinpolarizations'), but
+// this is not the default. I, Q, U and V polarizations will be directly calculated from
+// the visibilities, which might require correction to get to real IQUV values. The
+// 'xy' polarization will output both a real and an imaginary image, which allows calculating
+// true Stokes polarizations for those telescopes.
+//
+// ## join
+//
+//
+// ## link
+// requires wsclean 2.6
+//
+// ## continuing deconv <https://wsclean.readthedocs.io/en/latest/continue_deconvolution.html>
+// The constructed model visibilities need to be stored in the measurement set.
+// This implies that -mgain should be used (see the Selfcal instructions for more info on mgain) in the first run, or you have to manually predict the model image from the first run, before continuing.
+// WSClean does not verify whether this assumption holds.
+// As a result, it is not directly possible to use -no-update-model-required in the first run, because the second run requires the MODEL_DATA column to be filled. If -no-update-model-required was enabled, or only a model image without the corresponding predicted visibilities is available, it is still possible to continue the run by first predicting the model data (using wsclean -predict ...) from the model image before continuing.
+//
+// ## idg <https://wsclean.readthedocs.io/en/latest/image_domain_gridding.html>
+//
+
+def polModes = [
+    "I": [glob: "-I", pol: "I", idg: true], // Total intensity science, i.e., not interested in QUV: only image I with -pol I.
+    "Q": [glob: "-Q", pol: "Q", idg: true],
+    "U": [glob: "-U", pol: "U", idg: true],
+    "V": [glob: "-V", pol: "V", idg: true],
+    "IQUV": [glob: "-{I,Q,U,V}", pol: "IQUV", idg: true], // Total intensity science, but “nice to have QUV” for e.g. sensivity analysis
+    "IQUV_join": [glob: "-{I,Q,U,V}", pol: "IQUV", join_pols: true, idg: true], // Interested in all stokes parameter, cleaning each polarization in a joined way
+    "IV_join": [glob: "-{I,V}", pol: "i,v", join_pols: true, ],
+    "IQUV_lqu": [glob: "-{Q,U}", pol: "IQUV", link_pols: "q,u", idg: true ], // Interested in rotation measure synthesis
+    "QU_sq": [glob: "-{Q,U}", pol: "q,u", join_pols: true, sq_chan_join: true ],
+    "XXYY_join": [glob: "-{XX,YY}", pol: "xx,yy", join_pols: true, ],
+    "XXXYXX_lxxyy": [glob: "-{XX,YY,XY,XYi}", pol: "xx,xy,yx,yy", link_pols: "xx,yy"],
+]
+
 // image visibilities and QA images
 workflow img {
     take:
+        // tuple of (obsid, meta, vis)
         obsMetaVis
     main:
 
@@ -4457,16 +4705,26 @@ workflow img {
                     [
                         // ["", "i"],
                         ["-{XX,YY}", "xx,yy -join-polarizations"],
+                        // "IQUV_join": [glob: "-{I,Q,U,V}", pol: "IQUV", join_pols: true, idg: true], // Interested in all stokes parameter, cleaning each polarization in a joined way
+                        // ["-{I,Q,U,V}", "IQUV -join-polarizations -grid-with-beam -use-idg -idg-mode cpu -pb-undersampling 4 -mwa-path /astro/mwaeor/jline/software/"], // Interested in all stokes parameter, cleaning each polarization in a joined way
+                        // "QU_sq": [glob: "-{Q,U}", pol: "q,u", join_pols: true, sq_chan_join: true ],
+                        // ["-{Q,U}", "q,u -join-polarizations -squared-channel-joining "],
                         ["-{I,V}", "i,v -join-polarizations"],
                         // ["-{XX,YY,XY,XYi}", "xx,xy,yx,yy -link-polarizations xx,yy"],
+                        // todo: qu mostly just times out
                         // ["-{Q,U}", "q,u -join-polarizations -squared-channel-joining"],
                     ].collect { polGlob, polArg ->
                         def imgParams = deepcopy(imgParams_)
                         imgParams.pol = polArg
                         imgParams.glob = "wsclean_${imgParams.img_name}"
+                        multiinterval = (params.img_intervals_out as int > 1) || params.img_split_intervals
                         if (multiinterval && !meta.inter_tok) {
                             imgParams.glob += "-t????"
                         }
+                        img_channels_out = (params.img_channels_out instanceof String ? \
+                            params.img_channels_out.split(' ')[0] :\
+                            params.img_channels_out)
+                        multichannel = (img_channels_out as int > 1)
                         if (multichannel) {
                             imgParams.glob += "-MFS"
                         }
@@ -5020,6 +5278,40 @@ workflow imgCombine {
 
     main:
 
+        // if (params.img_split_coarse_chans) {
+        //     if (params.sky_chans == null || params.sky_chans.size == 0) {
+        //         throw new Exception("img_split_coarse_chans is enabled but params.sky_chans=${params.sky_chans}")
+        //     }
+        //     nCoarseChans = params.sky_chans.size
+        //     obsMetaUV.map { obsid, meta, uvfits ->
+        //             if (meta.nchans == null || meta.nchans % nCoarseChans != 0) {
+        //                 throw new Exception("nchans ${meta.nchans} is not a multiple of ${nCoarseChans}")
+        //             }
+        //             meta.nchans
+        //         }
+        //         .unique()
+        //         .collect()
+        //         .subscribe { it ->
+        //             if (it.size() > 1) {
+        //                 throw new Exception("obsMetaUV has multiple nchans ${it}")
+        //             }
+        //         }
+
+        //     // splitObsMetaUV = obsMetaUV.flatMap { obsid, meta, uvfits ->
+        //     //         params.sky_chans.withIndex().collect { ch, idx ->
+        //     //             def fineChansPerCoarse = meta.nchans / nCoarseChans
+        //     //             def newMeta = deepcopy(meta)
+        //     //             newMeta.chan = [idx * fineChansPerCoarse, (idx+1) * fineChansPerCoarse]
+        //     //             newMeta.chan_tok = sprintf("-ch%03d", ch)
+        //     //             // TODO: newMeta.name = "${meta.name}${meta.chan_tok}"
+        //     //             [obsid, newMeta, uvfits]
+        //     //         }
+        //     //     }
+        // }
+        // // else {
+        // //     splitObsMetaUV = obsMetaUV
+        // // }
+
         // combined images
         groupMetaVisImgParams = obsMetaUV.cross(
                 chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
@@ -5099,7 +5391,8 @@ workflow imgCombine {
         wscleanDConv.out.mix(wscleanDirty.out)
             .flatMap { group, meta, imgs ->
                 imgs.collect { img ->
-                    [group, deepcopy(meta) + decomposeImg(img), img] }}
+                    [group, deepcopy(meta) + decomposeImg(img), img] }
+            }
             .filter { _, meta, img ->
                 meta.prod !=~ /uv-.*/ \
                 && (meta.chan?:-1 == -1 || params.thumbnail_all_chans) \
@@ -5123,6 +5416,104 @@ workflow imgCombine {
         frame = frame.groupTuple()
 }
 
+// WARN: joins assume single obs per vis
+workflow extChips {
+    // obsVis = channel.of(file("external.csv"))
+    //     .splitCsv(header: ["obsid", "vis"])
+    //     .filter { !it.obsid.startsWith('#') }
+    //     .map { [it.obsid, file(it.vis)] }
+    def name = params.visName ?: "ionosub_30l_src4k_300it_8s_80kHz_i1000"
+    def cal_prog = params.cal_prog ?: "hyp"
+    def eorfield = params.eorfield ?: 0
+
+    channel.of(obsids_file)
+        .splitCsv()
+        .filter { line -> !line[0].startsWith('#') }
+        .map { line -> def (obsid, _) = line
+            def meta = [name:name, cal_prog:cal_prog, eorfield:eorfield ]
+            def vis = file("${params.outdir}/${obsid}/cal${params.cal_suffix}/${meta.cal_prog}_${obsid}_${meta.name}.uvfits")
+            [ obsid, deepcopy(meta), vis ]
+        }
+        .filter { obs, __, vis -> obs.size() > 0 && vis.exists() }
+        .tap { obsMetaVis }
+        // .view { "before uvMeta ${it}"}
+        | uvMeta
+
+    obsVis = obsMetaVis.map { obs, _, vis -> [obs, vis] }
+    obsVis.join(uvMeta.out)
+        .map { obs, vis, meta_, metaJson ->
+            def meta = deepcopy(meta_)
+            def uvmeta = parseJson(metaJson)
+            ['config', 'eorband', 'num_ants', 'total_weight'].each { key ->
+                meta[key] = uvmeta[key]
+            }
+            meta.lowfreq = uvmeta.freqs[0]
+            meta.freq_res = (uvmeta.freqs[1] - uvmeta.freqs[0])
+            meta.nchans = (uvmeta.freqs?:[]).size()
+            meta.ntimes = (uvmeta.times?:[]).size()
+            if (meta.ntimes > 0) {
+                meta.lst = Math.toDegrees(uvmeta.times[0].lst_rad)
+            }
+            [obs, meta, vis]
+        }
+        // .view { "before psMetrics ${it}" }
+        | psMetrics
+
+    obsVis.join(psMetrics.out)
+        .map { obs, vis, meta_, dat ->
+            def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
+            def meta = deepcopy(meta_)
+            meta.p_wedge = p_wedge
+            meta.p_window = p_window
+            meta.num_cells = num_cells
+            [
+                "nchans", "eorband", "eorfield", "lowfreq", "freq_res",
+            ].each { key ->
+                if (meta[key] == null) {
+                    throw new Exception("obs=${obs} meta.${key} is null")
+                }
+            }
+            [obs, meta, vis]
+        }
+        .tap { obsMetaPSVis }
+        .map { obs, meta, vis ->
+            def gmeta = deepcopy(groupMeta(meta))
+            // print("obs=${obs} group=${gmeta.group}")
+            ["${gmeta.group}", gmeta.sort, obs, deepcopy(gmeta), vis]
+        }
+        // .view { "before grouping ${it}" }
+        .groupTuple(by: 0)
+        // only keep groups with more than one obsid
+        .filter { it -> it[1] instanceof List }
+        // .view { it -> "\n -> grouped: ${it}"}
+        // TODO: assumes one vis per obsid
+        .flatMap { group, sorts, obss, gmetas, viss ->
+            [sorts, obss, gmetas].transpose()
+                .sort { it -> it[0] }
+                .collate(params.chunkSize, params.chunkRemainder)
+                .take(params.chunkCount)
+                .collect { chunk ->
+                    def (chunkSorts, chunkObss, chunkMetas) = chunk.transpose()
+                    def meta = deepcopy(chunkMetas[0])
+                    // meta.obsids = chunkObss.sort(false)
+                    def obsids = chunkObss.sort(false)
+                    meta.nobs = obsids.size()
+                    meta.hash = obsids.join(' ').md5()[0..7]
+                    meta.sort_bounds = [chunkSorts[0], chunkSorts[-1]]
+                    ["${group}_${meta.hash}", deepcopy(meta), obsids]
+                }
+        }
+        // .view { it -> "\n -> chunked by obsid: ${it}"}
+        .set { chunkMetaObs }
+
+    chips(obsMetaPSVis, chunkMetaObs)
+    // if (params.nochipscombine) {
+    //     chips(obsMetaPSVis, channel.empty())
+    // } else {
+    //     chips(obsMetaPSVis, chunkMetaObs)
+    // }
+}
+
 // make combined grids and images using chips and wsclean
 workflow chips {
     take:
@@ -5133,19 +5524,16 @@ workflow chips {
 
     main:
         // power spectrum
-        if (params.nopowerspec) {
-            channel.empty() | chipsGrid
-        } else {
-            obsMetaUV
-                .map { obsid, meta, viss ->
-                    [obsid, deepcopy(meta) + [nobs: 1, ext: "${obsid}_${meta.name}"], [obsid], viss]
-                }
-                | chipsGrid
-        }
+        obsMetaUV
+            .map { obsid, meta, viss ->
+                [obsid, deepcopy(meta) + [nobs: 1, ext: "${obsid}_${meta.name}"], [obsid], viss]
+            }
+            | chipsGrid
 
         pols = channel.of('xx', 'yy')
 
-        chipsGrid.out.cross(
+        chipsGrid.out
+            .cross(
                 chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
                     obsids.collect { obsid -> [obsid, deepcopy(chunkMeta), chunk] }
                 }
@@ -5156,16 +5544,15 @@ workflow chips {
                 [chunk, chunkMeta.name, chunkMeta, obsMeta.ext, grid]
             }
             .groupTuple(by: 0..1)
-            // .view { it -> "\n -> chipsGrid x chunkMetaObs ${it}\n" }
+            .view { it -> "\n -> chipsGrid x chunkMetaObs ${it}\n" }
             .map { chunk, _, chunkMetas, exts, grids ->
                 def chunkMeta = chunkMetas[0]
                 def newMeta = [ ext: "${chunk}_${chunkMeta.name}"]
                 // print("\n -> chunkMetas 0: ${chunkMeta}\n")
                 [chunk, deepcopy(chunkMeta) + newMeta, exts, grids.flatten()]
             }
-            // .view { it -> "\n -> before chipsCombine ${it}\n" }
+            .view { it -> "\n -> before chipsCombine ${it}\n" }
             .filter { chunk, chunkMeta, exts, grid -> chunkMeta.name }
-            // .take(10)
             .combine(pols)
             .map { chunk, chunkMeta, exts, grid, pol ->
                 [chunk, pol, chunkMeta, exts, grid.findAll { it.baseName.contains(pol) }]
@@ -5174,12 +5561,73 @@ workflow chips {
 
         chipsCombine.out
             .map { group, pol, meta, _, grid ->
-                [group, meta.name?:'', meta, grid]}
+                [group, meta.name?:'', meta, grid]
+            }
             .groupTuple(by: 0..1)
             .map { group, name, metas, grids ->
                 [group, metas[0], grids.flatten()]
             }
+            // .mix(
+            //     params.lssaObs ? \
+            //         chipsGrid.out.map { obsid, meta, grid -> [obsid, meta, grid]} : \
+            //         channel.empty()
+            // )
             | chipsLssa
+
+        chipsLssa.out.combine(pols).map { chunk, meta, grid, pol ->
+                [chunk, deepcopy(meta) + [pol: pol], grid]
+            } | chips1d_tsv
+
+        chips1d_tsv.out
+            .view { "chips1d_tsv out ${it}" }
+
+        all_k_modes = chips1d_tsv.out.flatMap { chunk, meta, tsv ->
+                tsv.readLines().collect {
+                    // try { it.split("\t")[0].toFloat() } catch(NumberFormatException e) { null }
+                    it.split("\t")[0]
+                }
+                .findAll {
+                    try {
+                        it.split("\t")[0].toFloat()
+                    } catch(NumberFormatException) {
+                        return false
+                    }
+                    return it != null
+                }
+            }
+            .unique()
+            .collect()
+            .toList()
+            .view()
+
+        // combine all tsv files into one
+        channel.of("\"SORT LEFT\"", "\"SORT RIGHT\"", "GRID", "NAME", "NOBS", "POL").concat(all_k_modes.flatten())
+            .toList()
+            .map { it.join("\t") }
+            .concat(
+                chips1d_tsv.out.combine(all_k_modes).map { group, meta, tsv, k_modes ->
+                    def table = parseCsv(coerceList(tsv)[0], true, 0, '\t')
+                    def (deltas, noises) = k_modes.collect { k_mode ->
+                        def row = table.find { it.k_modes == k_mode }
+                        if (row == null) {
+                            return [Float.NaN, Float.NaN]
+                        }
+                        [parseFloatOrNaN(row.delta), parseFloatOrNaN(row.noise)]
+                    }.transpose()
+                    def (sort_left, sort_right) = meta.sort_bounds?:[Float.NaN, Float.NaN]
+                    ([
+                        sort_left, sort_right, group, meta.name, meta.nobs, meta.pol
+                    ] + deltas).join('\t')
+                }
+            )
+            .collectFile(
+                name: "chips1d_delta.tsv", newLine: true, sort: true,
+                storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+            )
+            .tap { chips1d_delta_tsv }
+            | view { [it, it.readLines().size()] }
+
+        // chips1d_delta_tsv.out.map { }
 
         def singles1D = chipsLssa.out.map { chunk, meta, grid ->
                 def newMeta = [
@@ -5691,6 +6139,23 @@ workflow qaPrep {
             }
             | cthulhuPlot
 
+        // collect ionosub constants as tsvs
+        // ["alphas", "betas", /**"gains"**/].collect {
+        //     hypIonoSubUV.out.flatMap { obsid, meta, _, offsetsJson, __ ->
+        //             offsets = parseJson(offsetsJson)
+        //             offsets.collect { src, data ->
+        //                 pos = data['weighted_catalogue_pos_j2000']
+        //                 ([src, pos.ra?:'', pos.dec?:''] + data[it]).join("\t")
+        //             }
+        //         }
+        //         .collectFile(
+        //             name: "iono_${it}.tsv", newLine: true, sort: false,
+        //             seed: ["SRC", "RA", "DEC", it.toUpperCase()].join("\t"),
+        //             storeDir: "${results_dir}${params.cal_suffix}"
+        //         )
+        //         | view { [it, it.readLines().size()] }
+        // }
+
         // collect ionoqa results as .tsv
         cthulhuPlot.out
             // form row of tsv from json fields we care about
@@ -5725,6 +6190,15 @@ workflow qaPrep {
             )
             // display output path and number of lines
             | view { [it, it.readLines().size()] }
+
+        // obsIonoPass = cthulhuPlot.out.map { obsid, _, __, ___, json, ____ ->
+        //         def stats = parseJson(json);
+        //         [obsid, stats.QA?:null]
+        //     }
+        //     .filter { _, qa ->
+        //         qa != null && (params.filter_max_hyp_ionoqa == null || qa < params.filter_max_hyp_ionoqa)
+        //     }
+        //     .map { obsid, qa -> [obsid] }
 
         // channel of calibrated, subtracted and ionosubtracted uvfits: tuple(obsid, name, uvfits)
         obsMetaUV = hypApplyUV.out.map { obsid, meta, vis, _ -> [obsid, meta, vis] }
@@ -5809,14 +6283,11 @@ workflow qaPrep {
         // Within each group of obsids, we sort by some metric in the primary meta  (e.g. window : wedge power ratio)
         // Then we split that group into chunks of size G.
         chunkMetaPass = obsMetaPass
-            // TODO: chips only works with even timesteps ?
-            // .filter { obsid, meta, vis ->
-            //     def isEven = meta.ntimes % 2 == 0;
-            //     if (!isEven) {
-            //         println "can't run chips on ${obsid} ${meta.name} because it has an odd number of timesteps"
-            //     }
-            //     isEven
-            // }
+            // ///// //
+            // TODO: //
+            // ///// //
+            // groupMeta(meta)
+
             // group metas by obsid
             .groupTuple(by: 0)
             // ensure metas are a list, even when there is only one meta
@@ -6093,3 +6564,38 @@ workflow extPrep {
     }
 }
 
+workflow extPSMetrics {
+    obsVis = channel.of(file("external.csv"))
+        .splitCsv(header: ["obsid", "vis"])
+        .filter { !it.obsid.startsWith('#') }
+        .map { [it.obsid, file(it.vis)] }
+
+    obsVis.map { obs, vis -> [obs, [:], vis ]} | psMetrics
+}
+
+workflow tsvTest {
+    chan = channel.of(
+        [0, [a:2, b:3]],
+        [1, [b:4, c:5]]
+    )
+    // N	a	b	c
+    // 0	2	3
+    // 1		4	5
+    keys = chan.flatMap { number, hash -> hash.keySet() }
+        .unique()
+
+    channel.of("N").concat(keys)
+        .toList()
+        .map { it.join("\t") }
+        .concat(
+            chan.combine(keys.toSortedList().map{[it]}).map { number, hash, keys ->
+                    ([number] + keys.collect { key -> hash[key]?:'' }).join("\t")
+                }
+                .toSortedList()
+                .flatten()
+        ).collectFile(
+            name: "test.tsv", newLine: true, sort: false,
+            storeDir: "${results_dir}"
+        )
+        .view { [it, it.readLines().size()] }
+}

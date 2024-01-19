@@ -21,16 +21,6 @@ mkdir /dev/shm/deleteme
 cd /dev/shm/deleteme
 # chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png
 cp /astro/mwaeor/dev/nfdata/eor0high_phase1-128T_13d68053/ps_metrics/30l_src4k_8s_80kHz/*.dat .
-export ext="grid_30l_src4k_8s_80kHz_eor0high"
-singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
-    /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
-    --basedir=./ \
-    --polarisation=xx \
-    --plot_type 2d_diff \
-    --chips_tag=grid_30l_src4k_8s_80kHz_eor0high \
-    --min_power=1e3 \
-    --max_power=1e15
-cp chips2D_xx_grid_30l_src4k_8s_80kHz_eor0high_crosspower.png /astro/mwaeor/dev/nfdata/1094751504/ps_metrics-newhyp+qa/
 
 eval singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \
@@ -45,10 +35,8 @@ eval singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/si
     --lowerfreq "166995000.0" \
     --umax "300" \
     --N_chan 384 \
-    --num_k_edges "160" \
+    --num_k_edges "80" \
     && cp chips1D_xx+yy_eor0high_phase1-128T_p0_a3dbf06d_ionosub_30l_src4k_8s_80kHz.png /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/
-
-    # --chan_width "80"
 
 singularity exec --cleanenv --bind $PWD --home $PWD /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/jline_plotchips.py \

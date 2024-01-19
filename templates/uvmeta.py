@@ -15,7 +15,6 @@ from argparse import ArgumentParser
 from collections import OrderedDict, defaultdict
 import codecs
 
-
 """
 example:
 

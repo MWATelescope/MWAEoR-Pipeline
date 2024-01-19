@@ -1,3 +1,18 @@
+# 1088200416,2,fully flagged
+# 1088200536,2,?
+# 1088200656,2,fully flagged
+# 1088200776,2,fully flagged
+# 1088200904,2,fully flagged
+# 1088201024,2,fully flagged
+# 1088201144,2,fully flagged
+# 1088201264,2,fully flagged
+# 1088201392,2,fully flagged
+# 1088201512,2,fully flagged
+# 1088201632,2,fully flagged
+# 1088201752,2,fully flagged
+# 1088201880,2,fully flagged
+# 1088202000,2,?
+# 1088202120,2,fully flagged
 1059500328,2,fully flagged
 1059500448,2,fully flagged
 1059500568,2,fully flagged
@@ -196,19 +211,6 @@
 1088198096,2,fully flagged
 1088198216,2,fully flagged
 1088198336,2,fully flagged
-1088200416,2,fully flagged
-1088200656,2,fully flagged
-1088200776,2,fully flagged
-1088200904,2,fully flagged
-1088201024,2,fully flagged
-1088201144,2,fully flagged
-1088201264,2,fully flagged
-1088201392,2,fully flagged
-1088201512,2,fully flagged
-1088201632,2,fully flagged
-1088201752,2,fully flagged
-1088201880,2,fully flagged
-1088202120,2,fully flagged
 1088198584,2,ends early
 1088198704,2,ends early
 1088198824,2,ends early
@@ -224,21 +226,19 @@
 1088200048,2,ends early
 1088200168,2,ends early
 1088200288,2,ends early
-# 1088200416,2,fully flagged
-# 1088200536,2,?
-# 1088200656,2,fully flagged
-# 1088200776,2,fully flagged
-# 1088200904,2,fully flagged
-# 1088201024,2,fully flagged
-# 1088201144,2,fully flagged
-# 1088201264,2,fully flagged
-# 1088201392,2,fully flagged
-# 1088201512,2,fully flagged
-# 1088201632,2,fully flagged
-# 1088201752,2,fully flagged
-# 1088201880,2,fully flagged
-# 1088202000,2,?
-# 1088202120,2,fully flagged
+1088200416,2,fully flagged
+1088200656,2,fully flagged
+1088200776,2,fully flagged
+1088200904,2,fully flagged
+1088201024,2,fully flagged
+1088201144,2,fully flagged
+1088201264,2,fully flagged
+1088201392,2,fully flagged
+1088201512,2,fully flagged
+1088201632,2,fully flagged
+1088201752,2,fully flagged
+1088201880,2,fully flagged
+1088202120,2,fully flagged
 1088202240,2,ends early
 1088202368,2,ends early
 1088202488,2,ends early
@@ -425,7 +425,6 @@
 1088893144,2,Inconsistent TIME header
 1088893264,2,Inconsistent TIME header
 1088893384,2,Inconsistent TIME header
-1089839728,2,ends early
 1089142728,2,Inconsistent TIME header
 1089142848,2,Inconsistent TIME header
 1089142968,2,Inconsistent TIME header
@@ -593,6 +592,7 @@
 1089754784,2,Inconsistent TIME header
 1089754904,2,Inconsistent TIME header
 1089755024,2,Inconsistent TIME header
+1089839728,2,ends early
 1090091512,2,ends early
 1090091872,2,ends early
 1090351584,2,ends early
@@ -649,7 +649,6 @@
 1090444096,2,Inconsistent TIME header
 1090444216,2,inconsistent TIME header
 1090444336,2,inconsistent TIME header
-1092590208,2,ends early
 1092072248,2,Inconsistent TIME header
 1092072368,2,Inconsistent TIME header
 1092072488,2,Inconsistent TIME header
@@ -751,14 +750,13 @@
 1092166344,2,inconsistent TIME header
 1092166464,2,inconsistent TIME header
 1092166584,2,inconsistent TIME header
+1092590208,2,ends early
 1093969440,2,ends early
 1127146616,2,ends early
 1128522920,2,ends early
-1254668544,2,ends early
-1254669680,2,ends early
-1255786952,2,ends early
 1227526432,2,1227526432_20181129113511_gpubox17_00.fits HDU 8: FitsError107
 1227872048,2,1227872048_20181203113459_gpubox17_00.fits HDU 22: FitsError107
+1228822488,2,1228822488_20181214113433_gpubox24_00.fits HDU 19: FitsError107
 1228131256,2,1228131256_20181206113503_gpubox17_00.fits HDU 24: FitsError107
 1228390472,2,1228390472_20181209113417_gpubox24_00.fits HDU 24: FitsError107
 1228649680,2,1228649680_20181212113425_gpubox24_00.fits HDU 22: FitsError107
@@ -767,6 +765,18 @@
 1254067440,2,1254067440_20191002160517_gpubox17_00.fits HDU 14: FitsError107
 1254240296,2,1254240296_20191004160441_gpubox24_00.fits HDU 15: FitsError107
 1254495864,2,1254495864_20191007150517_gpubox17_00.fits HDU 26: FitsError107
+1254668544,2,ends early
+1254669680,2,ends early
 1254927896,2,1254927896_20191012150441_gpubox24_00.fits HDU 16: FitsError107
 1255100640,2,1255100640_20191014150513_gpubox17_00.fits HDU 16: FitsError107
 1255532680,2,1255532680_20191019150425_gpubox24_00.fits HDU 27: FitsError107
+1255786952,2,ends early
+1226230488,2,1226230488_20181114113433_gpubox24_00.fits HDU 15: FitsError107
+1226921720,2,1226921720_20181122113505_gpubox24_00.fits HDU 7: FitsError107
+1251648240,2,1251648240_20190904160507_gpubox17_00.fits HDU 19: FitsError107
+1252339520,2,1252339520_20190912160505_gpubox24_00.fits HDU 6: FitsError107
+1252512248,2,1252512248_20190914160509_gpubox17_00.fits HDU 22: FitsError107
+1252944256,2,1252944256_20190919160533_gpubox17_00.fits HDU 14: FitsError107
+1255791872,2,1255791872_20191022150517_gpubox17_00.fits HDU 30: FitsError107
+1256742216,2,1256742216_20191102150503_gpubox17_00.fits HDU 9: FitsError107
+1256915112,2,1256915112_20191104150457_gpubox24_00.fits HDU 11: FitsError107

@@ -121,7 +121,7 @@ def main():
     module load singularity
     export obsid=1366000096
     cp /astro/mwaeor/dev/nfdata/${obsid}/prep/birli_${obsid}*.uvfits .
-    export uvfits=$(ls -1 birli_${obsid}*.uvfits | head -n 1)
+    export uvfits=\$(ls -1 birli_${obsid}*.uvfits | head -n 1)
     singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome -B /nvmetmp /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
         /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/uvplot_2d.py \
         --uvfits=${uvfits} \
@@ -141,7 +141,7 @@ def main():
             "--uvfits=${uvfits}",
             "--output_name=${uvplot}",
             "--plot_title=${title}",
-            # "--z_max=${z_max}",
+            # "--z_max=\${z_max}",
         ])
 
     uvplot_2d(args)
