@@ -345,13 +345,11 @@ process ssins {
 
     label "ssins"
     label "nvme"
-    label "mem_full"
 
-    time { 2.hour }
+    label "mem_half" // TODO: set these from uvfits size // "mem_full"
+    time { 15.minute } // 2.hour
     // can't do this because no ntimes in prep meta
     // time { 30.min * ((meta.ntimes?:15) * (meta.nchans?:384) / (15 * 384) ) }
-
-    // errorStrategy "terminate"
 
     when: !params.nossins
 
@@ -368,6 +366,36 @@ process ssins {
         .collect { k, v -> """--${k} ${v} """ }
         .join(" ")
     template "ssins.py"
+}
+
+process absolve {
+    input:
+    tuple val(obsid), val(meta_), path(uvfits), path(mask)
+    output:
+    tuple val(obsid), val(meta), path(flagged)
+
+    tag "${obsid}${meta.subobs?:''}"
+
+    label "ssins"
+    label "nvme"
+    label "mem_full"
+
+    errorStrategy "terminate"
+
+    storeDir "${params.outdir}/${obsid}/prep"
+
+    when: params.ssins_apply
+
+    script:
+    meta = deepcopy(meta_)
+    if (meta_.name?:'' != '') {
+        meta['name'] = "${meta_.name}.ssins".toString()
+    } else {
+        meta['name'] = "ssins"
+    }
+    flagged = "${uvfits.baseName}.ssins.uvfits"
+    args = "--src ${mask} --dst ${uvfits}"
+    template "ssins_apply.py"
 }
 
 process autoplot {
@@ -549,8 +577,8 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
-    label "mem_half"
-    label "cpu_half"
+    label "mem_quarter" // TODO: set from uvfits size
+    label "cpu_quarter"
     label "gpu_nvme"
     // if (params.pullCalSol) {
     //     label "rclone"
@@ -562,6 +590,11 @@ process hypCalSol {
     dical_names = dical_args.keySet().collect()
     para = dical_names.size() > 1
     name_glob = para ? "{" + dical_names.join(',') + "}" : dical_names[0]
+    name_prefix = ''
+    if (meta.name?:'' != '') {
+        name_prefix = "${meta.name}_"
+    }
+    name_glob = "${name_prefix}${name_glob}"
     flag_args = ""
     prepFlags = meta.prepFlags?:[]
     fineChanFlags = meta.fineChanFlags?:[]
@@ -593,8 +626,8 @@ process hypCalSol {
         echo "warning: more dical args than gpus";
     fi
     for name in \${!dical_args[@]}; do
-        export soln_name="hyp_soln_${obsid}${meta.subobs?:''}_\${name}.fits"
-        export log_name="hyp_di-cal_${obsid}${meta.subobs?:''}_\${name}.log"
+        export soln_name="hyp_soln_${obsid}${meta.subobs?:''}_${name_prefix}\${name}.fits"
+        export log_name="hyp_di-cal_${obsid}${meta.subobs?:''}_${name_prefix}\${name}.log"
     """ + (params.pullCalSol ? """
         # download if available in accacia
         rclone copy "${params.bucket_prefix}.soln/\${soln_name}" .
@@ -917,7 +950,7 @@ process hypIonoSubUV {
     label "mem_full" // need a full node otherwise gpu runs out of memory
     label "gpu"
 
-    time 6.hour
+    time 2.5.hour
 
     when: !params.noionosub
 
@@ -1121,11 +1154,12 @@ process uvMeta {
     tag "${base}"
 
     label "python"
-    // time 30.minute
+    memory = 40.GB
+    // memory = (vis.size * 3)
     time = {
-        // max 20 min for 60ts, 144T, 768chans
+        // max 25 min for 60ts, 144T, 768chans
         [
-            (20.minute * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
+            (25.minute * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
                 / (60 * 128 * 768)),
             4.hour
         ].min()
@@ -1603,15 +1637,39 @@ process chipsGrid {
     tuple val(group), val(meta), val(obsids), path(viss)
     output:
     tuple val(group), val(newMeta), \
-        path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_{xx,yy}.${ext}.dat")
+        path("vis_tot_${pol}.${ext}.dat"), \
+        path("vis_diff_${pol}.${ext}.dat"), \
+        path("noise_tot_${pol}.${ext}.dat"), \
+        path("noise_diff_${pol}.${ext}.dat"), \
+        path("weights_${pol}.${ext}.dat")
+        // path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${ext}.dat")
 
     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
 
-    tag "${group}.${meta.name}"
+    tag "${group}.${meta.name}.${pol}"
 
     label "chips"
-    label "cpu_full"
-    label "mem_full"
+    label "cpu_half"
+    label "mem_half"
+    label "nvme"
+
+    maxRetries 3
+    errorStrategy {
+        failure_reason = [
+            // 5: "I/O error or hash mismatch",
+            // 28: "No space left on device",
+        ][task.exitStatus]
+        if (failure_reason) {
+            println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
+            return 'ignore'
+        }
+        retry_reason = [
+            1: "general or permission",
+            // 11: "Resource temporarily unavailable",
+            // 75: "Temporary failure, try again"
+        ][task.exitStatus] ?: "unknown"
+        return 'retry'
+    }
 
     time { 30.minute * obsids.size() }
 
@@ -1625,7 +1683,7 @@ process chipsGrid {
     lowfreq = meta.lowfreq
     period = meta.period?:"8.0"
     freq_res = "${(meta.freq_res?:80) * 1000}"
-    // pol = meta.pol?:"xx"
+    pol = meta.pol?:"xx"
     freq_idx_start = meta.freq_idx_start?:0
 
     newMeta = deepcopy(meta) + [lowfreq: lowfreq]
@@ -1636,10 +1694,7 @@ process chipsGrid {
     echo "meta=${meta}"
     """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 68" : "" ) + """
 
-    export DATADIR="\$PWD"
-    export INPUTDIR="\$PWD/"
-    export OUTPUTDIR="\$PWD/"
-    export OBSDIR="\$PWD/"
+    export DATADIR="\$PWD" INPUTDIR="\$PWD/" OUTPUTDIR="\$PWD/" OBSDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
 
     # copy data files
@@ -1652,12 +1707,11 @@ process chipsGrid {
     """ + (
         [coerceList(obsids), coerceList(viss)].transpose().collect { obsid, vis ->
             """
-    gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}" \
-        2>&1 | tee syslog_gridvisdiff_${obsid}.txt
-    ps=("\${PIPESTATUS[@]}")
-    if [ \${ps[0]} -ne 0 ] && [ \${ps[0]} -ne 42 ]; then
-        echo "gridvisdiff failed. status=\${ps[0]}"
-        exit \${ps[0]}
+    gridvisdiff "${vis}" "${obsid}" "${ext}" "${eorband}" -f "${eorfield}"
+    export ps=\$?
+    if [ \${ps} -ne 0 ] && [ \${ps} -ne 42 ]; then
+        echo "gridvisdiff failed. status=\${ps}"
+        exit \${ps}
     fi
     """
         }.join("\n")
@@ -1665,20 +1719,18 @@ process chipsGrid {
 
     which prepare_diff
 
-    for pol in xx yy; do
-        prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "\${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" \
-            2>&1 | tee syslog_prepare_diff_\${pol}.txt
-        if [ \${ps[0]} -ne 0 ] && [ \${ps[0]} -ne 42 ]; then
-            echo "prepare_diff failed. pol=\${pol}, status=\${ps[0]}"
-            exit \${ps[0]}
+    prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}"
+    export ps=\$?
+    if [ \${ps} -ne 0 ] && [ \${ps} -ne 42 ]; then
+        echo "prepare_diff failed. pol=${pol}, status=\${ps}"
+        exit \${ps}
+    fi
+    # check for nulls
+    for dat in *_${pol}.${ext}.dat; do
+        if ! grep -m1 -qP "[^\\0]" \$dat; then
+            echo "oops, all nulls \$dat"
+            exit 69
         fi
-        # check for nulls
-        # for dat in *_\${pol}.${ext}.dat; do
-        #     if ! grep -m1 -qP "[^\\0]" \$dat; then
-        #         echo "oops, all nulls \$dat"
-        #         exit 69
-        #     fi
-        # done
     done
     """
 }
@@ -1736,11 +1788,17 @@ process chipsCombine {
     done
 
     echo -n "" > combine_${pol}.${combined_ext}.txt
-    """ + (
-        exts.collect { ext ->
-            """echo "${pol}.${ext}" >> combine_${pol}.${combined_ext}.txt"""
-        }.join("\n")
-    ) + """
+    for ext in ${exts.join(' ')}; do
+        # check for nulls
+        for dat in *_${pol}.\${ext}.dat; do
+            ls -al \$dat
+            if ! grep -m1 -qP "[^\\0]" \$dat; then
+                echo "oops, all nulls \$dat"
+                exit 69
+            fi
+        done
+        echo "${pol}.\${ext}" >> combine_${pol}.${combined_ext}.txt
+    done
 
     # check error code, allow 0 or 42
     set +e
@@ -1768,9 +1826,9 @@ process chipsLssa {
     tuple val(group), val(newMeta),
         path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_{xx,yy}_${bias_mode}.iter.${ext}.dat")
 
-    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+    storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}/${meta.name}"
 
-    tag "${group}.${meta.name}"
+    tag "${group}.${params.lssa_bin}.${meta.name}"
 
     label "chips"
     label "cpu_full"
@@ -1803,7 +1861,7 @@ process chipsLssa {
     export OMP_NUM_THREADS=${task.cpus}
 
     for pol in xx yy; do
-        lssa_fg_simple "${ext}" "${nchans}" "${nbins}" "\${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
+        ${params.lssa_bin} "${ext}" "${nchans}" "${nbins}" "\${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
             2>&1 | tee syslog_lssa_simple_\${pol}.txt
 
         export cross_size="\$(stat -c%s crosspower_\${pol}_${bias_mode}.iter.${ext}.dat)"
@@ -1821,7 +1879,7 @@ process chipsPlot {
     output:
     tuple val(group), val(meta), path("chips${dims}D_${pol}_${suffix}.png")
 
-    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+    storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}/${meta.name}"
 
     tag "${group}.${meta.name}.${ptype}"
 
@@ -1921,11 +1979,12 @@ process chips1d_tsv {
     output:
     tuple val(group), val(meta), path("1D_power_${pol}.${suffix}.tsv")
 
-    storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
+    storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}/${meta.name}"
 
     tag "${group}.${meta.name}.${pol}"
 
-    label "python"
+    label "chips_wrappers"
+    label "nvme"
 
     time 15.minute
 
@@ -1969,106 +2028,13 @@ process chips1d_tsv {
         args += " --K_perp ${meta.kperp}"
     }
 
-    template "chips1D_tsv.py"
+    // template "chips1D_tsv.py"
+    script:
+    """
+    chips1D_tsv.py ${args}
+    cp "1D_power_${pol}.tsv" "1D_power_${pol}.${suffix}.tsv"
+    """
 }
-
-// process CMTChipsPlot1D {
-//     input:
-//     tuple val(group), val(meta), path(grid)
-//     output:
-//     tuple val(group), val(meta), path("chips${dims}D_${pol}_${suffix}.png")
-
-//     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
-
-//     tag "${group}.${meta.name}.${ptype}"
-
-//     label "python"
-
-//     time 15.minute
-
-//     script:
-//     pol = meta.pol?:"both"
-//     if (pol == "both") {
-//         pol = "xx+yy"
-//     }
-//     ptype = meta.ptype?:""
-//     dims = ptype[0]?:2
-//     suffix = ""
-//     if (ptype =~ /.*comp/) {
-//         suffix = "_comparison"
-//     } else if (ptype =~ /.*diff/) {
-//         suffix = "_diff"
-//     } else if (ptype =~ /.*ratio/) {
-//         suffix = "_ratio"
-//     } else if (ptype[0] == "2") {
-//         suffix = "_crosspower"
-//     }
-//     if ((meta.tags?:[])[1]) {
-//         suffix = "_${meta.tags[1]}${suffix}"
-//     }
-//     if ((meta.tags?:[])[0]) {
-//         suffix = "${meta.tags[0]}${suffix}"
-//     } else {
-//         suffix = "${meta.ext}${suffix}"
-//     }
-//     basedir = "./"
-//     args = [
-//         title: meta.title,
-//         // file group
-//         basedir: "./",
-//         chips_tag: meta.ext,
-//         chips_tag_one: (meta.tags?:[])[0],
-//         chips_tag_two: (meta.tags?:[])[1],
-//         chips_tag_three: (meta.tags?:[])[2],
-//         // plot group
-//         plot_type: ptype,
-//         polarisation: meta.pol,
-//         min_power: meta.min_power,
-//         max_power: meta.max_power,
-//         // plot group 2D
-//         colourscale: meta.colourscale,
-//         max_neg_power: meta.max_neg_power,
-//         min_neg_power: meta.min_neg_power,
-//         // plot group 1D
-//         wedge_factor: meta.wedge_factor,
-//         low_k_edge: meta.low_k_edge,
-//         high_k_edge: meta.high_k_edge,
-//         num_k_edges: meta.nbins,
-//         kperp_max: meta.kperp_max,
-//         kperp_min: meta.kperp_min,
-//         kparra_min: meta.kparra_min,
-//         plot_wedge_cut_2D: meta.plot_wedge_cut_2D,
-//         chips_tag_one_label: (meta.labels?:[])[0],
-//         chips_tag_two_label: (meta.labels?:[])[1],
-//         chips_tag_three_label: (meta.labels?:[])[2],
-//         // chips group
-//         lowerfreq: meta.lowfreq,
-//         chan_width: (meta.freq_res * 1e3),
-//         umax: meta.maxu,
-//         // density_correction: meta.density_correction,
-//         // omega_matter: meta.omega_matter,
-//         // omega_baryon: meta.omega_baryon,
-//         // omega_lambda: meta.omega_lambda,
-//         // hubble: meta.hubble,
-
-//     ].findAll { _, v -> v != null }
-//         .collect { k, v -> """--${k} "${v}" """ }
-//         .join(" ")
-//     if (meta.plot_delta) {
-//         args += " --plot_delta"
-//     }
-//     if (meta.plot_wedge_cut) {
-//         args += " --plot_wedge_cut_2D"
-//     }
-//     if (meta.nchans) {
-//         args += " --N_chan ${meta.nchans}"
-//     }
-//     if (meta.kperp) {
-//         args += " --K_perp ${meta.kperp}"
-//     }
-
-//     template "jline_plotchips.py"
-// }
 
 // analyse images of V,XX,YY
 process imgQA {
@@ -2426,7 +2392,7 @@ process archive {
     touch "${x}.shadow"
     ${params.proxy_prelude} # ensure proxy is set if needed
     rclone mkdir "${bucket}"
-    rclone copyto --copy-links "$x" "${bucket}/$x"
+    rclone copy --copy-links "$x" "${bucket}"
     """
 }
 
@@ -2506,11 +2472,16 @@ import groovy.transform.Synchronized
 
 @Synchronized
 def deepcopy(orig) {
-    bos = new ByteArrayOutputStream()
-    oos = new ObjectOutputStream(bos)
-    oos.writeObject(orig); oos.flush()
-    bin = new ByteArrayInputStream(bos.toByteArray())
-    ois = new ObjectInputStream(bin)
+    def bos = new ByteArrayOutputStream()
+    def oos = new ObjectOutputStream(bos)
+    try {
+        oos.writeObject(orig); oos.flush()
+    } catch (Exception e) {
+        println("error deepcopying ${orig} ${e}")
+        throw e
+    }
+    def bin = new ByteArrayInputStream(bos.toByteArray())
+    def ois = new ObjectInputStream(bin)
     return ois.readObject()
 }
 
@@ -2842,7 +2813,7 @@ def groupMeta(meta) {
 
     [
         "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
-        "eorband", "eorfield", "config", "name",
+        "eorband", "eorfield", "config", "name", "sub"
     ].each { key ->
         if (meta[key] != null) {
             newMeta[key] = meta[key]
@@ -3964,9 +3935,24 @@ workflow prep {
                 )
         }
 
+        if (params.ssins_apply) {
+            subobsMetaVisSSINs = subobsMetaVisPass.join(
+                    ssins.out.map { obsid, meta, mask, _, __ ->
+                            [obsid, meta, mask]
+                        }
+                )
+                .map { obsid, _, uvfits, meta, mask ->
+                    [obsid, meta, uvfits, mask]
+                }
+                | absolve
+            // TODO: flagqa
+        } else {
+            subobsMetaVisSSINs = subobsMetaVis
+        }
+
     emit:
         // channel of obsids which pass the flag gate: tuple(obsid, meta, metafits, uvfits)
-        subobsMetaVisPass
+        subobsMetaVisPass = subobsMetaVisSSINs
         subobsReasons = subobsMetaVisFlags.filter { obsid, meta, uvfits, flagMeta ->
                 (flagMeta.reasons?:'') != ''
             }
@@ -4005,6 +3991,9 @@ workflow prep {
             })
             .mix(autoplot.out.map {_, meta, img -> ["prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
+
+        // channel of files to archive, and their buckets
+        archive = ssins.out.map { _, __, mask, ___, ____ -> ["ssins", mask]}
 
         zip = prepVisQA.out.map { _, __, json -> ["prepvisqa", json]}
             .mix(flagQA.out.map { _, __, json -> ["flagqa", json]})
@@ -5523,16 +5512,23 @@ workflow chips {
         chunkMetaObs
 
     main:
+        pols = channel.of('xx', 'yy')
         // power spectrum
         obsMetaUV
-            .map { obsid, meta, viss ->
-                [obsid, deepcopy(meta) + [nobs: 1, ext: "${obsid}_${meta.name}"], [obsid], viss]
+            .combine(pols)
+            .map { obsid, meta, viss, pol ->
+                [obsid, deepcopy(meta) + [nobs: 1, ext: "${obsid}_${meta.name}", pol: pol], [obsid], viss]
             }
             | chipsGrid
 
-        pols = channel.of('xx', 'yy')
-
         chipsGrid.out
+            .map { obsid, meta, vis_tot, vis_diff, noise_tot, noise_diff, weights ->
+                [obsid, meta.name?:'', meta, [vis_tot, vis_diff, noise_tot, noise_diff, weights]]
+            }
+            .groupTuple(by: 0..1)
+            .map { obsid, name, metas, grids ->
+                [obsid, coerceList(metas)[0], grids.flatten()]
+            }
             .cross(
                 chunkMetaObs.flatMap { chunk, chunkMeta, obsids ->
                     obsids.collect { obsid -> [obsid, deepcopy(chunkMeta), chunk] }
@@ -5579,7 +5575,7 @@ workflow chips {
             } | chips1d_tsv
 
         chips1d_tsv.out
-            .view { "chips1d_tsv out ${it}" }
+            .map { println("chips1d_tsv out ${it}") }
 
         all_k_modes = chips1d_tsv.out.flatMap { chunk, meta, tsv ->
                 tsv.readLines().collect {
@@ -5601,27 +5597,29 @@ workflow chips {
             .view()
 
         // combine all tsv files into one
-        channel.of("\"SORT LEFT\"", "\"SORT RIGHT\"", "GRID", "NAME", "NOBS", "POL").concat(all_k_modes.flatten())
+        channel.of("SORT_LEFT", "SORT_RIGHT", "GRID", "NAME", "NOBS", "POL").concat(all_k_modes.flatten())
             .toList()
             .map { it.join("\t") }
             .concat(
                 chips1d_tsv.out.combine(all_k_modes).map { group, meta, tsv, k_modes ->
-                    def table = parseCsv(coerceList(tsv)[0], true, 0, '\t')
-                    def (deltas, noises) = k_modes.collect { k_mode ->
-                        def row = table.find { it.k_modes == k_mode }
-                        if (row == null) {
-                            return [Float.NaN, Float.NaN]
-                        }
-                        [parseFloatOrNaN(row.delta), parseFloatOrNaN(row.noise)]
-                    }.transpose()
-                    def (sort_left, sort_right) = meta.sort_bounds?:[Float.NaN, Float.NaN]
-                    ([
-                        sort_left, sort_right, group, meta.name, meta.nobs, meta.pol
-                    ] + deltas).join('\t')
-                }
+                        def table = parseCsv(coerceList(tsv)[0], true, 0, '\t')
+                        def (deltas, noises) = k_modes.collect { k_mode ->
+                            def row = table.find { it.k_modes == k_mode }
+                            if (row == null) {
+                                return [Float.NaN, Float.NaN]
+                            }
+                            [parseFloatOrNaN(row.delta), parseFloatOrNaN(row.noise)]
+                        }.transpose()
+                        def (sort_left, sort_right) = meta.sort_bounds?:[Float.NaN, Float.NaN]
+                        ([
+                            sort_left, sort_right, group, meta.name, meta.nobs, meta.pol
+                        ] + deltas).join('\t')
+                    }
+                    .collect(sort: true)
+                    .flatMap { it -> it }
             )
             .collectFile(
-                name: "chips1d_delta.tsv", newLine: true, sort: true,
+                name: "chips1d_delta_${params.lssa_bin}.tsv", newLine: true, sort: false,
                 storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
             .tap { chips1d_delta_tsv }
@@ -5879,7 +5877,8 @@ workflow archivePrep {
     obsids | asvoPrep
 
     if (params.archive) {
-        asvoPrep.out.map { _, vis -> ["prep", vis] } | archive
+        asvoPrep.out.map { _, __, vis -> ["prep", vis] }
+            | archive
     }
 }
 
@@ -5918,13 +5917,13 @@ workflow {
     }
 
     // channel of obsids that pass the flag gate
-    // prep.out.subobsMetaVisPass
-    //     .map { obsid, meta, __ -> [obsid, meta.subobs?:''] }
-    //     .collectFile(
-    //         name: "prep_obs_pass.csv", newLine: true, sort: true,
-    //         storeDir: "${results_dir}"
-    //     )
-    //     | view { [it, it.readLines().size()] }
+    prep.out.subobsMetaVisPass
+        .map { obsid, meta, __ -> [obsid, meta.subobs?:'', meta.name?:''].join('\t') }
+        .collectFile(
+            name: "prep_subobs_name_pass.csv", newLine: true, sort: true,
+            storeDir: "${results_dir}"
+        )
+        | view { [it, it.readLines().size()] }
 
     qaPrep( prep.out.subobsMetaVisPass, ws.out.obsMetafits )
     if (!params.novideo) {
@@ -6294,57 +6293,16 @@ workflow qaPrep {
             .map { obsid, metas -> [ obsid, coerceList(metas) ]}
             // determine how to group each obsid, and how to sort that obsid within each group.
             .map { obsid, metas ->
+                def gmetas = metas.collect { meta -> deepcopy(meta) + deepcopy(groupMeta(meta)) }
                 // find the meta of the primary subobservation (in this case, the unsubtracted visibilities)
-                def metaPrime = metas.find { meta -> meta.sub == null }
-                // determine the value to sort obsids by
-                def sort = 1
-                if (metaPrime.p_window?:Float.NaN != Float.NaN && metaPrime.p_wedge?:Float.NaN != Float.NaN) {
-                    sort *= metaPrime.p_window / metaPrime.p_wedge
-                }
-                if (metaPrime.total_weight?:Float.NaN != Float.NaN) {
-                    def weight = metaPrime.total_weight / 1e9
-                    sort /= weight
-                }
-                // group by field, band, config
-                def group_tokens = []
-                def first_token = ""
-                if (metaPrime.eorfield != null) {
-                    first_token += "eor${metaPrime.eorfield}"
-                }
-                if (metaPrime.eorband != null) {
-                    first_token += (metaPrime.eorband == 0 ? "low" : "high")
-                }
-                if (first_token.size() > 0) {
-                    group_tokens << first_token
-                }
-                if (metaPrime.config != null) {
-                    group_tokens << metaPrime.config
-                }
-                if (params.groupByPointing && metaPrime.ew_pointing != null) {
-                    group_tokens << sprintf("ewp%+1d", metaPrime.ew_pointing)
-                }
-                if (params.groupByLst && metaPrime.lst != null) {
-                    def nearest_lst = ((metaPrime.lst.round().intValue() + 180) % 360 - 180)
-                    group_tokens << sprintf("lst%+03d", nearest_lst)
-                }
-                def group = group_tokens.join('_')
-
-                if (metas.size() > 1) {
-                    [
-                        "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
-                        "eorband", "eorfield", "config"
-                    ].each { key ->
-                        assert metas[1..-1].every { meta -> meta[key] == metas[0][key] }, \
-                            "meta key ${key} not consistent across subtractions for obsid ${obsid}: ${metas}"
-                    }
-                }
-                [group, sort, obsid, metas]
+                def gmetaPrime = gmetas.find { meta -> meta.sub == null }
+                ["${gmetaPrime.group}", gmetaPrime.sort, obsid, gmetas]
             }
             .groupTuple(by: 0)
             // only keep groups with more than one obsid
             .filter { it -> it[1] instanceof List }
             // .view { it -> "\n -> grouped by obsid: ${it}"}
-            // chunk obsid groups into subgroups of 20
+            // chunk obsid groups
             .flatMap { group, all_sorts, all_obsids, all_metas ->
                 def groupMeta = [group: group]
 
@@ -6360,6 +6318,7 @@ workflow qaPrep {
                             // ntimes: metas.collect { meta -> meta[0].ntimes?:0 }
                             sort_bounds: [sorts[0], sorts[-1]],
                             hash: hash,
+                            nobs: obs_list.size(),
                         ]
                         ["${group}_${hash}", deepcopy(groupMeta) + chunkMeta, obs_list, metas]
                     }
@@ -6367,9 +6326,9 @@ workflow qaPrep {
             // .view { it -> "\n -> chunked by obsid: ${it}"}
             .tap { groupChunkMetaPass }
             // flatten obsids out of each chunk
-            .flatMap { chunk, _, obsids, all_metas ->
+            .flatMap { chunk, chunkMeta, obsids, all_metas ->
                 [obsids, all_metas].transpose().collect { obsid, metas ->
-                    [chunk, obsid, metas]
+                    [chunk, obsid, metas.collect { meta -> deepcopy(meta) + deepcopy(chunkMeta)}]
                 }
             }
             // .view { it -> "\n -> flattened obsid: ${it}"}
@@ -6383,16 +6342,7 @@ workflow qaPrep {
             // group by both obs group and visibility type name
             .groupTuple(by: 0..1)
             .map { chunk, name, obsids, metas ->
-                def groupMeta = [name: name]
-                [
-                    "cal_prog", "time_res", "freq_res", "lowfreq", "nchans",
-                    "eorband", "eorfield", "config", "sub"
-                ].each { key ->
-                    if (metas[0][key]) {
-                        groupMeta[key] = metas[0][key]
-                    }
-                }
-                [chunk, groupMeta, obsids]
+                [chunk, metas[0], obsids]
             }
             // finally, we have a channel of visibilities from the same obs group and vis type
             // .view { it -> "\n -> chunkMetaPass: ${it}"}
