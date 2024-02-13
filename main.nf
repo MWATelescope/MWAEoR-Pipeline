@@ -240,9 +240,14 @@ process asvoPrep {
 
     """ + ( params.pullPrep ? """
     # download if available in accacia
-    rclone copy "${params.bucket_prefix}.prep/${uvfits}" .
-    if [ -f "${uvfits}" ]; then
+    rclone ls "${params.bucket_prefix}.prep" --include '*${obsid}*'
+    rclone copy "${params.bucket_prefix}.prep/" . --include '${uvfits}' --progress
+    ls -al
+    if [ \$(ls -1 ${uvfits} 2> /dev/null | wc -l) -gt 0 ]; then
         exit 0
+    else
+        echo "failed to download '${uvfits}' from bucket '${params.bucket_prefix}.prep'"
+        echo "trying asvo"
     fi
     """ : "" ) + """
 
@@ -380,7 +385,9 @@ process absolve {
     label "nvme"
     label "mem_full"
 
-    errorStrategy "terminate"
+    time { 30.minute }
+
+    // errorStrategy "terminate"
 
     storeDir "${params.outdir}/${obsid}/prep"
 
@@ -568,7 +575,7 @@ process hypCalSol {
     output:
     tuple val(obsid), val(meta),
         path("hyp_soln_${obsid}${meta.subobs?:''}_${name_glob}.fits"),
-        path("hyp_di-cal_${obsid}${meta.subobs?:''}_${name_glob}.log")
+        path("hyp_di-cal_${obsid}${meta.subobs?:''}_${name_glob}.log", optional: true)
     // todo: model subtract: path("hyp_model_${obsid}_${name_glob}.uvfits")
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
@@ -1164,7 +1171,8 @@ process uvMeta {
             4.hour
         ].min()
     }
-    stageInMode "symlink"
+    // stageInMode "symlink"
+    // can't symlink any more, scratch too slow
 
     script:
     base = vis.baseName
@@ -1654,22 +1662,7 @@ process chipsGrid {
     label "nvme"
 
     maxRetries 3
-    errorStrategy {
-        failure_reason = [
-            // 5: "I/O error or hash mismatch",
-            // 28: "No space left on device",
-        ][task.exitStatus]
-        if (failure_reason) {
-            println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
-            return 'ignore'
-        }
-        retry_reason = [
-            1: "general or permission",
-            // 11: "Resource temporarily unavailable",
-            // 75: "Temporary failure, try again"
-        ][task.exitStatus] ?: "unknown"
-        return 'retry'
-    }
+    errorStrategy { return task.exitStatus > 1 ? "retry" : "ignore" }
 
     time { 30.minute * obsids.size() }
 
@@ -1782,10 +1775,6 @@ process chipsCombine {
     export OBSDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
 
-    # copy data files
-    for f in present_vals.dat missing_vals.dat krig_weights.dat; do
-        [ -f \$f ] || cp "/astro/mwaeor/ctrott/output/\$f" .
-    done
 
     echo -n "" > combine_${pol}.${combined_ext}.txt
     for ext in ${exts.join(' ')}; do
@@ -2624,6 +2613,17 @@ def prepqa_pass(flagMeta) {
     return [fail_code, reason]
 }
 
+def calqa_pass(meta) {
+    def fail_code = 0x00
+    if (params.filter_max_rms_convg != null && meta.rms_convg != null) {
+        if (meta.rms_convg > params.filter_max_rms_convg) {
+            fail_code = 0x60
+            return [fail_code, "rms_convg(${meta.rms_convg}) > ${params.filter_max_rms_convg}"]
+        }
+    }
+    return [fail_code, null]
+}
+
 // POWER	P_win_sub, P_win	< 20	Small window power overall
 def cmt_ps_metrics_pass(meta) {
     def fail_code = 0x00
@@ -2866,6 +2866,7 @@ def failCodes = [
     0x37: "055 - prep status",
 
     // 0x4X - calibration
+    0x40: "064 - high rms convg",
     // 0x5X - visQA
     // 0x6X - ps_metrics
     0x60: "096 - large unsub p_win",
@@ -2950,10 +2951,10 @@ workflow ws {
                 // | -3 |  5 | 26 |  90 | 69.16 | {0,3,6,9,...} | -28..-20 |
                 // | -2 |  3 | 10 |  90 | 76.28 | {0,2,4,6,...} | -19..-12 |
                 // | -1 |  1 |  2 |  90 | 83.19 | {0,1,2,3,...} | -12..-4  |
-                // |  0 |  0 |  0 |   0 | 90.00 | {0,0,0,0,...} |  -4..4   |
-                // | +1 |  2 |  4 | 270 | 83.19 | {3,2,1,0,...} |   4..12  |
-                // | +2 |  4 | 12 | 270 | 76.28 | {6,4,2,0,...} |  11..19  |
-                // | +3 |  6 | 28 | 270 | 69.16 | {9,6,3,0,...} |  19..28  |
+                // |  0 |  0 |  0 |   0 | 90.00 | {0,0,0,0,...} |  -4..+4  |
+                // | +1 |  2 |  4 | 270 | 83.19 | {3,2,1,0,...} |  +4..+12 |
+                // | +2 |  4 | 12 | 270 | 76.28 | {6,4,2,0,...} | +11..+19 |
+                // | +3 |  6 | 28 | 270 | 69.16 | {9,6,3,0,...} | +19..+28 |
                 if ([-90,0,90].contains(az_pointing.round() as int)) {
                     ew_pointing = ((90-el_pointing) / 7).round() as int
                     if (az_pointing > 0) ew_pointing *= -1
@@ -3831,27 +3832,30 @@ workflow prep {
                 .map { obsid, meta, uvfits, flagMeta ->
                     [
                         obsid,
-                        flagMeta.fail_code
+                        flagMeta.fail_code,
+                        flagMeta.reasons
                     ]
                 }
 
-            fail_codes.filter { _, fail_code -> fail_code != failCodes[0x00] }
+            fail_codes
+                // .filter { _, fail_code, __ -> fail_code != failCodes[0x00] }
                 .groupTuple(by: 0)
-                .map { obsid, fail_codes ->
+                .map { obsid, fail_codes, reasons ->
                     [
                         obsid,
                         coerceList(fail_codes)[0],
+                        coerceList(reasons)[0],
                     ].join("\t")
                 }
                 .collectFile(
                     name: "prep_reasons.tsv", newLine: true, sort: true,
-                    seed: ([ "OBSID", "FAIL CODE" ]).join("\t"),
+                    seed: ([ "OBSID", "FAIL CODE", "REASON" ]).join("\t"),
                     storeDir: "${results_dir}"
                 )
                 | view { it.readLines().size() }
 
             fail_codes.groupTuple(by: 1)
-                .map { obsids, fail_code ->
+                .map { obsids, fail_code, _ ->
                     [
                         fail_code,
                         obsids.size(),
@@ -3999,7 +4003,7 @@ workflow prep {
             .mix(flagQA.out.map { _, __, json -> ["flagqa", json]})
             .groupTuple()
 
-        fail_codes = fail_codes
+        fail_codes = fail_codes.map { obsid, fail_code, reasons -> [obsid, fail_code] }
 }
 
 workflow cal {
@@ -4012,6 +4016,7 @@ workflow cal {
             .map { def (obsids, meta, metafits, uvfits) = it
                 [obsids, meta, metafits, uvfits, params.dical_args]
             }
+            // .view {"hypCalSol ${it}"}
             | hypCalSol
 
         // hyperdrive dical log analysis
@@ -4260,7 +4265,8 @@ workflow cal {
             .map { obsid, meta, json -> [obsid, meta, parseJson(json)] }
             .filter { _, __, stats -> stats != null }
             .map { obsid, meta, stats ->
-                def newMeta = [:];
+                def (fail_code, reason) = calqa_pass(stats)
+                def newMeta = [fail_code: fail_code, reason: reason];
                 if (stats.BAD_ANTS) {
                     def prepFlags = (meta.prepFlags?:[]) as Set
                     def calFlags = ([]) as Set
@@ -4274,11 +4280,37 @@ workflow cal {
                 }
                 [obsid, deepcopy(meta) + newMeta, stats]
             }
+            .tap { obsMetaStats }
             // TODO: reintroduce status filter
-            .filter { _, __, stats -> stats.STATUS == null || stats.STATUS == "PASS" }
+            // .filter { _, meta, stats ->
+            //     stats.STATUS == null || stats.STATUS == "PASS"
+            // }
+            .filter { _, meta, stats ->
+                meta.fail_code == 0x00
+            }
             .map { obsid, meta, stats -> [obsid, meta] }
 
+        fail_codes = obsMetaStats.map{ obs, meta, stats ->
+                [obs, failCodes[meta.fail_code?:0x00], meta.reason?:""]
+            }
+
+        fail_codes.groupTuple(by: 0)
+                .map { obsid, fail_codes, reasons ->
+                    [
+                        obsid,
+                        coerceList(fail_codes)[0],
+                        coerceList(reasons)[0],
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "calqa_reasons.tsv", newLine: true, sort: true,
+                    seed: ([ "OBSID", "FAIL CODE", "REASON" ]).join("\t"),
+                    storeDir: "${results_dir}"
+                )
+                | view { it.readLines().size() }
+
     emit:
+        fail_codes = fail_codes.filter { obsid, fail_code, _ -> fail_code != failCodes[0x00] }
         // channel of calibration solutions that pass qa. tuple(obsid, name, cal)
         // - take tuple(obsid, meta, soln) from allCal
         // - match with obsMetaPass on (obsid, cal_name)
@@ -4290,7 +4322,17 @@ workflow cal {
                 [obsid, meta, soln]
             }
         // channel of files to archive, and their buckets
-        archive = calQA.out.map { _, __, json -> ["calqa", json]}
+        archive =
+            hypCalSol.out
+                .flatMap { obsid, meta, solns, _ ->
+                    coerceList(solns).collect { soln ->
+                        [ "soln", soln ]
+                    }
+                }
+                .mix(
+                    calQA.out.map { _, __, json -> ["calqa", json]}
+                )
+
         // channel of video name and frames to convert
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, meta, pngs ->
@@ -4482,7 +4524,7 @@ workflow uvfits {
                 }
 
             passReasons
-                .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
+                // .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
                 .map { obsid, meta, fail_code, reason ->
                     [obsid, meta.name, meta, fail_code, reason]
                 }
@@ -5174,7 +5216,7 @@ workflow img {
                 | view { it.readLines().size() }
 
             obsMetaReasons
-                .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
+                // .filter { _, __, fail_code, ___ -> fail_code != failCodes[0x00] }
                 .groupTuple( by: 0 )
                 .map { obsid, meta, fail_codes, reasons ->
                     [
@@ -6247,6 +6289,12 @@ workflow qaPrep {
 
             obsMetaVisPass
                 .map { obsid, meta, vis -> [obsid, meta, [vis]]}
+                .filter { _, meta, __ ->
+                    if (params.noimgunsub) {
+                        return (meta.sub?:'') != ''
+                    }
+                    return true
+                }
                 | img
 
             obsMetaImgPass = img.out.obsMetaImgPass
@@ -6296,6 +6344,9 @@ workflow qaPrep {
                 def gmetas = metas.collect { meta -> deepcopy(meta) + deepcopy(groupMeta(meta)) }
                 // find the meta of the primary subobservation (in this case, the unsubtracted visibilities)
                 def gmetaPrime = gmetas.find { meta -> meta.sub == null }
+                if (gmetaPrime == null) {
+                    gmetaPrime = gmetas[0]
+                }
                 ["${gmetaPrime.group}", gmetaPrime.sort, obsid, gmetas]
             }
             .groupTuple(by: 0)
@@ -6493,15 +6544,53 @@ workflow makeTarchives {
 
 // entrypoint: get externally preprocessed uvfits files from csv file and run qa
 workflow extPrep {
-    obsVis = channel.of(file("external${params.external_suffix}.csv"))
-        .splitCsv(header: ["obsid", "vis"])
-        .filter { !it.obsid.startsWith('#') }
-        .map { [it.obsid, file(it.vis)] }
 
-    obsids = obsVis.map { obsid, _ -> obsid }
+    def name = params.visName ?: "ssins"
+
+    channel.of(obsids_file)
+        .splitCsv()
+        .filter { line -> !line[0].startsWith('#') }
+        .map { line -> def (obsid, _) = line
+            obsid
+        }
+        .tap { obsids }
+        .map { obsid_ ->
+            def obsid = coerceList(obsid_)[0]
+            def meta = [name:name ]
+            def vis = file("${params.outdir}/${obsid}/prep/birli_${obsid}_2s_40kHz.${name}.uvfits")
+            [ obsid, deepcopy(meta), vis ]
+        }
+        .filter { _, __, vis -> vis.exists() }
+        .tap { obsMetaVis }
+
     obsids | ws
 
-    qaPrep(ws.out.obsMetafits.join(obsVis), channel.empty())
+    obsMetaVisWS = obsMetaVis.join(ws.out.obsMeta)
+        .map { obsid_, meta, vis, wsMeta ->
+            def obsid = coerceList(obsid_)[0]
+            [ obsid, deepcopy(meta) + deepcopy(wsMeta), vis ]
+        }
+
+    qaPrep(obsMetaVisWS, ws.out.obsMetafits)
+
+    ws.out.fail_codes
+        .join(qaPrep.out.fail_codes, remainder: true)
+        .map { obsid, ws_fail_code, prepqa_fail_code ->
+            [obsid, prepqa_fail_code?:ws_fail_code]
+        }
+        .tap { all_fail_codes }
+        .groupTuple(by: 1)
+        .map { obsids, fail_code ->
+            [
+                fail_code,
+                obsids.size(),
+            ].join("\t")
+        }
+        .collectFile(
+            name: "fail_counts_all.tsv", newLine: true, sort: true,
+            seed: ([ "FAIL CODE", "COUNT" ]).join("\t"),
+            storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
+        )
 
     if (!params.novideo) {
         ws.out.frame

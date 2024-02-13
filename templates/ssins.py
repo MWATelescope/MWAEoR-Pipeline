@@ -31,7 +31,8 @@ def get_parser():
     plot_group.add_argument('--plot_title', default=None,
                             help="Optional title for the plot")
     plot_group.add_argument('--guard_width', default=0, type=int,
-                            help="Guard width of RFI bands in Hz. Half a fine channel width is recommended.")
+                            help=("Guard width of RFI bands in Hz. "
+                                  "Half a fine channel width is recommended."))
     plot_group.add_argument('--sel_ants', default=[], nargs='*', type=int,
                             help="antenna indices to select")
 
@@ -43,7 +44,7 @@ def main():
     example:
 
     ```bash
-    cp /astro/mwaeor/dev/nfdata-important/1379177304/prep/birli_1379177304_2s_40kHz.uvfits .
+    cp /astro/mwaeor/dev/nfdata/1379177304/prep/birli_1379177304_2s_40kHz.uvfits .
     singularity exec \
         --bind ${PWD} --cleanenv --home /astro/mwaeor/dev/mplhome \
         /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
@@ -78,39 +79,43 @@ def main():
         "title": args.plot_title,
         "extent_time_format": "lst"
     }
+    gw = args.guard_width
     shape_dict = {
-        "DAB-5A":   [1.74160e8 - args.guard_width, 1.75696e8 + args.guard_width],
-        "DAB-5B":   [1.75872e8 - args.guard_width, 1.77408e8 + args.guard_width],
-        "DAB-5C":   [1.77584e8 - args.guard_width, 1.79120e8 + args.guard_width],
-        "DAB-5D":   [1.79296e8 - args.guard_width, 1.80832e8 + args.guard_width],
-        "DAB-6A":   [1.81168e8 - args.guard_width, 1.82704e8 + args.guard_width],
-        "DAB-6B":   [1.82880e8 - args.guard_width, 1.84416e8 + args.guard_width],
-        "DAB-6C":   [1.84592e8 - args.guard_width, 1.86128e8 + args.guard_width],
-        "DAB-6D":   [1.86304e8 - args.guard_width, 1.87840e8 + args.guard_width],
-        "DAB-7A":   [1.88160e8 - args.guard_width, 1.89696e8 + args.guard_width],
-        "DAB-7B":   [1.89872e8 - args.guard_width, 1.91408e8 + args.guard_width],
-        "DAB-7C":   [1.91584e8 - args.guard_width, 1.93120e8 + args.guard_width],
-        "DAB-7D":   [1.93296e8 - args.guard_width, 1.94832e8 + args.guard_width],
-        "DAB-8A":   [1.95168e8 - args.guard_width, 1.96704e8 + args.guard_width],
-        "DAB-8B":   [1.96880e8 - args.guard_width, 1.98416e8 + args.guard_width],
-        "DAB-8C":   [1.98592e8 - args.guard_width, 2.00128e8 + args.guard_width],
-        "DAB-8D":   [2.00304e8 - args.guard_width, 2.01840e8 + args.guard_width],
-        "DAB-9A":   [2.02160e8 - args.guard_width, 2.03696e8 + args.guard_width],
-        "DAB-9B":   [2.03872e8 - args.guard_width, 2.05408e8 + args.guard_width],
-        "DAB-9C":   [2.05584e8 - args.guard_width, 2.07120e8 + args.guard_width],
-        "DAB-9D":   [2.07296e8 - args.guard_width, 2.08832e8 + args.guard_width],
-        "DAB-10A":  [2.09168e8 - args.guard_width, 2.10704e8 + args.guard_width],
-        "DAB-10B":  [2.10880e8 - args.guard_width, 2.12416e8 + args.guard_width],
-        "DAB-10C":  [2.12592e8 - args.guard_width, 2.14128e8 + args.guard_width],
-        "DAB-10D":  [2.14304e8 - args.guard_width, 2.15840e8 + args.guard_width],
-        "DAB-11A":  [2.16160e8 - args.guard_width, 2.17696e8 + args.guard_width],
-        "DAB-11B":  [2.17872e8 - args.guard_width, 2.19408e8 + args.guard_width],
-        "DAB-11C":  [2.19584e8 - args.guard_width, 2.21120e8 + args.guard_width],
-        "DAB-11D":  [2.21296e8 - args.guard_width, 2.22832e8 + args.guard_width],
-        "DAB-12A":  [2.23168e8 - args.guard_width, 2.24704e8 + args.guard_width],
-        "DAB-12B":  [2.24880e8 - args.guard_width, 2.26416e8 + args.guard_width],
-        "DAB-12C":  [2.26592e8 - args.guard_width, 2.28128e8 + args.guard_width],
-        "DAB-12D":  [2.28304e8 - args.guard_width, 2.29840e8 + args.guard_width],
+        "DAB-5A":   [174.160e6 - gw, 175.696e6 + gw],
+        "DAB-5B":   [175.872e6 - gw, 177.408e6 + gw],
+        "DAB-5C":   [177.584e6 - gw, 179.120e6 + gw],
+        "DAB-5D":   [179.296e6 - gw, 180.832e6 + gw],
+        "DAB-6A":   [181.168e6 - gw, 182.704e6 + gw],
+        "DAB-6B":   [182.880e6 - gw, 184.416e6 + gw],
+        "DAB-6C":   [184.592e6 - gw, 186.128e6 + gw],
+        "DAB-6D":   [186.304e6 - gw, 187.840e6 + gw],
+        "DAB-7A":   [188.160e6 - gw, 189.696e6 + gw],
+        "DAB-7B":   [189.872e6 - gw, 191.408e6 + gw],
+        "DAB-7C":   [191.584e6 - gw, 193.120e6 + gw],
+        "DAB-7D":   [193.296e6 - gw, 194.832e6 + gw],
+        "DAB-8A":   [195.168e6 - gw, 196.704e6 + gw],
+        "DAB-8B":   [196.880e6 - gw, 198.416e6 + gw],
+        "DAB-8C":   [198.592e6 - gw, 200.128e6 + gw],
+        "DAB-8D":   [200.304e6 - gw, 201.840e6 + gw],
+        "DAB-9A":   [202.160e6 - gw, 203.696e6 + gw],
+        "DAB-9B":   [203.872e6 - gw, 205.408e6 + gw],
+        "DAB-9C":   [205.584e6 - gw, 207.120e6 + gw],
+        "DAB-9D":   [207.296e6 - gw, 208.832e6 + gw],
+        "DAB-10A":  [209.168e6 - gw, 210.704e6 + gw],
+        "DAB-10B":  [210.880e6 - gw, 212.416e6 + gw],
+        "DAB-10C":  [212.592e6 - gw, 214.128e6 + gw],
+        "DAB-10D":  [214.304e6 - gw, 215.840e6 + gw],
+        "DAB-11A":  [216.160e6 - gw, 217.696e6 + gw],
+        "DAB-11B":  [217.872e6 - gw, 219.408e6 + gw],
+        "DAB-11C":  [219.584e6 - gw, 221.120e6 + gw],
+        "DAB-11D":  [221.296e6 - gw, 222.832e6 + gw],
+        "DAB-12A":  [223.168e6 - gw, 224.704e6 + gw],
+        "DAB-12B":  [224.880e6 - gw, 226.416e6 + gw],
+        "DAB-12C":  [226.592e6 - gw, 228.128e6 + gw],
+        "DAB-12D":  [228.304e6 - gw, 229.840e6 + gw],
+        # packet loss
+        "PL-C":     [177.000e6 - gw, 187.000e6 + gw], # centre
+
     }
     sig_thresh = {shape: 5 for shape in shape_dict}
     sig_thresh['narrow'] = 7
@@ -120,7 +125,8 @@ def main():
     ss.read(args.uvfits, read_data=False)
 
     # discaring the first and last tiemstamp
-    times = np.unique(ss.time_array)[1:-1]
+    # times = np.unique(ss.time_array)[1:-1]
+    times = np.unique(ss.time_array)
     print(np.sort(np.unique(ss.ant_1_array)))
     kwargs = {
         "times": times,
@@ -174,10 +180,6 @@ def main():
     # uvf = UVFlag(uvd, waterfall=True, mode='flag')
     # uvf = ins_cross.flag_uvf(uvf)
     # uvutils.apply_uvflag(uvd, uvf)
-
-    # params.sky_chans.collect { ch ->
-    #          "\"\${ch}\": [\${(ch-0.51)*1.28e8}, \${(ch+0.51)*1.28e8}]".toString()
-    #      }
 
 
 if __name__ == '__main__':

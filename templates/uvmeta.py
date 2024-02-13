@@ -11,6 +11,7 @@ import numpy as np
 from math import ceil
 # from mwa_qa.read_uvfits import UVfits
 import sys
+from os.path import abspath
 from argparse import ArgumentParser
 from collections import OrderedDict, defaultdict
 import codecs
@@ -80,6 +81,8 @@ def main():
     # mwa_loc = EarthLocation.of_site('mwa')
     # times = Time(uv.unique_times, format='jd', scale='utc',
     #              location=mwa_loc, precision=3)
+
+    print(f"about to open {abspath(args.uvfits)}")
 
     with fits.open(args.uvfits) as hdus:
         vis_hdu = hdus['PRIMARY']
@@ -152,6 +155,8 @@ def main():
             print(f"{grp=}, {grp_data=}")
 
         date_cols = [col.name for col in vis_hdu.data.columns if 'DATE' in col.name]
+        print("reading time array")
+
         time_array = np.float64(vis_hdu.data[date_cols.pop()])
         if date_cols:
             time_array += np.float64(vis_hdu.data[date_cols.pop()])

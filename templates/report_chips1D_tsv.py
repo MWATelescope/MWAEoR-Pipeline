@@ -28,6 +28,12 @@ eval singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/si
 module load singularity
 singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif bash -c "pip install d3blocks; python /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/report_chips1D_tsv.py --delta-tsv /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/report_chips1D.tsv --html /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/test.html"
 ```
+
+eval singularity exec --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/ssins/ssins_latest.sif python \
+    /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/report_chips1D_tsv.py \
+        --delta-tsv /astro/mwaeor/dev/nfresults/results-test/chips1d_delta_lssa_fg_simple.tsv \
+        --html /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/chips1d_delta_lssa_fg_simple.html
+
 """
 
 import pandas as pd

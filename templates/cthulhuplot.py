@@ -115,6 +115,10 @@ def get_parser():
 
 # MWA_LOCATION = EarthLocation(lat=-26.756528*u.deg, lon=116.670810*u.deg)
 
+def sanitize_json(jstr):
+    return jstr.replace("null", 'NaN')
+
+
 def main():
 
     parser = get_parser()
@@ -158,7 +162,7 @@ def main():
     _, ext = os.path.splitext(args.offsets)
     if ext == ".json":
         with open(args.offsets, "r") as h:
-            iono_consts = json.load(h)
+            iono_consts = json.loads(sanitize_json(h.read()))
         alphas = []
         betas = []
         for src_name, consts in iono_consts.items():
