@@ -38,15 +38,21 @@ def main():
         # deal with the fact that wsclean images have extra axes other than ra/dec
         # by only grabing axes with units of 'deg'
         i = [0] * naxis
+        dims = []
         for a in range(1, naxis+1):
             unit = header.get(f'CUNIT{a}')
             dim = header.get(f'NAXIS{a}')
             type_ = header.get(f'CTYPE{a}')
             if unit == 'deg':
                 i[naxis - a] = slice(None)
+                dims.append(dim)
             elif dim > 1:
                 raise ValueError(f"Unexpected dimension {dim} for axis {a}: {type_} with unit {unit}")
-        data = hdus[0].data[i]
+        try:
+            print(f"indexing: {i}")
+            data = hdus[0].data[i]
+        except IndexError as e:
+            data = hdus[0].data.reshape(dims)
         print(f"{data.shape=}")
 
     quantiles = np.array(args.quantiles)

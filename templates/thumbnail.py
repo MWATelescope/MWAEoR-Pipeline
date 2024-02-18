@@ -229,7 +229,7 @@ def main():
         fits_base, _ = os.path.splitext(os.path.basename(args.fits))
         thumb = args.thumb or f"{fits_base}.thumb"
         plt.savefig(thumb, bbox_inches='tight',
-                    dpi=args.dpi, transparent=args.transparent, figsize=(10, 10))
+                    dpi=args.dpi, transparent=args.transparent)
 
 
 if __name__ == '__main__':

@@ -132,7 +132,7 @@ def main():
         "times": times,
     }
     if args.sel_ants:
-        kwargs["antenna_nums"] = args.sel_ants
+        kwargs["antenna_nums"] = [ ant + 1 for ant in args.sel_ants ]
     ss.read(args.uvfits, read_data=True, diff=True, **kwargs)
     ss.apply_flags(flag_choice='original')
 

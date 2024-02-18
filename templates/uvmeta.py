@@ -176,7 +176,7 @@ def main():
                 print(f"AN {key:8} => {value}")
             if dut1 := ant_hdu.header.get('UT1UTC'):
                 data['dut1'] = dut1
-            if not loc:
+            if loc is None:
                 first_xyz = ant_hdu.data['STABXYZ'][0]
                 loc = EarthLocation.from_geocentric(
                     ant_hdu.header['ARRAYX'] + first_xyz[0],

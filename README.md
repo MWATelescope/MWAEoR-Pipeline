@@ -610,6 +610,10 @@ for obsid in ...; do
 done
 ```
 
+```bash
+find ${outdir} -type d -maxdepth 2 -regextype posix-egrep -regex $'.*(cal|cal_qa|img|img_qa|iono_qa|prep_qa|vis_qa|ps_metrics).*' -exec rm -rv {} \;
+```
+
 ### download calibration solutions
 
 ```bash
