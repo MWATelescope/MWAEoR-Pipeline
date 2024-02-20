@@ -1890,10 +1890,10 @@ process chipsGrid {
 
 process chipsCombine {
     input:
-    tuple val(group), val(pol), val(meta), val(exts), path(grids)
+    tuple val(group), val(meta), val(exts), path(grids)
 
     output:
-    tuple val(group), val(pol), val(meta), path("combine_${pol}.${combined_ext}.txt"),
+    tuple val(group), val(meta), path("combine_${pol}.${combined_ext}.txt"),
         path("{vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat")
 
     storeDir "${params.outdir}/${group}/ps_metrics${params.cal_suffix}/${meta.name}"
@@ -1922,6 +1922,7 @@ process chipsCombine {
     script:
     // ext = "${group}_${meta.name}"
     combined_ext = meta.ext
+    pol = meta.pol?:"xx"
     nchans = meta.nchans
     """
     #!/bin/bash -eux
@@ -1973,7 +1974,7 @@ process chipsLssa {
 
     output:
     tuple val(group), val(meta),
-        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_{xx,yy}_${bias_mode}.iter.${ext}.dat")
+        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_${pol}_${bias_mode}.iter.${ext}.dat")
 
     storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}/${meta.name}"
 
@@ -1993,7 +1994,7 @@ process chipsLssa {
     ext = meta.ext
     nchans = meta.nchans
     eorband = meta.eorband
-    // pol = meta.pol?:"xx"
+    pol = meta.pol?:"xx"
     freq_idx_start = 0
     bias_mode = params.lssa_bias_mode
 
@@ -2009,16 +2010,14 @@ process chipsLssa {
     export OBSDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
 
-    for pol in xx yy; do
-        ${params.lssa_bin} "${ext}" "${nchans}" "${nbins}" "\${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
-            2>&1 | tee syslog_lssa_simple_\${pol}.txt
+    ${params.lssa_bin} "${ext}" "${nchans}" "${nbins}" "${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
+        2>&1 | tee syslog_lssa_simple_${pol}.txt
 
-        export cross_size="\$(stat -c%s crosspower_\${pol}_${bias_mode}.iter.${ext}.dat)"
-        if (( cross_size < 4097 )); then
-            echo "crosspower_\${pol}_${bias_mode}.iter.${ext}.dat is too small (\$cross_size), exiting"
-            exit 69
-        fi
-    done
+    export cross_size="\$(stat -c%s crosspower_${pol}_${bias_mode}.iter.${ext}.dat)"
+    if (( cross_size < 4097 )); then
+        echo "crosspower_${pol}_${bias_mode}.iter.${ext}.dat is too small (\$cross_size), exiting"
+        exit 69
+    fi
     """
 }
 
@@ -5947,28 +5946,14 @@ workflow chips {
             .filter { chunk, chunkMeta, exts, grid -> chunkMeta.name }
             .combine(pols)
             .map { chunk, chunkMeta, exts, grid, pol ->
-                [chunk, pol, chunkMeta, exts, grid.findAll { it.baseName.contains(pol) }]
+                [chunk, mapMerge(chunkMeta, [pol:pol]), exts, grid.findAll { it.baseName.contains(pol) }]
             }
+            .filter { chunk, chunkMeta, exts, grids -> grids.size() > 0 }
             | chipsCombine
 
-        chipsCombine.out
-            .map { group, pol, meta, _, grid ->
-                [group, meta.name?:'', meta, grid]
-            }
-            .groupTuple(by: 0..1)
-            .map { group, name, metas, grids ->
-                [group, metas[0], grids.flatten()]
-            }
-            // .mix(
-            //     params.lssaObs ? \
-            //         chipsGrid.out.map { obsid, meta, grid -> [obsid, meta, grid]} : \
-            //         channel.empty()
-            // )
+        chipsCombine.out.map { group, meta, _, dats -> [ group, meta, dats ] }
             | chipsLssa
-
-        chipsLssa.out.combine(pols).map { chunk, meta, grid, pol ->
-                [chunk, mapMerge(meta, [pol: pol]), grid]
-            } | chips1d_tsv
+            | chips1d_tsv
 
         chips1d_tsv.out
             .map { println("chips1d_tsv out ${it}") }
