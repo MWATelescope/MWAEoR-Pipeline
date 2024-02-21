@@ -12,6 +12,7 @@ import os
 import pandas as pd
 from argparse import ArgumentParser
 import sys
+from collections import Counter
 
 """
 ```bash
@@ -85,7 +86,7 @@ with fits.open(args.metafits) as meta:
 
 cchan_bandwidth = bandwidth / num_cchans
 
-for path in args.uvfits:
+def uvdata(data, path):
     with fits.open(path) as uv:
         vis_hdu = uv['PRIMARY']
 
@@ -100,15 +101,25 @@ for path in args.uvfits:
         #         print(EarthLocation.get_site_names())
 
         # baselines
-
-        baseline_array = np.int16(vis_hdu.data["BASELINE"])
+        try:
+            baseline_array = np.int16(vis_hdu.data["BASELINE"])
+        except (ValueError, KeyError):
+            # use the ANTENNA1, ANTENNA2 columns instead
+            baseline_array = np.int16(vis_hdu.data["ANTENNA1"] * 256 + vis_hdu.data["ANTENNA2"])
         unique_baselines = np.unique(baseline_array)
         num_blts = len(baseline_array)
         num_bls = len(unique_baselines)
         data['num_baselines'] = num_bls
 
-        # times
+        num_times = num_blts / num_bls
 
+        # channels
+
+        num_chans = vis_hdu.header['NAXIS4']
+        freq_res = vis_hdu.header['CDELT4'] * u.Hz
+        data['num_chans'] = num_chans
+
+        # times
         date_cols = [col.name for col in vis_hdu.data.columns if 'DATE' in col.name]
         time_array = np.sum(np.stack([
             np.float64(vis_hdu.data[date_col])
@@ -116,27 +127,31 @@ for path in args.uvfits:
         ], axis=1), axis=1)
         unique_times = np.sort(np.unique(time_array))
         print(unique_times)
+
+        try:
+            assert num_blts == num_bls * len(unique_times), f'{num_blts=} != {num_bls=} * {num_times=}'
+        except AssertionError as exc:
+            print(exc)
+            return data
+
         timestep_idx_array = np.searchsorted(unique_times, time_array)
         num_times = len(unique_times)
         data['num_times'] = num_times
-        assert num_blts == num_bls * num_times, \
-            f'{num_blts=} != {num_bls=} * {num_times=}'
-
         print(f"{num_times,num_bls,num_blts=}")
 
-        # channels
-
-        num_chans = vis_hdu.header['NAXIS4']
-        freq_res = vis_hdu.header['CDELT4'] * u.Hz
-        data['num_chans'] = num_chans
         # number of fine chans per coarse
-        num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
-        num_cchans = num_chans // num_fchans
-        print(f"{num_chans,num_cchans,num_fchans=}")
+        num_cchans = num_chans // ceil((cchan_bandwidth / freq_res).decompose().value)
+        if num_cchans == 0:
+            num_fchans = num_chans
+        else:
+            num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
 
-        vis_shape = vis_hdu.data.data.shape
-        assert vis_shape[0] == num_blts, f'{vis_shape[0]=} != {num_blts=}'
-        assert vis_shape[3] == num_chans, f'{vis_shape[3]=} != {num_chans=}'
+        vis = vis_hdu.data.data[...]
+        while len(vis.shape) > 6:
+            vis = vis[:, 0, ...]
+
+        assert vis.shape[0] == num_blts, f'{vis.shape[0]=} != {num_blts=}'
+        assert vis.shape[3] == num_chans, f'{vis.shape[3]=} != {num_chans=}'
 
         # weights / flags
         # assumption: vis data axes 1,2 (ra/dec?) are not used
@@ -201,6 +216,9 @@ for path in args.uvfits:
             total_rfi_occupancy /= num_unflagged_cchans
         data['total_rfi_occupancy'] = total_rfi_occupancy
 
+meta = data.copy()
+for path in args.uvfits:
+    data = uvdata(meta.copy(), path)
     basename = os.path.basename(path)
     basename, _ = os.path.splitext(basename)
     with open(f"occupancy_{basename}.json", 'w') as out:
