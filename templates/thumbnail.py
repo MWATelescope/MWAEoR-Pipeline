@@ -93,7 +93,11 @@ def main():
         args = parser.parse_args()
     else:
         # is being called directly from nextflow with args ${args}
-        args = parser.parse_args(shlex.split('${argstr}'))
+        argv = shlex.split('${argstr}')
+        for i, arg in enumerate(argv):
+            if (arg[0] == '-') and arg[1].isdigit(): argv[i] = ' ' + arg
+        print(repr(argv))
+        args = parser.parse_args(argv)
 
     print(f"{args=}")
 
