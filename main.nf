@@ -277,9 +277,25 @@ process birliPrepUV {
         args['no-rfi'] = null
         suffix += '_norfi'
     }
+    if (params.prep_pc != null) {
+        // --phase-centre <RA> <DEC>
+        args['phase-centre'] = params.prep_pc
+    }
+    if (params.prep_edge_width != null) {
+        args['flag-edge-width'] = params.prep_edge_width
+        suffix += "_edg${params.prep_edge_width}"
+    }
     meta['birli_args'] = args
     meta['birli_suffix'] = suffix
-    argstr = args.collect { k, v -> v!=null ? (''+"--${k}=${v}") : (''+"--${k}") }.join(' ');
+    argstr = args.collect { k, v ->
+            if (v == null) {
+                ['--'+k]
+            } else {
+                ['--'+k] + v
+            }
+        }
+        .flatten()
+        .join(' ');
     uvfits = ''+"${prefix}${obsid}${suffix}*.uvfits"
     """
     set -eux
@@ -289,6 +305,127 @@ process birliPrepUV {
         -m "${metafits}" \
         ${raw}
     """
+}
+
+workflow extRaw {
+
+    channel.of(obsids_file)
+        .splitCsv()
+        .filter { line -> !line[0].startsWith('#') }
+        .map { line ->
+            def (obsid, _) = line
+            obsid
+        }
+        .unique()
+        .map { obsid_ ->
+            def obsid = coerceList(obsid_)[0]
+            def meta = [obsid: obsid]
+            // def raw = file("${params.outdir}/../raw/${obsid}_2?????????????_ch???_???.fits")
+            def raw = file("${params.outdir}/../raw/${obsid}_2?????????????_ch???_???.fits")
+            [ obsid, deepcopy(meta), raw ]
+        }
+        .filter { _, __, raw_ ->
+            def raw = coerceList(raw_)
+            raw.size() && raw.every{
+                if (!it.exists()) { print("raw does not exist: ${it}") }
+                it.exists()
+            }
+        }
+        .tap { obsMetaRaw }
+        .map { obsid, meta, raw -> obsid }
+        .tap { obsids }
+
+    obsids | ws
+
+    obsWsmetaVis = obsMetaRaw.join(ws.out.obsMeta).join(ws.out.obsMetafits)
+        .map { obsid, meta, vis, wsMeta, metafits ->
+            [ obsid,  mapMerge(meta, wsMeta), metafits, vis ]
+        }
+        | birliPrepUV
+
+    birliPrepUV.out.flatMap { obsid, meta, uvfits ->
+            coerceList(uvfits).collect { f ->
+                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
+            }
+        }
+        .tap { subobsVis }
+        | uvMeta
+
+    ws.out.obsMeta.cross(uvMeta.out) { it[0] }
+        .map { obsMeta_, uvMeta_ ->
+            def (obsid, wsMeta) = obsMeta_
+            def (_, meta_, uvJson) = uvMeta_
+            def uvmeta = parseJson(uvJson)
+            def newMeta = [
+                lowfreq: uvmeta.freqs[0],
+                freq_res: (uvmeta.freqs[1] - uvmeta.freqs[0]),
+                nchans: (uvmeta.freqs?:[]).size(),
+                ntimes: (uvmeta.times?:[]).size(),
+            ]
+            ['config', 'eorband', 'num_ants', 'total_weight'].each { key ->
+                if (uvmeta[key] != null) {
+                    newMeta[key] = uvmeta[key]
+                }
+            }
+            if (newMeta.ntimes > 0) {
+                newMeta.lst = Math.toDegrees(uvmeta.times[0].lst_rad)
+            }
+            [obsid, mapMerge(mapMerge(meta_, wsMeta), newMeta)]
+        }
+        .tap { subobsMeta }
+        .cross(subobsVis) { def (obsid, meta) = it; [obsid, meta.subobs?:''] }
+        .map { subobsMeta_, subobsVis_ ->
+            def (obsid, meta) = subobsMeta_
+            def (_, __, uvfits) = subobsVis_
+            [obsid, meta, uvfits]
+        }
+        .tap { subobsMetaVis }
+
+    subobsMetaVis | ssins
+
+    flag(obsWsmetaVis, ws.out.obsMetafits)
+
+    flag.out.subobsMetaPass.map { obsid, meta -> [[obsid, meta.subobs?:''], meta] }
+        .join(obsWsmetaVis.map { obsid, meta, uvfits -> [[obsid, meta.subobs?:''], uvfits] })
+        // .join(flag.out.subobsMetaRxAnts.map { obsid, meta, rxAnts -> [[obsid, meta.subobs?:''], rxAnts] })
+        .map { obsSubobs, meta, uvfits ->
+            def (obsid, _) = obsSubobs
+            [obsid, meta, uvfits]
+        }
+        .tap { subobsFlagmetaVis }
+
+    qaPrep( subobsFlagmetaVis, ws.out.obsMetafits )
+    // subobsMetaVis.mix(qaPrep.out.obsMetaUVPass) | ssins
+
+    ws.out.frame.mix(flag.out.frame).mix(qaPrep.out.frame)
+        .mix(
+            ssins.out.flatMap { _, __, ___, imgs, ____ ->
+                imgs.collect { img ->
+                    def tokens = coerceList(img.baseName.split('_') as ArrayList)
+                    def suffix = tokens[-1]
+                    if (suffix == "SSINS") {
+                        try {
+                            prefix = tokens[-2]
+                        } catch (Exception e) {
+                            prefix = ''
+                            println(tokens)
+                            throw e
+                        }
+                        ["ssins_${prefix}", img]
+                    } else {
+                        try {
+                            prefix = tokens[-3]
+                        } catch (Exception e) {
+                            prefix = ''
+                            println(tokens)
+                            throw e
+                        }
+                        ["ssins_${prefix}_${suffix}", img]
+                    }
+                }
+            }.groupTuple()
+        )
+        .map { n, l -> [n, l as ArrayList] } | makeVideos
 }
 
 
@@ -313,7 +450,7 @@ workflow extCache {
 
     birliPrepUV.out.flatMap { obsid, meta, uvfits ->
             uvfits.collect { f ->
-                [obsid, mapMerge(meta + [subobs: f.baseName.split('_')[-1]]), f]
+                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
             }
         }
         .tap { subobsVis }
@@ -349,6 +486,8 @@ workflow extCache {
         }
 
     qaPrep( subobsMetaVis, ws.out.obsMetafits )
+
+    qaPrep.out.frame | makeVideos
 
 }
 
