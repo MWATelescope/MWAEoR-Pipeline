@@ -60,8 +60,6 @@ else:
         "--metafits=${metafits}",
     ])
 
-total_occupancy = 0
-total_rfi_occupancy = 0
 data = {'channels': {}}
 if args.obsid is not None:
     data['obsid'] = int(args.obsid)
@@ -87,6 +85,9 @@ with fits.open(args.metafits) as meta:
 cchan_bandwidth = bandwidth / num_cchans
 
 def uvdata(data, path):
+    total_occupancy = 0
+    total_occupancy = 0
+    total_rfi_occupancy = 0
     with fits.open(path) as uv:
         vis_hdu = uv['PRIMARY']
 
@@ -215,6 +216,7 @@ def uvdata(data, path):
         if num_unflagged_cchans:
             total_rfi_occupancy /= num_unflagged_cchans
         data['total_rfi_occupancy'] = total_rfi_occupancy
+    return data
 
 meta = data.copy()
 for path in args.uvfits:

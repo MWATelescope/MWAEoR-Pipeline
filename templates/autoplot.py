@@ -164,7 +164,7 @@ def autoplot(args):
         print(f"quack_scans={quack_scans}, edge_chans={edge_chans}")
         autos2[:quack_scans, :, :, :] = np.nan
 
-        flagged_tile_idxs = np.array([], dtype=np.bool)
+        flagged_tile_idxs = np.array([], dtype=bool)
         if args.sel_ants is None:
             flagged_tile_idxs = np.where(metafits_ants['Flag'].values == 1)[0]
         autos2[:, flagged_tile_idxs, :, :] = np.nan
