@@ -122,6 +122,27 @@ process wsMetafits {
     """
 }
 
+process fixMetafits {
+    input:
+    tuple val(obsid), val(meta), path(metafits_orig)
+    output:
+    tuple val(obsid), path(metafits_fixed)
+
+    storeDir "${params.outdir}/${obsid}/raw"
+    label "mwax_mover"
+    tag "${obsid}"
+
+    script:
+    metafits_fixed = metafits_orig.baseName + "_fixed.metafits"
+    """
+    #!/bin/bash -eux
+    python /app/scripts/update_cable_lengths.py \
+        --name "picket${prep_name}${model_name}" \
+        --mwax \
+        --metafits "$metafits_orig"
+    """
+}
+
 process wsSkyMap {
     input:
     val(obsid)
@@ -617,6 +638,8 @@ process flagQA {
     storeDir "${params.outdir}/${obsid}/prep_qa"
 
     tag "${base}"
+
+    errorStrategy "terminate"
 
     label "python"
     label "nvme"
@@ -1567,6 +1590,7 @@ process plotPrepVisQA {
 
     label "python"
     time {5.minute * task.attempt}
+    when: !params.noplotprepqa
 
     script:
     base = ''+"prepvis_metrics_${metrics.baseName}"
@@ -1589,7 +1613,7 @@ process plotSols {
     label "hyperdrive"
 
     script:
-    plots_glob = ''+"${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}*_${meta.name}_{phases,amps}.png"
+    plots_glob = ''+"${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}*_${meta.name}_{phases,amps}*.png"
     """
     ${params.hyperdrive} solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
     """
@@ -1788,6 +1812,8 @@ process wscleanDConv {
     label "nvme"
     stageInMode "symlink"
 
+    errorStrategy "terminate"
+
     time { [23.hour, 1.hour * (1 + (multiplier * pix_mult * chan_mult * iter_mult * inter_mult))].min() }
 
     script:
@@ -1808,7 +1834,7 @@ process wscleanDConv {
     iter_mult = 1 + Math.sqrt(img_params.niter as Double) / 1000
     vis_ms = vis.collect {''+"${it.baseName}.ms"}
     vis = vis.collect()
-    img_glob = ''+img_params.glob?:''
+    img_glob = ''+(img_params.glob?:'')
     if (img_glob == '') {
         img_glob = "wsclean_${img_name}"
         if (multiinterval && !meta.inter_tok) {
@@ -1859,7 +1885,6 @@ process wscleanDConv {
         -mgain ${img_params.major_clean_gain} -gain ${img_params.minor_clean_gain} \
         -auto-threshold ${img_params.auto_threshold} -auto-mask ${img_params.auto_mask} \
         -mwa-path ${img_params.mwa_path} \
-        -circular-beam \
         """ + ((meta.interval) ? "-interval ${meta.interval[0]} ${meta.interval[1]}" : "") + """ \
         """ + ((meta.chan) ? "-channel-range ${meta.chan[0]} ${meta.chan[1]}" : "") + """ \
     """ + vis_ms.join(' ')
@@ -2496,7 +2521,7 @@ process plotCalJsons {
     output:
         path("cal_qa*.png")
 
-    storeDir "${results_dir}${params.cal_suffix}"
+    publishDir "${results_dir}${params.cal_suffix}", mode: 'copy', overwrite: true
     stageInMode "symlink"
 
     label "python"
@@ -2643,6 +2668,7 @@ process ffmpeg {
 
     time 1.hour
 
+    when: !params.novideo
     script:
     dot_cachebust = ".${name}.${cachebust}.cachebust"
     """
@@ -2888,7 +2914,7 @@ def prepqa_pass(flagMeta) {
         reasons += "prep_status=${flagMeta.prep_status}"
         fail_code = fail_code==0x00 ? 0x37 : fail_code
     }
-    // [n_tiles:128, bad_ants:[15, 101], manual_ants:[14, 24, 25, 13, 41, 56], prepFlags:[13, 14, 24, 25, 41, 91]]
+
     if (params.filter_bad_tile_frac != null && flagMeta.n_tiles != null && (flagMeta.prepFlags?:[]).size() > 0) {
         // print("prepqa_pass filter_bad_tile_frac=${params.filter_bad_tile_frac} n_tiles=${flagMeta.n_tiles} flagAnts=${flagMeta.flagAnts?:[]} prepFlags=${flagMeta.prepFlags?:[]}")
         def n_tiles = flagMeta.n_tiles
@@ -3398,7 +3424,7 @@ workflow ws {
                 tile_updates.each {
                     def (firstObsid, lastObsid, tileIdxs, comment) = it
                     if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
-                        manualAnts.addAll(tileIdxs)
+                        manualAnts.addAll(tileIdxs.findAll { it < n_tiles })
                     }
                 }
                 // manualAnts.removeAll((bad_ants) as Set)
@@ -3714,7 +3740,8 @@ workflow ws {
                 "ew_pointing", "centre_freq",
                 "n_tiles", "bad_ants", "manual_ants", "tile_nums",
                 "eorband", "eorfield", "lst", "int_time", "freq_res",
-                "ra_phase_center", "dec_phase_center"
+                "ra_phase_center", "dec_phase_center",
+                "coarse_chans"
             ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
@@ -4085,6 +4112,7 @@ workflow prep {
                 imgs.collect { img ->
                     def tokens = coerceList(img.baseName.split('_') as ArrayList)
                     def suffix = tokens[-1]
+                    def prefix = null
                     if (suffix == "SSINS") {
                         try {
                             prefix = tokens[-2]
@@ -4093,7 +4121,7 @@ workflow prep {
                             println(tokens)
                             throw e
                         }
-                        ["ssins_${prefix}", img]
+                        [''+"ssins_${prefix}", img]
                     } else {
                         try {
                             prefix = tokens[-3]
@@ -4102,7 +4130,7 @@ workflow prep {
                             println(tokens)
                             throw e
                         }
-                        ["ssins_${prefix}_${suffix}", img]
+                        [''+"ssins_${prefix}_${suffix}", img]
                     }
                 }
             })
@@ -4488,10 +4516,10 @@ workflow flag {
         frame = plotPrepVisQA.out.flatMap { _, __, imgs ->
                 imgs.collect { img ->
                     def suffix = img.baseName.split('_')[-1]
-                    ["prepvisqa_${suffix}", img]
+                    [''+"prepvisqa_${suffix}", img]
                 }
             }
-            .mix(autoplot.out.map {_, meta, img -> ["prepvisqa_autoplot${meta.suffix?:''}", img]})
+            .mix(autoplot.out.map {_, meta, img -> [''+"prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
         archive = channel.empty() // TODO: archive flag jsons
         zip = prepVisQA.out.map { _, __, json -> ["prepvisqa", json]}
@@ -4830,8 +4858,13 @@ workflow cal {
         frame = plotCalQA.out.mix(plotSols.out)
             .flatMap { _, meta, pngs ->
                 coerceList(pngs).collect { png ->
-                    suffix = png.baseName.split('_')[-1]
-                    ["calqa_${meta.name}_${suffix}", png]
+                    def tokens = png.baseName.split('_').collect()
+                    def suffix = tokens.removeLast()
+                    if(suffix =~ /\d+/) {
+                        // def timeblock = suffix
+                        suffix = tokens.removeLast()
+                    }
+                    [''+"calqa${params.cal_suffix?:''}_${meta.name}_${suffix}", png]
                 }
             }
             .mix(phaseFits.out.flatMap { _, meta, __, pngs ->
@@ -5095,18 +5128,18 @@ workflow uvfits {
         frame = plotVisQA.out
             .flatMap { _, meta, pngs ->
                 coerceList(pngs).collect { png ->
-                    suffix = png.baseName.split('_')[-1]
-                    ["visqa_${meta.name}_${suffix}", png]
+                    def suffix = png.baseName.split('_')[-1]
+                    [''+ "visqa_${meta.name}_${suffix}", png]
                 }
             }
             .mix(uvPlot.out.flatMap {_, name, pngs -> coerceList(pngs).collect { png ->
-                pol = png.baseName.split('_')[-2..-1].join('_')
-                ["visqa_${name}_${pol}", png]
+                def pol = png.baseName.split('_')[-2..-1].join('_')
+                [''+"visqa_${name}_${pol}", png]
             }})
             .mix(delaySpec.out.map { _, meta, png -> ["visqa_dlyspec_${meta.name}", png] })
             .groupTuple()
         // channel of files to zip
-        zip = visQA.out.map { _, meta, json -> ["visqa_${meta.name}", json] }
+        zip = visQA.out.map { _, meta, json -> [''+"visqa_${meta.name}", json] }
             .groupTuple()
         obsMetaUVPass = obsMetaUVPass_
         fail_codes = fail_codes.filter { obsid, fail_code -> fail_code != failCodes[0x00] }
@@ -5222,13 +5255,13 @@ workflow img {
                 }
                 .flatMap {obsid, meta, vis, imgParams_, dirtyImgs ->
                     [
-                        // ["", "i"],
-                        ["-{XX,YY}", "xx,yy -join-polarizations"],
+                        ["", "i"],
+                        // ["-{XX,YY}", "xx,yy -join-polarizations"],
                         // "IQUV_join": [glob: "-{I,Q,U,V}", pol: "IQUV", join_pols: true, idg: true], // Interested in all stokes parameter, cleaning each polarization in a joined way
                         // ["-{I,Q,U,V}", "IQUV -join-polarizations -grid-with-beam -use-idg -idg-mode cpu -pb-undersampling 4 -mwa-path /astro/mwaeor/jline/software/"], // Interested in all stokes parameter, cleaning each polarization in a joined way
                         // "QU_sq": [glob: "-{Q,U}", pol: "q,u", join_pols: true, sq_chan_join: true ],
                         // ["-{Q,U}", "q,u -join-polarizations -squared-channel-joining "],
-                        ["-{I,V}", "i,v -join-polarizations"],
+                        // ["-{I,V}", "i,v -join-polarizations"],
                         // ["-{XX,YY,XY,XYi}", "xx,xy,yx,yy -link-polarizations xx,yy"],
                         // todo: qu mostly just times out
                         // ["-{Q,U}", "q,u -join-polarizations -squared-channel-joining"],
@@ -5565,7 +5598,7 @@ workflow img {
                 def (_, imgMeta, img) = obsMetaImgMfs_
                 [obsid, meta.name, meta, imgMeta, img]
             }
-            .filter { obsid, name, meta, imgMeta, img -> ['XX', 'YY', 'V'].contains(imgMeta.pol)}
+            // .filter { obsid, name, meta, imgMeta, img -> ['XX', 'YY', 'V'].contains(imgMeta.pol)}
             .groupTuple(by: 0..1)
             .map { obsid, _, metas, imgMetas, imgs -> [obsid, metas[0], imgMetas, imgs] }
             // | view { def (obsid, meta) = it; "obsMetaImgGroup ${obsid}, ${meta.name}"}
@@ -5747,10 +5780,10 @@ workflow img {
             .mix( imgQA.out.map { _, __, json -> ["imgqa", json]} )
         // channel of video name and frames to convert
         frame = polComp.out.map { _, meta, png ->
-                ["imgqa_${meta.name}_polcomp_${meta.prod}_${meta.orderName}", png]
+                [''+"imgqa_${meta.name}_polcomp_${meta.prod}_${meta.orderName}", png]
             }
             .mix(polMontage.out.map { _, meta, png ->
-                ["imgqa_${meta.name}_polmontage", png]
+                [''+"imgqa_${meta.name}_polmontage", png]
             })
             .mix(thumbnail.out.flatMap { obsid, meta, png ->
                 frames_ = []
@@ -5921,7 +5954,7 @@ workflow imgCombine {
                     meta.name =~ /ionosub/
                 }
                 .map { group, meta, png ->
-                    ["imgCombine_${group}_${meta.name}", png]
+                    [''+"imgCombine_${group}_${meta.name}", png]
                 }
             }
         else {
@@ -6376,12 +6409,12 @@ workflow chips {
     emit:
         frame = chipsPlot.out
             .flatMap { _, meta, pngs ->
-                suffix = ""
+                def suffix = ""
                 if (meta.nobs > 1) {
                     suffix = "_x" + sprintf("%04d", meta.nobs)
                 }
                 coerceList(pngs).collect { png ->
-                    ["${meta.plot_name}_${meta.name}${suffix}", png]
+                    [''+"${meta.plot_name}_${meta.name}${suffix}", png]
                 }
             }.groupTuple()
 }
@@ -6966,6 +6999,7 @@ workflow qaPrep {
         }
 
     emit:
+        obsMetaUVPass
         frame = cal.out.frame
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
@@ -7003,10 +7037,10 @@ workflow makeVideos {
         frame
     emit:
         videos = frame.map { name, frames_ ->
-                frames = coerceList(frames_).flatten()
-                latest = frames.collect { it.lastModified() }.max()
-                cachebust = "${latest}_x" + sprintf("%04d", frames.size())
-                sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort(false)
+                def frames = coerceList(frames_).flatten()
+                def latest = frames.collect { it.lastModified() }.max()
+                def cachebust = "${latest}_x" + sprintf("%04d", frames.size())
+                def sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort(false)
                 [name, sorted, cachebust]
             }
             | ffmpeg
@@ -7044,12 +7078,19 @@ workflow extPrep {
         .map { obsid_ ->
             def obsid = coerceList(obsid_)[0]
             def meta = [name:name, cal_prog:cal_prog, obsid: obsid]
-            def vis = file("${params.outdir}/${obsid}/prep/birli_${obsid}_2s_40kHz.${name}.uvfits")
+            // def vis = file("${params.outdir}/${obsid}/prep/birli_${obsid}_2s_40kHz.${name}.uvfits")
+            def vis = file("${params.outdir}/../prep/${obsid}.uvfits")
             [ obsid, deepcopy(meta), vis ]
         }
-        .filter { _, __, vis -> vis.exists() }
+        .filter { _, __, vis_ ->
+            def vis = coerceList(vis_)
+            vis.size() && vis.every{
+                if (!it.exists()) { print("vis does not exist: ${it}") }
+                it.exists()
+            }
+        }
         .tap { obsMetaVis }
-        .map { obsid, meta, vis -> obsid }
+        .map { obsid, _, __ -> obsid }
         .tap { obsids }
 
     obsids | ws
