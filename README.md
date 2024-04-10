@@ -507,6 +507,12 @@ giant-squid list --states=Error -j | jq -r 'to_entries[]|[.value.obsid,.key]|@ts
 done
 ```
 
+### get obsids that should be cancelled
+
+```bash
+comm -12 /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/obsids-eor0high-failprep.csv <(/pawsey/mwa/software/python3/giant-squid/v0.8.0/giant-squid list --states=queued --json | /pawsey/mwa/mwaeor/dev/bin/jq -r '.[]|.obsid' | sort) > obsids-cancel.csv
+```
+
 ## handy storage commands
 
 ### get disk usage of each stage
@@ -526,6 +532,8 @@ export outdir="/data/curtin_mwaeor/data"
 # export outdir="/astro/mwaeor/dev/nfdata"
 # downloaded, preprocessed.
 find $outdir -type f -path '*/prep/birli_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded.csv | tee /dev/stderr | wc -l
+# downloaded, absolved
+find $outdir -type f -path '*/prep/birli_*.ssins.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded-absolved.csv | tee /dev/stderr | wc -l
 # calibrated
 find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv | tee /dev/stderr | wc -l
 # iono peeled
@@ -611,10 +619,45 @@ done
 ```
 
 ```bash
-find ${outdir} -type d -maxdepth 2 -regextype posix-egrep -regex $'.*(cal|cal_qa|img|img_qa|iono_qa|prep_qa|vis_qa|ps_metrics).*' -exec rm -rv {} \;
+find ${outdir} -type d -maxdepth 2 -regextype posix-egrep -regex $'.*[0-9]{10}/(cal|cal_qa|img|img_qa|iono_qa|prep_qa|vis_qa|ps_metrics).*' -exec rm -rv {} \;
 ```
 
-### download calibration solutions
+### download prep to outdir by suffix
+
+the fast way
+
+```bash
+salloc --nodes=1 --mem=50G --time=23:55:00 --partition=copyq --account=mwaeor --tasks 1 --cpus-per-task=10
+/pawsey/mwa/mwaeor/dev/bin/rclone copy mwaeor:high0.prep $outdir/tmp/ --transfers 10 --include 'birli_13*_2s_40kHz.uvfits' --progress
+```
+
+the more readable way
+
+```bash
+export suffix="_2s_40kHz.ssins.uvfits"
+# export suffix="_2s_40kHz.uvfits"
+
+module load rclone
+# get files on acacia
+rclone ls mwaeor:high0.prep --include "*${suffix}" | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-${suffix}.csv
+
+# get obsids we care about
+comm -12 <(sort obsids-eor0high-nodrift.csv) obsids-acacia-prep-${suffix}.csv | tee obsids-tmp.csv
+
+# get already downloaded files
+find $outdir -type f -path "*/prep/*${suffix}" -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-downloaded-prep-${suffix}.csv
+
+# download files not already on disk
+cd $outdir
+while read -r obsid; do
+  mkdir -p ${obsid}/prep/
+  echo ${outdir}/${obsid}/prep/birli_${obsid}_2s_40kHz.ssins.uvfits
+  rclone copy mwaeor:high0.prep/birli_${obsid}_2s_40kHz.ssins.uvfits ${outdir}/${obsid}/prep/ --progress --stats-one-line
+done < <(comm -23 obsids-tmp.csv obsids-downloaded-prep-${suffix}.csv)
+# done < <(comm -23 obsids-acacia-prep-${suffix}.csv obsids-downloaded-prep-${suffix}.csv)
+```
+
+### download calibration solutions to outdir
 
 ```bash
 module load rclone
@@ -680,6 +723,13 @@ list buckets
 
 ```bash
 rclone lsd mwaeor:
+```
+
+list obsids of prep files
+
+```bash
+rclone ls mwaeor:high0.prep --include '*_2s_40kHz.ssins.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.ssins.csv
+rclone ls mwaeor:high0.prep --include '*_2s_40kHz.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.csv
 ```
 
 ### Carta

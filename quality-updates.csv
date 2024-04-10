@@ -1,18 +1,3 @@
-# 1088200416,2,fully flagged
-# 1088200536,2,?
-# 1088200656,2,fully flagged
-# 1088200776,2,fully flagged
-# 1088200904,2,fully flagged
-# 1088201024,2,fully flagged
-# 1088201144,2,fully flagged
-# 1088201264,2,fully flagged
-# 1088201392,2,fully flagged
-# 1088201512,2,fully flagged
-# 1088201632,2,fully flagged
-# 1088201752,2,fully flagged
-# 1088201880,2,fully flagged
-# 1088202000,2,?
-# 1088202120,2,fully flagged
 1059500328,2,fully flagged
 1059500448,2,fully flagged
 1059500568,2,fully flagged
@@ -186,6 +171,10 @@
 1065458704,2,ends early
 1065458824,2,ends early
 1066576032,2,FitsError252
+1088192848,2,fully flagged
+1088194432,2,fully flagged
+1088194560,2,fully flagged
+1088194680,2,fully flagged
 1088194920,2,fully flagged
 1088195168,2,fully flagged
 1088195288,2,fully flagged
@@ -207,10 +196,12 @@
 1088197488,2,fully flagged
 1088197608,2,fully flagged
 1088197728,2,fully flagged
+1088197848,2,fully flagged
 1088197976,2,fully flagged
 1088198096,2,fully flagged
 1088198216,2,fully flagged
 1088198336,2,fully flagged
+1088198464,2,fully flagged
 1088198584,2,ends early
 1088198704,2,ends early
 1088198824,2,ends early
@@ -227,6 +218,7 @@
 1088200168,2,ends early
 1088200288,2,ends early
 1088200416,2,fully flagged
+1088200536,2,fully flagged
 1088200656,2,fully flagged
 1088200776,2,fully flagged
 1088200904,2,fully flagged
@@ -238,6 +230,7 @@
 1088201632,2,fully flagged
 1088201752,2,fully flagged
 1088201880,2,fully flagged
+1088202000,2,fully flagged
 1088202120,2,fully flagged
 1088202240,2,ends early
 1088202368,2,ends early
@@ -247,6 +240,18 @@
 1088202856,2,ends early
 1088202976,2,ends early
 1088203096,2,ends early
+1088451216,2,Inconsistent TIME header
+1088451344,2,Inconsistent TIME header
+1088451464,2,Inconsistent TIME header
+1088451584,2,Inconsistent TIME header
+1088451704,2,inconsistent TIME header
+1088452072,2,Inconsistent TIME header
+1088452440,2,Inconsistent TIME header
+1088452560,2,Inconsistent TIME header
+1088452680,2,Inconsistent TIME header
+1088452808,2,Inconsistent TIME header
+1088452928,2,Inconsistent TIME header
+1088453168,2,Inconsistent TIME header
 1088453416,2,inconsistent TIME header
 1088453536,2,inconsistent TIME header
 1088453656,2,inconsistent TIME header
@@ -425,6 +430,14 @@
 1088893144,2,Inconsistent TIME header
 1088893264,2,Inconsistent TIME header
 1088893384,2,Inconsistent TIME header
+1088894240,2,inconsistent TIME header
+1089140528,2,inconsistent TIME header
+1089141016,2,inconsistent TIME header
+1089141144,2,inconsistent TIME header
+1089141264,2,inconsistent TIME header
+1089141752,2,inconsistent TIME header
+1089142240,2,inconsistent TIME header
+1089142360,2,inconsistent TIME header
 1089142728,2,Inconsistent TIME header
 1089142848,2,Inconsistent TIME header
 1089142968,2,Inconsistent TIME header
@@ -501,6 +514,14 @@
 1089151632,2,inconsistent TIME header
 1089151752,2,inconsistent TIME header
 1089151880,2,inconsistent TIME header
+1089152000,2,inconsistent TIME header
+1089152248,2,inconsistent TIME header
+1089152368,2,inconsistent TIME header
+1089152856,2,Inconsistent TIME header
+1089153096,2,inconsistent TIME header
+1089153224,2,inconsistent TIME header
+1089153344,2,inconsistent TIME header
+1089153464,2,inconsistent TIME header
 1089662152,2,Inconsistent TIME header
 1089662272,2,Inconsistent TIME header
 1089662400,2,Inconsistent TIME header
@@ -557,6 +578,11 @@
 1089668616,2,Inconsistent TIME header
 1089668744,2,Inconsistent TIME header
 1089668864,2,Inconsistent TIME header
+1089668984,2,inconsistent TIME header
+1089669472,2,inconsistent TIME header
+1089670696,2,inconsistent TIME header
+1089670816,2,Inconsistent TIME header
+1089670936,2,Inconsistent TIME header
 1089750880,2,Inconsistent TIME header
 1089751000,2,Inconsistent TIME header
 1089751120,2,Inconsistent TIME header
@@ -592,6 +618,9 @@
 1089754784,2,Inconsistent TIME header
 1089754904,2,Inconsistent TIME header
 1089755024,2,Inconsistent TIME header
+1089755512,2,Inconsistent TIME header
+1089756128,2,inconsistent TIME header
+1089757104,2,inconsistent TIME header
 1089839728,2,ends early
 1090091512,2,ends early
 1090091872,2,ends early
@@ -616,11 +645,9 @@
 1090440312,2,Inconsistent TIME header
 1090440432,2,Inconsistent TIME header
 1090440560,2,Inconsistent TIME header
-1090440560,2,Inconsistent TIME header
 1090440680,2,Inconsistent TIME header
 1090440800,2,Inconsistent TIME header
 1090440920,2,Inconsistent TIME header
-1090441048,2,Inconsistent TIME header
 1090441048,2,Inconsistent TIME header
 1090441168,2,Inconsistent TIME header
 1090441288,2,Inconsistent TIME header
@@ -649,6 +676,14 @@
 1090444096,2,Inconsistent TIME header
 1090444216,2,inconsistent TIME header
 1090444336,2,inconsistent TIME header
+1090444464,2,inconsistent TIME header
+1090444824,2,inconsistent TIME header
+1090444952,2,inconsistent TIME header
+1090445072,2,inconsistent TIME header
+1090445312,2,inconsistent TIME header
+1090445928,2,inconsistent TIME header
+1090446048,2,inconsistent TIME header
+1090446296,2,inconsistent TIME header
 1092072248,2,Inconsistent TIME header
 1092072368,2,Inconsistent TIME header
 1092072488,2,Inconsistent TIME header
@@ -666,7 +701,6 @@
 1092073952,2,Inconsistent TIME header
 1092074072,2,Inconsistent TIME header
 1092074200,2,Inconsistent TIME header
-1092074320,2,Inconsistent TIME header
 1092074320,2,Inconsistent TIME header
 1092074440,2,Inconsistent TIME header
 1092074568,2,Inconsistent TIME header
@@ -754,12 +788,18 @@
 1093969440,2,ends early
 1127146616,2,ends early
 1128522920,2,ends early
+1226230488,2,1226230488_20181114113433_gpubox24_00.fits HDU 15: FitsError107
+1226921720,2,1226921720_20181122113505_gpubox24_00.fits HDU 7: FitsError107
 1227526432,2,1227526432_20181129113511_gpubox17_00.fits HDU 8: FitsError107
 1227872048,2,1227872048_20181203113459_gpubox17_00.fits HDU 22: FitsError107
-1228822488,2,1228822488_20181214113433_gpubox24_00.fits HDU 19: FitsError107
 1228131256,2,1228131256_20181206113503_gpubox17_00.fits HDU 24: FitsError107
 1228390472,2,1228390472_20181209113417_gpubox24_00.fits HDU 24: FitsError107
 1228649680,2,1228649680_20181212113425_gpubox24_00.fits HDU 22: FitsError107
+1228822488,2,1228822488_20181214113433_gpubox24_00.fits HDU 19: FitsError107
+1251648240,2,1251648240_20190904160507_gpubox17_00.fits HDU 19: FitsError107
+1252339520,2,1252339520_20190912160505_gpubox24_00.fits HDU 6: FitsError107
+1252512248,2,1252512248_20190914160509_gpubox17_00.fits HDU 22: FitsError107
+1252944256,2,1252944256_20190919160533_gpubox17_00.fits HDU 14: FitsError107
 1253203408,2,1253203408_20190922160503_gpubox17_00.fits HDU 5: FitsError107
 1253808280,2,1253808280_20190929160425_gpubox24_00.fits HDU 22: FitsError107
 1254067440,2,1254067440_20191002160517_gpubox17_00.fits HDU 14: FitsError107
@@ -771,12 +811,6 @@
 1255100640,2,1255100640_20191014150513_gpubox17_00.fits HDU 16: FitsError107
 1255532680,2,1255532680_20191019150425_gpubox24_00.fits HDU 27: FitsError107
 1255786952,2,ends early
-1226230488,2,1226230488_20181114113433_gpubox24_00.fits HDU 15: FitsError107
-1226921720,2,1226921720_20181122113505_gpubox24_00.fits HDU 7: FitsError107
-1251648240,2,1251648240_20190904160507_gpubox17_00.fits HDU 19: FitsError107
-1252339520,2,1252339520_20190912160505_gpubox24_00.fits HDU 6: FitsError107
-1252512248,2,1252512248_20190914160509_gpubox17_00.fits HDU 22: FitsError107
-1252944256,2,1252944256_20190919160533_gpubox17_00.fits HDU 14: FitsError107
 1255791872,2,1255791872_20191022150517_gpubox17_00.fits HDU 30: FitsError107
 1256742216,2,1256742216_20191102150503_gpubox17_00.fits HDU 9: FitsError107
 1256915112,2,1256915112_20191104150457_gpubox24_00.fits HDU 11: FitsError107
