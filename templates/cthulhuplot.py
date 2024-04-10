@@ -235,8 +235,8 @@ def main():
         # dec_shifts = np.array(dec_shifts)
 
     # print(l_shifts[0:5])
-    av_ra_shifts = np.mean(ra_shifts, axis=1)
-    av_dec_shifts = np.mean(dec_shifts, axis=1)
+    av_ra_shifts = np.nanmean(ra_shifts, axis=1)
+    av_dec_shifts = np.nanmean(dec_shifts, axis=1)
     av_total_shifts = np.sqrt(av_ra_shifts**2 + av_dec_shifts**2)
     max_total_shift_idx = np.argmax(av_total_shifts)
     print(av_ra_shifts[0:5])
@@ -376,6 +376,8 @@ def main():
 
                 sane_idxs = np.where(t_total_shifts < t_shift_cutoff)[0]
                 print(f"{len(visible_idxs)=} {len(sane_idxs)=} {len(t_total_shifts)=}")
+                if len(sane_idxs) <= 1:
+                    continue
                 o.fra = o.ra[sane_idxs]
                 o.fdec = o.dec[sane_idxs]
                 o.fra_shifts = o.ra_shifts[sane_idxs]
