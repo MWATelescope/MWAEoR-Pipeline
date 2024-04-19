@@ -3571,20 +3571,26 @@ workflow ws {
     main:
         obsids | wsMeta & tapMeta
 
-        def quality_updates = file(params.quality_updates_path)
-            .readLines()
-            .findAll { !it.startsWith('#') && it.length() > 13 }
-            .collectEntries { line ->
-                def (obsid, quality, comment) = line.split(',')
-                [obsid, [dataquality: quality, dataqualitycomment: comment]]
-            }
+        def quality_updates = channel.empty()
+        if( file(params.quality_updates_path).exists() ) {
+            quality_updates = file(params.quality_updates_path)
+                .readLines()
+                .findAll { !it.startsWith('#') && it.length() > 13 }
+                .collectEntries { line ->
+                    def (obsid, quality, comment) = line.split(',')
+                    [obsid, [dataquality: quality, dataqualitycomment: comment]]
+                }
+        }
 
-        def tile_updates = file(params.tile_updates_path)
-            .readLines()
-            .collect { line ->
-                def (firstObsid, lastObsid, tileIdxs) = line.split(',') + ['', '']
-                [firstObsid as int, lastObsid as int, (tileIdxs as String).split("\\|").collect {it as Integer} ]
-            }
+        def tile_updates = channel.empty()
+        if( file(params.tile_updates_path).exists() ) {
+            tile_updates = file(params.tile_updates_path)
+                .readLines()
+                .collect { line ->
+                    def (firstObsid, lastObsid, tileIdxs) = line.split(',') + ['', '']
+                    [firstObsid as int, lastObsid as int, (tileIdxs as String).split("\\|").collect {it as Integer} ]
+                }
+        }
 
         // print(params)
 
