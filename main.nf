@@ -258,6 +258,13 @@ process birliPrepUV {
 
     storeDir "${params.outdir}/${obsid}/prep"
 
+    label "cpu_half"
+    time { 1.hour * Math.pow(task.attempt, 2) }
+    disk { 50.GB * Math.pow(task.attempt, 2) }
+    stageInMode "symlink"
+    memory { 300.GB * task.attempt }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+
     tag "${obsid}"
 
     script:
@@ -296,7 +303,7 @@ process birliPrepUV {
         }
         .flatten()
         .join(' ');
-    uvfits = ''+"${prefix}${obsid}${suffix}*.uvfits"
+    uvfits = ''+"${prefix}${obsid}${suffix}.uvfits"
     """
     set -eux
     ${params.birli} \
@@ -306,6 +313,7 @@ process birliPrepUV {
         ${raw}
     """
 }
+
 
 workflow extRaw {
 
@@ -321,7 +329,7 @@ workflow extRaw {
             def obsid = coerceList(obsid_)[0]
             def meta = [obsid: obsid]
             // def raw = file("${params.outdir}/../raw/${obsid}_2?????????????_ch???_???.fits")
-            def raw = file("${params.outdir}/../raw/${obsid}_2?????????????_ch???_???.fits")
+            def raw = file("/scratch/mwaeor/ctrott/submm/${obsid}/${obsid}_2*.fits")
             [ obsid, deepcopy(meta), raw ]
         }
         .filter { _, __, raw_ ->
@@ -381,19 +389,58 @@ workflow extRaw {
         }
         .tap { subobsMetaVis }
 
-    subobsMetaVis | ssins
+    flag(subobsMetaVis, ws.out.obsMetafits)
 
-    flag(obsWsmetaVis, ws.out.obsMetafits)
-
-    flag.out.subobsMetaPass.map { obsid, meta -> [[obsid, meta.subobs?:''], meta] }
-        .join(obsWsmetaVis.map { obsid, meta, uvfits -> [[obsid, meta.subobs?:''], uvfits] })
-        // .join(flag.out.subobsMetaRxAnts.map { obsid, meta, rxAnts -> [[obsid, meta.subobs?:''], rxAnts] })
+    // for all obs that pass flag:
+    flag.out.subobsFlagmetaPass.map { obsid, meta, flagMeta ->
+            // update meta with flagMeta
+            [[obsid, meta.subobs?:''], mapMerge(meta, flagMeta)]
+        }
+        // join with vis from subobsMetaVis
+        .join(subobsMetaVis.map { obsid, meta, uvfits ->
+            [[obsid, meta.subobs?:''], uvfits]
+        })
         .map { obsSubobs, meta, uvfits ->
             def (obsid, _) = obsSubobs
             [obsid, meta, uvfits]
         }
-        .tap { subobsFlagmetaVis }
+        | ssinsQA
 
+    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+
+    ws.out.frame.mix(flag.out.frame)
+        .mix(ssinsQA.out.frame)
+        .mix(qaPrep.out.frame)
+        .map { n, l -> [n, l as ArrayList] }
+        | makeVideos
+}
+
+workflow asvoRawFlow {
+    channel.of(obsids_file)
+        .splitCsv()
+        .filter { line -> !line[0].startsWith('#') }
+        .map { line ->
+            def (obsid, _) = line
+            obsid
+        }
+        .unique()
+        | asvoRaw
+
+    asvoRaw.out
+        .filter { _, __, raw_ ->
+            def raw = coerceList(raw_)
+            raw.size() && raw.every{
+                if (!it.exists()) { print("raw does not exist: ${it}") }
+                it.exists()
+            }
+        }
+        .map { obsid, metafits, raw ->
+            def meta = [:]
+            [obsid, meta, raw]
+        }
+        .tap { obsMetaRaw }
+        .map { obsid, metafits, raw -> obsid }
+        .tap { obsids }
     qaPrep( subobsFlagmetaVis, ws.out.obsMetafits )
     // subobsMetaVis.mix(qaPrep.out.obsMetaUVPass) | ssins
 
@@ -426,6 +473,77 @@ workflow extRaw {
             }.groupTuple()
         )
         .map { n, l -> [n, l as ArrayList] } | makeVideos
+
+    obsids | ws
+
+    obsWsmetaVis = obsMetaRaw.join(ws.out.obsMeta).join(ws.out.obsMetafits)
+        .map { obsid, meta, vis, wsMeta, metafits ->
+            [ obsid,  mapMerge(meta, wsMeta), metafits, vis ]
+        }
+        | birliPrepUV
+
+    birliPrepUV.out.flatMap { obsid, meta, uvfits ->
+            coerceList(uvfits).collect { f ->
+                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
+            }
+        }
+        .tap { subobsVis }
+        | uvMeta
+
+    ws.out.obsMeta.cross(uvMeta.out) { it[0] }
+        .map { obsMeta_, uvMeta_ ->
+            def (obsid, wsMeta) = obsMeta_
+            def (_, meta_, uvJson) = uvMeta_
+            def uvmeta = parseJson(uvJson)
+            def newMeta = [
+                lowfreq: uvmeta.freqs[0],
+                freq_res: (uvmeta.freqs[1] - uvmeta.freqs[0]),
+                nchans: (uvmeta.freqs?:[]).size(),
+                ntimes: (uvmeta.times?:[]).size(),
+            ]
+            ['config', 'eorband', 'num_ants', 'total_weight'].each { key ->
+                if (uvmeta[key] != null) {
+                    newMeta[key] = uvmeta[key]
+                }
+            }
+            if (newMeta.ntimes > 0) {
+                newMeta.lst = Math.toDegrees(uvmeta.times[0].lst_rad)
+            }
+            [obsid, mapMerge(mapMerge(meta_, wsMeta), newMeta)]
+        }
+        .tap { subobsMeta }
+        .cross(subobsVis) { def (obsid, meta) = it; [obsid, meta.subobs?:''] }
+        .map { subobsMeta_, subobsVis_ ->
+            def (obsid, meta) = subobsMeta_
+            def (_, __, uvfits) = subobsVis_
+            [obsid, meta, uvfits]
+        }
+        .tap { subobsMetaVis }
+
+    flag(subobsMetaVis, ws.out.obsMetafits)
+
+    // for all obs that pass flag:
+    flag.out.subobsFlagmetaPass.map { obsid, meta, flagMeta ->
+            // update meta with flagMeta
+            [[obsid, meta.subobs?:''], mapMerge(meta, flagMeta)]
+        }
+        // join with vis from subobsMetaVis
+        .join(subobsMetaVis.map { obsid, meta, uvfits ->
+            [[obsid, meta.subobs?:''], uvfits]
+        })
+        .map { obsSubobs, meta, uvfits ->
+            def (obsid, _) = obsSubobs
+            [obsid, meta, uvfits]
+        }
+        | ssinsQA
+
+    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+
+    ws.out.frame.mix(flag.out.frame)
+        .mix(ssinsQA.out.frame)
+        .mix(qaPrep.out.frame)
+        .map { n, l -> [n, l as ArrayList] }
+        | makeVideos
 }
 
 
@@ -489,6 +607,97 @@ workflow extCache {
 
     qaPrep.out.frame | makeVideos
 
+}
+
+// Ensure the raw visibility files are present, or download via ASVO
+process asvoRaw {
+    input:
+    val obsid
+    output:
+    tuple val(obsid), path("${obsid}.metafits"), path("${obsid}_2*.fits")
+
+    storeDir "${params.outdir}/${obsid}/raw"
+    // tag to identify job in squeue and nf logs
+    tag "${obsid}"
+
+    time { 1.hour * Math.pow(task.attempt, 4) }
+    disk { 100.GB * Math.pow(task.attempt, 4) }
+    memory { 50.GB * Math.pow(task.attempt, 4) }
+
+    // allow multiple retries
+    maxRetries 2
+    // exponential backoff: sleep for 2^attempt hours after each fail
+    errorStrategy {
+        return 'ignore'
+        // TODO: copy from asvoPrep
+        // failure_reason = [
+        //     5: "I/O error or hash mitch",
+        //     28: "No space left on device",
+        // ][task.exitStatus]
+        // if (failure_reason) {
+        //     println "task ${task.hash} failed with code ${task.exitStatus}: ${failure_reason}"
+        //     return 'ignore'
+        // }
+        // retry_reason = [
+        //     1: "general or permission",
+        //     11: "Resource temporarily unavailable",
+        //     75: "Temporary failure, try again"
+        // ][task.exitStatus] ?: "unknown"
+        // wait_hours = Math.pow(2, task.attempt)
+        // println "sleeping for ${wait_hours} hours and retrying task ${task.hash}, which failed with code ${task.exitStatus}: ${retry_reason}"
+        // sleep(wait_hours * 60*60*1000 as long)
+        // return 'retry'
+    }
+
+    script:
+    """
+    # echo commands, exit on any failures
+    set -eux
+    export MWA_ASVO_API_KEY="${params.asvo_api_key}"
+    ${params.proxy_prelude} # ensure proxy is set if needed
+    # submit a job to ASVO, suppress failure if a job already exists.
+    ${params.giant_squid} submit-vis --delivery "acacia" $obsid || true
+    # extract id and state from pending download vis jobs
+    ${params.giant_squid} list -j --types download_visibilities --states queued,processing,error -- $obsid \
+        | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
+        | tee pending.tsv
+    # extract id url size hash from any ready download vis jobs for this obsid
+    ${params.giant_squid} list -j --types download_visibilities --states ready -- $obsid \
+        | tee /dev/stderr \
+        | ${params.jq} -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' \
+        | tee ready.tsv
+    # download the most recent ready job
+    if read -r jobid url size hash < ready.tsv; then
+        if read -r avail < <(df --output=avail -B1 . | tail -n 1); then
+            if [[ \$avail -lt \$size ]]; then
+                echo "Not enough disk space available in \$PWD, need \$size B, have \$avail B"
+                exit 28  # No space left on device
+            fi
+        else
+            echo "Warning: Could not determine disk space in \$PWD"
+        fi
+        # wget into two pipes:
+        # - first pipe untars the archive to disk
+        # - second pipe validates the sha sum
+        wget \$url -O- --progress=dot:giga --wait=60 --random-wait \
+            | tee >(tar -x) \
+            | sha1sum -c <(echo "\$hash -")
+        ps=("\${PIPESTATUS[@]}")
+        if [ \${ps[0]} -ne 0 ]; then
+            echo "Download failed. status=\${ps[0]}"
+            exit \${ps[0]}
+        elif [ \${ps[1]} -ne 0 ]; then
+            echo "Untar failed. status=\${ps[1]}"
+            exit \${ps[1]}
+        elif [ \${ps[2]} -ne 0 ]; then
+            echo "Hash check failed. status=\${ps[2]}"
+            exit \${ps[2]}
+        fi
+        exit 0 # success
+    fi
+    echo "no ready jobs"
+    exit 75 # temporary
+    """
 }
 
 // asvoRaw was here: https://github.com/MWATelescope/MWAEoR-Pipeline/commit/e49ac2765c0fcb6bada9d3245d59a65b702f5707
@@ -574,7 +783,7 @@ process asvoPrep {
     """ + ( params.pullPrep ? """
     # download if available in accacia
     ${params.rclone} ls "${params.bucket_prefix}.prep" --include '*${obsid}*'
-    ${params.rclone} copy "${params.bucket_prefix}.prep/" . --include '${uvfits}' --progress --stats-one-line
+    ${params.rclone} copy "${params.bucket_prefix}.prep/" . --include '${uvfits}' --progress --stats-one-line || true
     ls -al
     if [ \$(ls -1 ${uvfits} 2> /dev/null | wc -l) -gt 0 ]; then
         exit 0
@@ -587,8 +796,14 @@ process asvoPrep {
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-conv -v -p ${argstr} ${obsid} || true
 
+    # sleep 1s to prevent DoS
+    sleep 1
+
     # list pending conversion jobs
-    ${params.giant_squid} list -j --types conversion --states queued,processing,error -- ${obsid}
+    # ${params.giant_squid} list -j --types conversion --states queued,processing,error -- ${obsid}
+
+    # sleep 1s to prevent DoS
+    # sleep 1
 
     # extract id url size hash from any ready download vis jobs for this obsid
     ${params.giant_squid} list -j --types conversion --states ready -- ${obsid} \
@@ -1293,7 +1508,7 @@ process hypIonoSubUV {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -1828,7 +2043,8 @@ process wscleanDConv {
     stageInMode "symlink"
 
     // cpus { max(4, min(36,1 + (Math.pow(task.attempt, 2) * multiplier))) as int }
-    time { [23.hour, 1.hour * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
+    // TODO: time is excessive, but needed for submm 120 obs
+    time { [23.hour, 3.hour * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
     memory { [350.GB, 35.GB * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
     maxRetries 3
     maxForks 60
@@ -3792,76 +4008,14 @@ workflow ws {
         fail_codes = fail_codes
 }
 
-// ensure preprocessed uvfits are downloaded
-workflow prep {
+workflow ssinsQA {
     take:
-        // channel of obsids with their metafits: tuple(obsid, metafits)
-        obsMetaMetafits
+        subobsMetaVis
+
     main:
-        // download preprocessed uvfits
-        obsMetaMetafits.map { obsid, meta, __ -> [obsid, meta] }
-            | asvoPrep
-
-        asvoPrep.out.flatMap { obsid, meta, uvfits ->
-                coerceList(uvfits).collect { f ->
-                    def newMeta = [:]
-                    def base_tokens = f.baseName.split('_') as ArrayList
-                    if (base_tokens.size() > 2 && base_tokens[2] =~ /ch\d+/ ) {
-                        newMeta['subobs'] = base_tokens[2]
-                    }
-                    [obsid, mapMerge(meta, newMeta), f]
-                }
-            }
-            | uvMeta
-
-        // subobsMetaMetafitsPrep = obsMetaUV.cross(uvMeta.out) {[it[0], it[1].name]}
-        //     .map { obsMetaUV_, uvMeta_ ->
-        //         def (obsid, meta, vis) = obsMetaUV_; (_, __, json) = uvMeta_;
-        //         jsonMeta = parseJson(json)
-        //         newMeta = [
-        //             lowfreq:jsonMeta.freqs[0],
-        //             first_lst: jsonMeta.times[0]['lst_rad'],
-        //             first_jd: jsonMeta.times[0]['jd1'],
-        //             nchans:jsonMeta.freqs.size(),
-        //             ntimes:jsonMeta.times.size(),
-        //         ];
-        //         ['eorband', 'eorfield', 'config', 'total_weight'].each { key ->
-        //             if (jsonMeta[key] != null) {
-        //                 newMeta[key] = jsonMeta[key]
-        //             }
-        //         }
-        //         [obsid, mapMerge(meta, newMeta), vis] }
-
-        obsMetaMetafits.join(asvoPrep.out).flatMap { obsid, _, metafits, meta, uvfits_ ->
-                def uvfits = coerceList(uvfits_)
-                if (uvfits.size > 1) {
-                    uvfits.collect { f ->
-                        [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[2]]), metafits, f]
-                    }
-                } else {
-                    [[obsid, meta, metafits, uvfits_]]
-                }
-            }
-            .tap { subobsMetaMetafitsPrep }
-
-        subobsMetaMetafitsPrep.map { obsid, meta, _, uvfits -> [ obsid, meta, uvfits] }.tap { subobsMetaVis }
-        obsMetaMetafits.map { obsid, meta, metafits -> [obsid, metafits] }.tap { obsMetafits }
-
-        flag(subobsMetaVis, obsMetafits)
-
-        flag.out.subobsFlagmetaPass.map { obsid, meta, flagMeta ->
-                [[obsid, meta.subobs?:''], mapMerge(meta, flagMeta)]
-            }
-            .join(subobsMetaVis.map { obsid, meta, uvfits ->
-                [[obsid, meta.subobs?:''], uvfits]
-            })
-            // .join(flag.out.subobsMetaRxAnts.map { obsid, meta, rxAnts -> [[obsid, meta.subobs?:''], rxAnts] })
-            .map { obsSubobs, meta, uvfits ->
-                def (obsid, _) = obsSubobs
-                [obsid, meta, uvfits]
-            }
-            .tap { subobsFlagmetaVis }
-            // ssins
+        // run ssins
+        subobsMetaVis
+            // - if ssins_by_rx, run ssins for each rx separately
             .flatMap { obsid, meta, uvfits ->
                 def rxAnts = meta.unflaggedRxAnts?:[:]
                 def allAnts = rxAnts.collect { rx, ants -> ants }.flatten()
@@ -3990,12 +4144,12 @@ workflow prep {
             .view { [it, it.readLines().size()] }
 
         if (params.noprepqa) {
-            subobsMetaVisPass = subobsFlagmetaVis
+            subobsMetaVisPass = subobsMetaVis
             subobsMetaVisFlags = channel.empty()
             fail_codes = channel.empty()
         } else {
             // TODO: do we really need vis here?
-            subobsMetaVisFlags = (subobsFlagmetaVis.map { obsid, meta, uvfits -> [[obsid, meta.subobs?:''], meta, uvfits ]})
+            subobsMetaVisFlags = (subobsMetaVis.map { obsid, meta, uvfits -> [[obsid, meta.subobs?:''], meta, uvfits ]})
                 .join(ssinsOcc.map { obsid, meta, occ -> [[obsid, meta.subobs?:''], occ ] }, remainder: false)
                 .map { obsSubobs, meta, uvfits, ssinsStats ->
                     def (obsid, _) = obsSubobs
@@ -4135,19 +4289,17 @@ workflow prep {
                 | absolve
             // TODO: flagqa
         } else {
-            subobsMetaVisSSINs = subobsMetaVis
+            subobsMetaVisSSINs = subobsMetaVisPass
         }
 
     emit:
-        // channel of obsids which pass the flag gate: tuple(obsid, meta, metafits, uvfits)
-        subobsMetaVisPass = subobsMetaVisSSINs
+        subobsMetaVisSSINs
         subobsReasons = subobsMetaVisFlags.filter { obsid, meta, uvfits, flagMeta ->
                 (flagMeta.reasons?:'') != ''
             }
             .map { obsid, meta, uvfits, flagMeta -> [obsid, meta, flagMeta.reasons]}
-        // channel of video name and frames to convert
-        frame = flag.out.frame
-            .mix(ssins.out.flatMap { _, __, ___, imgs, ____ ->
+        fail_codes
+        frame = ssins.out.flatMap { _, __, ___, imgs, ____ ->
                 imgs.collect { img ->
                     def tokens = coerceList(img.baseName.split('_') as ArrayList)
                     def suffix = tokens[-1]
@@ -4172,18 +4324,100 @@ workflow prep {
                         [''+"ssins_${prefix}_${suffix}", img]
                     }
                 }
-            })
+            }
             .groupTuple()
+        archive = ssins.out.map { _, __, mask, ___, ____ -> ["ssins", mask]}
+}
+
+// ensure preprocessed uvfits are downloaded
+workflow prep {
+    take:
+        // channel of obsids with their metafits: tuple(obsid, metafits)
+        obsMetaMetafits
+    main:
+        // download preprocessed uvfits
+        obsMetaMetafits.map { obsid, meta, __ -> [obsid, meta] }
+            | asvoPrep
+
+        asvoPrep.out.flatMap { obsid, meta, uvfits ->
+                coerceList(uvfits).collect { f ->
+                    def newMeta = [:]
+                    def base_tokens = f.baseName.split('_') as ArrayList
+                    if (base_tokens.size() > 2 && base_tokens[2] =~ /ch\d+/ ) {
+                        newMeta['subobs'] = base_tokens[2]
+                    }
+                    [obsid, mapMerge(meta, newMeta), f]
+                }
+            }
+            | uvMeta
+
+        // subobsMetaMetafitsPrep = obsMetaUV.cross(uvMeta.out) {[it[0], it[1].name]}
+        //     .map { obsMetaUV_, uvMeta_ ->
+        //         def (obsid, meta, vis) = obsMetaUV_; (_, __, json) = uvMeta_;
+        //         jsonMeta = parseJson(json)
+        //         newMeta = [
+        //             lowfreq:jsonMeta.freqs[0],
+        //             first_lst: jsonMeta.times[0]['lst_rad'],
+        //             first_jd: jsonMeta.times[0]['jd1'],
+        //             nchans:jsonMeta.freqs.size(),
+        //             ntimes:jsonMeta.times.size(),
+        //         ];
+        //         ['eorband', 'eorfield', 'config', 'total_weight'].each { key ->
+        //             if (jsonMeta[key] != null) {
+        //                 newMeta[key] = jsonMeta[key]
+        //             }
+        //         }
+        //         [obsid, mapMerge(meta, newMeta), vis] }
+
+        obsMetaMetafits.join(asvoPrep.out).flatMap { obsid, _, metafits, meta, uvfits_ ->
+                def uvfits = coerceList(uvfits_)
+                if (uvfits.size > 1) {
+                    uvfits.collect { f ->
+                        [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[2]]), metafits, f]
+                    }
+                } else {
+                    [[obsid, meta, metafits, uvfits_]]
+                }
+            }
+            .tap { subobsMetaMetafitsPrep }
+
+        subobsMetaMetafitsPrep.map { obsid, meta, _, uvfits -> [ obsid, meta, uvfits] }.tap { subobsMetaVis }
+        obsMetaMetafits.map { obsid, meta, metafits -> [obsid, metafits] }.tap { obsMetafits }
+
+        flag(subobsMetaVis, obsMetafits)
+
+        // for all obs that pass flag:
+        flag.out.subobsFlagmetaPass.map { obsid, meta, flagMeta ->
+                // update meta with flagMeta
+                [[obsid, meta.subobs?:''], mapMerge(meta, flagMeta)]
+            }
+            // join with vis from subobsMetaVis
+            .join(subobsMetaVis.map { obsid, meta, uvfits ->
+                [[obsid, meta.subobs?:''], uvfits]
+            })
+            .map { obsSubobs, meta, uvfits ->
+                def (obsid, _) = obsSubobs
+                [obsid, meta, uvfits]
+            }
+            | ssinsQA
+
+    emit:
+        // channel of obsids which pass the flag gate: tuple(obsid, meta, metafits, uvfits)
+        subobsMetaVisPass = ssinsQA.out.subobsMetaVisSSINs
+        subobsReasons = ssinsQA.out.subobsReasons
+        // channel of video name and frames to convert
+        frame = flag.out.frame
+            .mix(ssinsQA.out.frame)
 
         // channel of files to archive, and their buckets
         archive = flag.out.archive
-            .mix(ssins.out.map { _, __, mask, ___, ____ -> ["ssins", mask]})
+            .mix(ssinsQA.out.archive)
 
         zip = flag.out.zip
 
         fail_codes =
             flag.out.fail_codes.join(
-                    fail_codes.map { obsid, fail_code, reasons -> [obsid, fail_code] },
+                    ssinsQA.out.fail_codes.map { obsid, fail_code, reasons -> [obsid, fail_code] },
                     remainder: true
                 )
                 .map { obsid, flag_code, prep_code ->
