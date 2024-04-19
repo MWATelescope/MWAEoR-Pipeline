@@ -3419,15 +3419,6 @@ def wsSummarize(obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) {
 
     def bad_ants = bad_tiles.collect { tile_nums.indexOf(it) + 1 }
 
-    def manualAnts = ([]) as Set
-    tile_updates.each {
-        def (firstObsid, lastObsid, tileIdxs, comment) = it
-        if (obsid as int >= firstObsid && obsid as int <= lastObsid) {
-            manualAnts.addAll(tileIdxs.findAll { it < n_tiles })
-        }
-    }
-    // manualAnts.removeAll((bad_ants) as Set)
-
     // fail codes
     def fail_code = 0x00 // no error
 
