@@ -1329,7 +1329,7 @@ process hypApplyUV {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(soln)
     output:
-    tuple val(obsid), val(meta), path(cal_vis), path(logs)
+    tuple val(obsid), val(meta), path(cal_vis), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -1375,7 +1375,7 @@ process hypApplyMS {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(soln)
     output:
-    tuple val(obsid), val(meta), path(cal_vis), path(logs)
+    tuple val(obsid), val(meta), path(cal_vis), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
@@ -1421,7 +1421,7 @@ process hypSubUV {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(meta), path(sub_vis), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -1464,7 +1464,7 @@ process hypSubMS {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(meta), path(sub_vis), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -1519,7 +1519,7 @@ process hypIonoSubUV {
     label "gpu"
     label "rate_limit_50"
 
-    time 2.5.hour
+    time 2.hour
 
     when: !params.noionosub
 
@@ -1560,7 +1560,7 @@ process hypIonoSubMS {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
     output:
-    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs)
+    tuple val(obsid), val(meta), path(sub_vis), path(json), path(logs, optional: true)
 
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
 
@@ -2899,7 +2899,7 @@ process ffmpeg {
 
     label "ffmpeg"
 
-    time 1.hour
+    time [8.hour, 1.hour * (task.attempt ** 2) ].min()
 
     when: !params.novideo
     script:
