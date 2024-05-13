@@ -2043,9 +2043,8 @@ process wscleanDConv {
     stageInMode "symlink"
 
     // cpus { max(4, min(36,1 + (Math.pow(task.attempt, 2) * multiplier))) as int }
-    // TODO: time is excessive, but needed for submm 120 obs
-    time { [23.hour, 3.hour * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
-    memory { [350.GB, 35.GB * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
+    time { [23.hour, 40.minute * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
+    memory { [350.GB, 20.GB * (1 + (Math.pow(task.attempt, 2) * multiplier))].min() }
     maxRetries 3
     maxForks 60
 
@@ -4220,7 +4219,7 @@ workflow ssinsQA {
                         obsid,
                         meta.subobs?:'',
                         meta.lst?:'',
-                        meta.ew_pointing?:'',
+                        isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                         flagMeta.fail_code?:'',
                         flagMeta.reasons?:'',
                         flagMeta.ssins_dab_total==null?'':flagMeta.ssins_dab_total,
@@ -4265,7 +4264,7 @@ workflow ssinsQA {
                         meta.subobs?:'',
                         meta.name?:'',
                         meta.lst?:'',
-                        meta.ew_pointing?:'',
+                        isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                         displayInts(meta.prepFlags?:[], delim=' '),
                         vis
                     ]).join("\t")
@@ -4499,6 +4498,7 @@ workflow flag {
                 bad_ants = stats.BAD_ANTS?:[]
                 [
                     obsid,
+                    isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                     meta.subobs?:'',
                     stats.STATUS?:'',
                     stats.NANTS?:'',
@@ -4513,6 +4513,7 @@ workflow flag {
                 name: "prepvis_metrics.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS",
+                    "EWP",
                     "SUBOBS",
                     "STATUS",
                     "NANTS",
@@ -4709,7 +4710,7 @@ workflow flag {
                         obsid,
                         meta.subobs?:'',
                         meta.lst?:'',
-                        meta.ew_pointing?:'',
+                        isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                         flagMeta.fail_code?:'',
                         flagMeta.reasons?:'',
                         flagMeta.total_occ==null?'':flagMeta.total_occ,
@@ -4788,12 +4789,20 @@ workflow flag {
         subobsMetaPass
         subobsFlagmetaPass
         // channel of video name and frames to convert
-        frame = plotPrepVisQA.out.flatMap { _, __, imgs ->
-                imgs.collect { img ->
-                    def suffix = img.baseName.split('_')[-1]
-                    [''+"prepvisqa_${suffix}", img]
-                }
-            }
+        frame = channel.empty()
+            // TODO: fix
+            // [f4/db1b29] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1322653536)` terminated with an error exit status (1) -- Error is ignored
+            // [3b/4e3aa8] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321964256)` terminated with an error exit status (1) -- Error is ignored
+            // [5b/b0f82a] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321447264)` terminated with an error exit status (1) -- Error is ignored
+            // [76/f2946e] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1322653896)` terminated with an error exit status (1) -- Error is ignored
+            // [59/5eb9f4] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321791968)` terminated with an error exit status (1) -- Error is ignored
+            // [4c/ee5983] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321792688)` terminated with an error exit status (1) -- Error is ignored
+            // plotPrepVisQA.out.flatMap { _, __, imgs ->
+            //     imgs.collect { img ->
+            //         def suffix = img.baseName.split('_')[-1]
+            //         [''+"prepvisqa_${suffix}", img]
+            //     }
+            // }
             .mix(autoplot.out.map {_, meta, img -> [''+"prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
         archive = channel.empty() // TODO: archive flag jsons
@@ -4954,6 +4963,7 @@ workflow cal {
                 // convg_var = stats.CONVERGENCE_VAR
                 [
                     obsid,
+                    isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                     meta.subobs?:'',
                     meta.name,
                     stats.STATUS?:'',
@@ -4971,7 +4981,7 @@ workflow cal {
             .collectFile(
                 name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "SUBOBS", "CAL NAME", "STATUS",
+                    "OBS", "SUBOBS", "EWP", "CAL NAME", "STATUS",
                     "N BAD ANTS", "BAD ANTS",
                     "BL UNUSED FRAC", "NON CONVG CHS FRAC",
                     "RMS CONVG",
@@ -5260,12 +5270,12 @@ workflow uvfits {
                 .map { obsid, meta, dat ->
                     def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
                     def vis_name = meta.name
-                    ([obsid, vis_name] + dat_values).join("\t")
+                    ([obsid, isNaN(meta.ew_pointing)?'':meta.ew_pointing, meta.name?:''] + dat_values).join("\t")
                 }
                 .collectFile(
                     name: "ps_metrics.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBS", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
+                        "OBS", "EWP", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
                     storeDir: "${results_dir}${params.cal_suffix}"
@@ -5897,8 +5907,7 @@ workflow img {
                     def v = stats.V?:[:]
                     def v_pks = v.PKS0023_026?:[:]
                     [
-                        obsid,
-                        meta.name,
+                        obsid, meta.ew_pointing, meta.name,
                         xx.RMS_ALL?:"", xx.RMS_BOX?:"", xx_pks.PEAK_FLUX?:"", xx_pks.INT_FLUX?:"",
                         yy.RMS_ALL?:"", yy.RMS_BOX?:"", yy_pks.PEAK_FLUX?:"", yy_pks.INT_FLUX?:"",
                         v.RMS_ALL?:"", v.RMS_BOX?:"", v_pks.PEAK_FLUX?:"", v_pks.INT_FLUX?:"",
@@ -5908,7 +5917,7 @@ workflow img {
                 .collectFile(
                     name: "img_metrics.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBS", "IMG NAME",
+                        "OBS", "EWP", "IMG NAME",
                         "XX RMS ALL", "XX RMS BOX", "XX PKS0023_026 PEAK", "XX PKS0023_026 INT",
                         "YY RMS ALL", "YY RMS BOX", "YY PKS0023_026 PEAK", "YY PKS0023_026 INT",
                         "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
