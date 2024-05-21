@@ -4352,24 +4352,6 @@ workflow prep {
             }
             | uvMeta
 
-        // subobsMetaMetafitsPrep = obsMetaUV.cross(uvMeta.out) {[it[0], it[1].name]}
-        //     .map { obsMetaUV_, uvMeta_ ->
-        //         def (obsid, meta, vis) = obsMetaUV_; (_, __, json) = uvMeta_;
-        //         jsonMeta = parseJson(json)
-        //         newMeta = [
-        //             lowfreq:jsonMeta.freqs[0],
-        //             first_lst: jsonMeta.times[0]['lst_rad'],
-        //             first_jd: jsonMeta.times[0]['jd1'],
-        //             nchans:jsonMeta.freqs.size(),
-        //             ntimes:jsonMeta.times.size(),
-        //         ];
-        //         ['eorband', 'eorfield', 'config', 'total_weight'].each { key ->
-        //             if (jsonMeta[key] != null) {
-        //                 newMeta[key] = jsonMeta[key]
-        //             }
-        //         }
-        //         [obsid, mapMerge(meta, newMeta), vis] }
-
         obsMetaMetafits.join(asvoPrep.out).flatMap { obsid, _, metafits, meta, uvfits_ ->
                 def uvfits = coerceList(uvfits_)
                 if (uvfits.size > 1) {
@@ -4966,6 +4948,7 @@ workflow cal {
                 [
                     obsid,
                     isNaN(meta.ew_pointing)?'':meta.ew_pointing,
+                    isNaN(meta.lst)?'':meta.lst,
                     meta.subobs?:'',
                     meta.name,
                     stats.STATUS?:'',
@@ -4983,7 +4966,7 @@ workflow cal {
             .collectFile(
                 name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "SUBOBS", "EWP", "CAL NAME", "STATUS",
+                    "OBS", "SUBOBS", "LST", "EWP", "CAL NAME", "STATUS",
                     "N BAD ANTS", "BAD ANTS",
                     "BL UNUSED FRAC", "NON CONVG CHS FRAC",
                     "RMS CONVG",
@@ -5174,9 +5157,9 @@ workflow uvfits {
     take:
         obsMetaUV
     main:
-        // vis QA on each phase2 obsid, no subtractions
+        // vis QA on each compact obsid, no subtractions
         obsMetaUV
-            .filter { obsid, meta, __ -> meta.sub == null && meta.config =~ /phase2a.*/ }
+            .filter { obsid, meta, __ -> meta.sub == null && meta.config =~ /.*Compact.*/ }
             | visQA
 
         obsMetaUV | uvPlot
@@ -5272,12 +5255,18 @@ workflow uvfits {
                 .map { obsid, meta, dat ->
                     def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
                     def vis_name = meta.name
-                    ([obsid, isNaN(meta.ew_pointing)?'':meta.ew_pointing, meta.name?:''] + dat_values).join("\t")
+                    ([
+                        obsid, 
+                        isNaN(meta.lst)?'':meta.lst, 
+                        isNaN(meta.ew_pointing)?'':meta.ew_pointing, 
+                        meta.config?:'',
+                        meta.name?:'',
+                    ] + dat_values).join("\t")
                 }
                 .collectFile(
                     name: "ps_metrics.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBS", "EWP", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
+                        "OBS", "LST", "EWP", "CONF", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
                     storeDir: "${results_dir}${params.cal_suffix}"
@@ -6267,8 +6256,13 @@ workflow extChips {
                 nchans: (uvmeta.freqs?:[]).size(),
                 ntimes: (uvmeta.times?:[]).size(),
             ]
-            ['config', 'eorband', 'num_ants', 'total_weight'].each { key ->
-                newMeta[key] = uvmeta[key]
+            ['eorband', 'num_ants', 'total_weight'].each { key ->
+                if (uvmeta[key] != null) {
+                    newMeta[key] = uvmeta[key]
+                }
+            }
+            if (uvmeta['config'] != null) {
+                newMeta['shortconfig'] = uvmeta['config']
             }
             if (meta_.ntimes > 0) {
                 newMeta.lst = Math.toDegrees(uvmeta.times[0].lst_rad)
@@ -6971,10 +6965,11 @@ workflow qaPrep {
         // collect ionoqa results as .tsv
         cthulhuPlot.out
             // form row of tsv from json fields we care about
-            .map { obsid, _, __, ___, json, ____ ->
+            .map { obsid, meta, __, ___, json, ____ ->
                 def stats = parseJson(json);
                 [
                     obsid,
+                    isNaN(meta.lst)?'':meta.lst,
                     stats.PCA_EIGENVALUE?:'',
                     stats.MED_ABS_OFFSET?:'',
                     stats.QA?:'',
@@ -6989,6 +6984,7 @@ workflow qaPrep {
                 name: "ionoqa.tsv", newLine: true, sort: true,
                 seed: [
                     "OBS",
+                    "LST",
                     "HYP_IONO_PCA",
                     "HYP_IONO_MAG",
                     "HYP_IONO_QA",
