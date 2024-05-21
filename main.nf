@@ -2898,7 +2898,9 @@ process ffmpeg {
 
     label "ffmpeg"
 
-    time [8.hour, 1.hour * (task.attempt ** 2) ].min()
+    time { [8.hour, 1.hour * (task.attempt ** 2) ].min() }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
 
     when: !params.novideo
     script:
