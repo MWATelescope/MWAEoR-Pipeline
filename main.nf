@@ -5919,7 +5919,11 @@ workflow img {
                     def v = stats.V?:[:]
                     def v_pks = v.PKS0023_026?:[:]
                     [
-                        obsid, meta.ew_pointing, meta.name,
+                        obsid, 
+                        meta.ew_pointing, 
+                        isNaN(meta.lst)?'':meta.lst,
+                        meta.config?:'', 
+                        meta.name,
                         xx.RMS_ALL?:"", xx.RMS_BOX?:"", xx_pks.PEAK_FLUX?:"", xx_pks.INT_FLUX?:"",
                         yy.RMS_ALL?:"", yy.RMS_BOX?:"", yy_pks.PEAK_FLUX?:"", yy_pks.INT_FLUX?:"",
                         v.RMS_ALL?:"", v.RMS_BOX?:"", v_pks.PEAK_FLUX?:"", v_pks.INT_FLUX?:"",
@@ -5929,7 +5933,7 @@ workflow img {
                 .collectFile(
                     name: "img_metrics.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBS", "EWP", "IMG NAME",
+                        "OBS", "EWP", "LST", "CONF", "IMG NAME",
                         "XX RMS ALL", "XX RMS BOX", "XX PKS0023_026 PEAK", "XX PKS0023_026 INT",
                         "YY RMS ALL", "YY RMS BOX", "YY PKS0023_026 PEAK", "YY PKS0023_026 INT",
                         "V RMS ALL","V RMS BOX", "V PKS0023_026 PEAK", "V PKS0023_026 INT" ,
