@@ -3194,10 +3194,17 @@ def calqa_pass(meta) {
 // POWER	P_win_sub, P_win	< 20	Small window power overall
 def cmt_ps_metrics_pass(meta) {
     def fail_code = 0x00
+    def is_unsub = ((meta.sub?:"")=="")
     if (params.filter_max_ps_window != null && meta.p_window != null) {
         if (meta.p_window > params.filter_max_ps_window) {
-            fail_code = ((meta.sub?:"")=="") ? 0x60 : 0x61
+            fail_code = is_unsub ? 0x60 : 0x61
             return [fail_code, "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window(${params.filter_max_ps_window})"]
+        }
+    }
+    if (is_unsub && params.filter_min_ps_window != null && meta.p_window != null) {
+        if (meta.p_window < params.filter_min_ps_window) {
+            fail_code = 0x60
+            return [fail_code, "p_win(${meta.p_window}) < min_ps_window(${params.filter_min_ps_window})"]
         }
     }
     return [fail_code, null]
@@ -3211,16 +3218,22 @@ def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
     if (fail_code != 0x00) {
         return [fail_code, subReason]
     }
-    if (params.filter_max_ps_ratio != null && nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
+    if (nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
         p_win_p_wg = nosubMeta.p_window / nosubMeta.p_wedge
-        if (p_win_p_wg > params.filter_max_ps_ratio) {
+        if (params.filter_max_ps_ratio != null && p_win_p_wg > params.filter_max_ps_ratio) {
             return [0x62, "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio(${params.filter_max_ps_ratio})"]
         }
+        if (params.filter_min_ps_ratio != null && p_win_p_wg < params.filter_min_ps_ratio) {
+            return [0x63, "p_win:p_wg(${p_win_p_wg}) < min_ps_ratio(${params.filter_min_ps_ratio})"]
+        }
     }
-    if (params.filter_max_ps_wedge_sub != null && subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
+    if (subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
         sub_p_wg = subMeta.p_wedge / nosubMeta.p_wedge
-        if (sub_p_wg > params.filter_max_ps_wedge_sub) {
+        if (params.filter_max_ps_wedge_sub != null && sub_p_wg > params.filter_max_ps_wedge_sub) {
             return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_sub{${params.filter_max_ps_wedge_sub}}"]
+        }
+        if (params.filter_min_ps_wedge_sub != null && sub_p_wg < params.filter_min_ps_wedge_sub) {
+            return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) < min_ps_wedge_sub{${params.filter_min_ps_wedge_sub}}"]
         }
     }
     if (subMeta.p_window != null && nosubMeta.p_window != null) {
@@ -3409,6 +3422,7 @@ failCodes = [
     0x03: "003 - pointing",
     0x04: "004 - sun elevation",
     0x05: "005 - capture mode",
+    0x06: "006 - array configuration",
 
     // 0x1X - runtime
     0x10: "016 - bad tiles",
@@ -3437,10 +3451,10 @@ failCodes = [
     // 0x6X - ps_metrics
     0x60: "096 - large unsub p_win",
     0x61: "097 - large sub p_win",
-    0x62: "098 - small unsub p_win:p_wg",
-    // 0x63: "099 - small sub p_win:p_wg",
+    0x62: "098 - large unsub p_win:p_wg",
+    0x63: "099 - small unsub p_win:p_wg",
     0x64: "100 - large sub_p_win:p_wg",
-    // 0x65
+    0x65: "101 - small sub_p_win:p_wg",
     0x66: "102 - small sub_p_win:p_win",
     0x67: "103 - large sub_p_win:p_win",
 
@@ -3675,6 +3689,13 @@ def wsSummarize(obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) {
     if (capture_mode == "NO_CAPTURE") {
         fail_reasons += ["no cap fr fr"]
         fail_code = fail_code==0x00 ? 0x05 : fail_code
+    }
+    if (params.filter_config != null && config != null) {
+        // e.g. config = "Phase II Compact", params.filter_config = ["Phase I"]
+        if (!params.filter_config.contains(config)) {
+            fail_reasons += [sprintf("config(%s) not in %s", config, params.filter_config)]
+            fail_code = fail_code==0x00 ? 0x06 : fail_code
+        }
     }
 
     // 0x1X - runtime
