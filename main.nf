@@ -97,6 +97,9 @@ process wsMeta {
     // allow multiple retries
     maxRetries 2
     errorStrategy {
+        if (task.attempt > 2) {
+            return 'ignore'
+        }
         return (task.exitStatus == 8 ? 'retry' : 'ignore')
     }
 
@@ -971,6 +974,8 @@ process autoplot {
     label "python"
     label "nvme"
     label "mem_half"
+
+    time 30.minute
 
     when: !params.noautoplot
 
@@ -2314,7 +2319,7 @@ process chipsCombine {
         } else {
             t = [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
         }
-        [[t * 2, 1.hour].max(), 24.95.hour].min()
+        [[t, 1.hour].max(), 23.95.hour].min()
     }
 
     script:
@@ -3195,16 +3200,14 @@ def calqa_pass(meta) {
 def cmt_ps_metrics_pass(meta) {
     def fail_code = 0x00
     def is_unsub = ((meta.sub?:"")=="")
-    if (params.filter_max_ps_window != null && meta.p_window != null) {
-        if (meta.p_window > params.filter_max_ps_window) {
-            fail_code = is_unsub ? 0x60 : 0x61
-            return [fail_code, "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window(${params.filter_max_ps_window})"]
+    if (params.filter_max_ps_window_unsub != null && meta.p_window != null) {
+        if (meta.p_window > params.filter_max_ps_window_unsub) {
+            return [0x60, "${meta.sub?:""}_p_win(${meta.p_window}) > max_ps_window_unsub(${params.filter_max_ps_window_unsub})"]
         }
     }
-    if (is_unsub && params.filter_min_ps_window != null && meta.p_window != null) {
-        if (meta.p_window < params.filter_min_ps_window) {
-            fail_code = 0x60
-            return [fail_code, "p_win(${meta.p_window}) < min_ps_window(${params.filter_min_ps_window})"]
+    if (is_unsub && params.filter_min_ps_window_unsub != null && meta.p_window != null) {
+        if (meta.p_window < params.filter_min_ps_window_unsub) {
+            return [0x61, "p_win(${meta.p_window}) < min_ps_window_unsub(${params.filter_min_ps_window_unsub})"]
         }
     }
     return [fail_code, null]
@@ -3218,58 +3221,54 @@ def cmt_ps_metrics_pass_sub(nosubMeta, subMeta) {
     if (fail_code != 0x00) {
         return [fail_code, subReason]
     }
+
+    // filter ps_ratio unsub
     if (nosubMeta.p_window != null && nosubMeta.p_wedge != null) {
         p_win_p_wg = nosubMeta.p_window / nosubMeta.p_wedge
-        if (params.filter_max_ps_ratio != null && p_win_p_wg > params.filter_max_ps_ratio) {
-            return [0x62, "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio(${params.filter_max_ps_ratio})"]
+        if (params.filter_max_ps_ratio_unsub != null && p_win_p_wg > params.filter_max_ps_ratio_unsub) {
+            return [0x62, "p_win:p_wg(${p_win_p_wg}) > max_ps_ratio_unsub(${params.filter_max_ps_ratio_unsub})"]
         }
-        if (params.filter_min_ps_ratio != null && p_win_p_wg < params.filter_min_ps_ratio) {
-            return [0x63, "p_win:p_wg(${p_win_p_wg}) < min_ps_ratio(${params.filter_min_ps_ratio})"]
-        }
-    }
-    if (subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
-        sub_p_wg = subMeta.p_wedge / nosubMeta.p_wedge
-        if (params.filter_max_ps_wedge_sub != null && sub_p_wg > params.filter_max_ps_wedge_sub) {
-            return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_sub{${params.filter_max_ps_wedge_sub}}"]
-        }
-        if (params.filter_min_ps_wedge_sub != null && sub_p_wg < params.filter_min_ps_wedge_sub) {
-            return [0x64, "sub_p_wg:p_wg(${sub_p_wg}) < min_ps_wedge_sub{${params.filter_min_ps_wedge_sub}}"]
+        if (params.filter_min_ps_ratio_unsub != null && p_win_p_wg < params.filter_min_ps_ratio_unsub) {
+            return [0x63, "p_win:p_wg(${p_win_p_wg}) < min_ps_ratio_unsub(${params.filter_min_ps_ratio_unsub})"]
         }
     }
+
+    // filter ps_window sub ratio
     if (subMeta.p_window != null && nosubMeta.p_window != null) {
         sub_p_win = subMeta.p_window / nosubMeta.p_window
-        if (params.filter_min_ps_win_sub != null && sub_p_win < params.filter_min_ps_win_sub) {
-            return [0x66, "sub_p_win:p_win(${sub_p_win}) < min_ps_win_sub(${params.filter_min_ps_win_sub})"]
+        if (params.filter_max_ps_win_ratio_sub != null && sub_p_win > params.filter_max_ps_win_ratio_sub) {
+            return [0x64, "sub_p_win:p_win(${sub_p_win}) > max_ps_win_ratio_sub(${params.filter_max_ps_win_ratio_sub})"]
         }
-        if (params.filter_max_ps_win_sub != null && sub_p_win > params.filter_max_ps_win_sub) {
-            return [0x67, "sub_p_win:p_win(${sub_p_win}) > max_ps_win_sub(${params.filter_max_ps_win_sub})"]
+        if (params.filter_min_ps_win_ratio_sub != null && sub_p_win < params.filter_min_ps_win_ratio_sub) {
+            return [0x65, "sub_p_win:p_win(${sub_p_win}) < min_ps_win_ratio_sub(${params.filter_min_ps_win_ratio_sub})"]
         }
     }
+
+    // filter ps_wedge sub ratio
+    if (subMeta.p_wedge != null && nosubMeta.p_wedge != null) {
+        sub_p_wg = subMeta.p_wedge / nosubMeta.p_wedge
+        if (params.filter_max_ps_wedge_ratio_sub != null && sub_p_wg > params.filter_max_ps_wedge_ratio_sub) {
+            return [0x66, "sub_p_wg:p_wg(${sub_p_wg}) > max_ps_wedge_ratio_sub{${params.filter_max_ps_wedge_ratio_sub}}"]
+        }
+        if (params.filter_min_ps_wedge_ratio_sub != null && sub_p_wg < params.filter_min_ps_wedge_ratio_sub) {
+            return [0x67, "sub_p_wg:p_wg(${sub_p_wg}) < min_ps_wedge_ratio_sub{${params.filter_min_ps_wedge_ratio_sub}}"]
+        }
+    }
+
     return [fail_code, subReason]
 }
 
+// rules that apply to both subMeta and nosubMeta
 def cmt_imgqa_pass(meta) {
     def fail_code = 0x00
-    if (params.filter_max_vrms_box!= null && meta.v_rms_box != null) {
-        if (meta.v_rms_box > params.filter_max_vrms_box) {
-            fail_code = ((meta.sub?:"")=="") ? 0x70 : 0x71
-            return [fail_code, "${meta.sub?:""}_v_rms_box(${meta.v_rms_box}) > max_vrms_box(${params.filter_max_vrms_box})"]
-        }
-    }
-    if (params.filter_max_pks_int_v_ratio != null && meta.xx_pks_int != null && meta.yy_pks_int != null && meta.v_pks_int != null) {
-        pks_int_v_ratio = meta.v_pks_int / (meta.xx_pks_int + meta.yy_pks_int)
-        if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
-            fail_code = ((meta.sub?:"")=="") ? 0x72 : 0x73
-            return [fail_code, "${meta.sub?:""}_pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"]
-        }
-    }
-    if (params.filter_max_pks_int_diff != null && meta.xx_pks_int != null && meta.yy_pks_int != null) {
-        pks_int_diff = (meta.xx_pks_int - meta.yy_pks_int).abs()
-        if (pks_int_diff > params.filter_max_pks_int_diff) {
-            fail_code = ((meta.sub?:"")=="") ? 0x74 : 0x75
-            return [fail_code, "${meta.sub?:""}_pks_int |xx-yy| (${pks_int_diff}) > max_pks_int_diff(${params.filter_max_pks_int_diff})"]
-        }
-    }
+
+    // if (params.filter_max_pks_int_diff != null && meta.xx_pks_int != null && meta.yy_pks_int != null) {
+    //     pks_int_diff = (meta.xx_pks_int - meta.yy_pks_int).abs()
+    //     if (pks_int_diff > params.filter_max_pks_int_diff) {
+    //         fail_code = ((meta.sub?:"")=="") ? 0x74 : 0x75
+    //         return [fail_code, "${meta.sub?:""}_pks_int |xx-yy| (${pks_int_diff}) > max_pks_int_diff(${params.filter_max_pks_int_diff})"]
+    //     }
+    // }
     return [fail_code, null]
 }
 
@@ -3282,34 +3281,60 @@ def cmt_imgqa_pass(meta) {
 // IMG	YY_sub integ	< 0.5	Integrated remaining flux after subtraction is small
 def cmt_imgqa_pass_sub(nosubMeta, subMeta) {
     def fail_code = 0x00
-    // if (params.filter_max_pks_int_v_ratio != null && nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
-    //     pks_int_v_ratio = nosubMeta.v_pks_int / (nosubMeta.xx_pks_int + nosubMeta.yy_pks_int)
-    //     if (pks_int_v_ratio > params.filter_max_pks_int_v_ratio) {
-    //         return [0x72, "pks_int v/(xx+yy) (${pks_int_v_ratio}) > max_pks_int_v_ratio(${params.filter_max_pks_int_v_ratio})"]
-    //     }
-    // }
-    if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.xx_pks_int != null && subMeta.xx_pks_int != null) {
-        pks_int_sub_ratio = subMeta.xx_pks_int / nosubMeta.xx_pks_int
-        if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
-            return [0x76, "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"]
+
+    // filter vrms_box_nosub
+    if (nosubMeta != null && nosubMeta.v_rms_box != null) {
+        if (params.filter_max_vrms_box_nosub && nosubMeta.v_rms_box > params.filter_max_vrms_box_nosub) {
+            return [0x70, "unsub_v_rms_box(${nosubMeta.v_rms_box}) > max_vrms_box(${params.filter_max_vrms_box_nosub})"]
+        }
+        if (params.filter_min_vrms_box_nosub && nosubMeta.v_rms_box < params.filter_min_vrms_box_nosub) {
+            return [0x71, "unsub_v_rms_box(${nosubMeta.v_rms_box}) < max_vrms_box(${params.filter_min_vrms_box_nosub})"]
         }
     }
-    if (params.filter_max_pks_int_sub_ratio != null && nosubMeta.yy_pks_int != null && subMeta.yy_pks_int != null) {
-        pks_int_sub_ratio = subMeta.yy_pks_int / nosubMeta.yy_pks_int
-        if (pks_int_sub_ratio > params.filter_max_pks_int_sub_ratio) {
-            return [0x77, "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio}) > max_pks_int_sub_ratio(${params.filter_max_pks_int_sub_ratio})"]
+
+    // filter pks_int_v_ratio_nosub
+    if (nosubMeta != null && nosubMeta.xx_pks_int != null && nosubMeta.yy_pks_int != null && nosubMeta.v_pks_int != null) {
+        pks_int_v_ratio_nosub = nosubMeta.v_pks_int / (nosubMeta.xx_pks_int + nosubMeta.yy_pks_int)
+        if (params.filter_max_pks_int_v_ratio_nosub != null && pks_int_v_ratio_nosub > params.filter_max_pks_int_v_ratio_nosub) {
+            return [0x72, "pks_int ${nosubMeta.sub?:''} v/(xx+yy) (${pks_int_v_ratio_nosub}) > max_pks_int_v_ratio_nosub(${params.filter_max_pks_int_v_ratio_nosub})"]
+        }
+        if (params.filter_min_pks_int_v_ratio_nosub != null && pks_int_v_ratio_nosub < params.filter_min_pks_int_v_ratio_nosub) {
+            return [0x73, "pks_int ${nosubMeta.sub?:''} v/(xx+yy) (${pks_int_v_ratio_nosub}) < min_pks_int_v_ratio_nosub(${params.filter_min_pks_int_v_ratio_nosub})"]
         }
     }
-    if (params.filter_max_pks_int_sub != null && subMeta.xx_pks_int != null) {
-        if (subMeta.xx_pks_int > params.filter_max_pks_int_sub) {
-            return [0x78, "${subMeta.sub?:""}_xx_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"]
+
+    // filter pks_int_diff_sub
+    if (subMeta != null && subMeta.xx_pks_int != null && subMeta.yy_pks_int != null) {
+        pks_int_diff_sub = (subMeta.xx_pks_int - subMeta.yy_pks_int).abs()
+        if (params.filter_max_pks_int_diff_sub != null && pks_int_diff_sub > params.filter_max_pks_int_diff_sub) {
+            return [0x74, "${subMeta.sub?:""}_pks_int |xx-yy| (${pks_int_diff_sub}) > max_pks_int_diff_sub(${params.filter_max_pks_int_diff_sub})"]
+        }
+        if (params.filter_min_pks_int_diff_sub != null && pks_int_diff_sub < params.filter_min_pks_int_diff_sub) {
+            return [0x75, "${subMeta.sub?:""}_pks_int |xx-yy| (${pks_int_diff_sub}) < min_pks_int_diff_sub(${params.filter_min_pks_int_diff_sub})"]
         }
     }
-    if (params.filter_max_pks_int_sub != null && subMeta.yy_pks_int != null) {
-        if (subMeta.yy_pks_int > params.filter_max_pks_int_sub) {
-            return [0x79, "${subMeta.sub?:""}_yy_pks_int(${subMeta.v_rms_box}) > max_pks_int_sub(${params.filter_max_pks_int_sub})"]
+
+    // filter pks_int_sub_ratio xx
+    if (nosubMeta != null && subMeta != null && nosubMeta.xx_pks_int != null && subMeta.xx_pks_int != null) {
+        pks_int_sub_ratio_xx = subMeta.xx_pks_int / nosubMeta.xx_pks_int
+        if (params.filter_max_pks_int_sub_ratio_xx != null && pks_int_sub_ratio_xx > params.filter_max_pks_int_sub_ratio_xx) {
+            return [0x76, "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio_xx}) > max_pks_int_sub_ratio_xx(${params.filter_max_pks_int_sub_ratio_xx})"]
+        }
+        if (params.filter_min_pks_int_sub_ratio_xx != null && pks_int_sub_ratio_xx < params.filter_min_pks_int_sub_ratio_xx) {
+            return [0x77, "${subMeta.sub?:""}_xx_pks_int:xx_pks_int (${pks_int_sub_ratio_xx}) < min_pks_int_sub_ratio_xx(${params.filter_min_pks_int_sub_ratio_xx})"]
         }
     }
+    // filter pks_int_sub_ratio yy
+    if (nosubMeta != null && subMeta != null && nosubMeta.yy_pks_int != null && subMeta.yy_pks_int != null) {
+        pks_int_sub_ratio_yy = subMeta.yy_pks_int / nosubMeta.yy_pks_int
+        if (params.filter_max_pks_int_sub_ratio_yy != null && pks_int_sub_ratio_yy > params.filter_max_pks_int_sub_ratio_yy) {
+            return [0x78, "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio_yy}) > max_pks_int_sub_ratio_yy(${params.filter_max_pks_int_sub_ratio_yy})"]
+        }
+        if (params.filter_min_pks_int_sub_ratio_yy != null && pks_int_sub_ratio_yy < params.filter_min_pks_int_sub_ratio_yy) {
+            return [0x79, "${subMeta.sub?:""}_yy_pks_int:yy_pks_int (${pks_int_sub_ratio_yy}) < min_pks_int_sub_ratio_yy(${params.filter_min_pks_int_sub_ratio_yy})"]
+        }
+    }
+
     return [fail_code, null]
 }
 
@@ -3449,26 +3474,37 @@ failCodes = [
     0x4F: "079 - calqa bad tiles",
     // 0x5X - visQA
     // 0x6X - ps_metrics
-    0x60: "096 - large unsub p_win",
-    0x61: "097 - large sub p_win",
-    0x62: "098 - large unsub p_win:p_wg",
-    0x63: "099 - small unsub p_win:p_wg",
-    0x64: "100 - large sub_p_win:p_wg",
-    0x65: "101 - small sub_p_win:p_wg",
-    0x66: "102 - small sub_p_win:p_win",
-    0x67: "103 - large sub_p_win:p_win",
+
+    0x60: "096 - large unsub p_win",      // max_ps_window_unsub
+    0x61: "097 - small unsub p_win",      // min_ps_window_unsub
+    0x62: "098 - large unsub p_win:p_wg", // max_ps_ratio_unsub
+    0x63: "099 - small unsub p_win:p_wg", // min_ps_ratio_unsub
+    0x64: "100 - large sub_p_win:p_win",  // max_ps_win_ratio_sub
+    0x65: "101 - small sub_p_win:p_win",  // min_ps_win_ratio_sub
+    0x66: "102 - large sub_p_wg:p_wg",   // max_ps_wedge_ratio_sub
+    0x67: "103 - small sub_p_wg:p_wg",   // min_ps_wedge_ratio_sub
+    // 0x6 : "1   - large unsub p_wg",
+    // 0x6 : "1   - small unsub p_wg",
+    // 0x6 : "1   - large unsub p_tot",
+    // 0x6 : "1   - small unsub p_tot",
 
     // 0x7X - imgQA
     0x70: "112 - large unsub v_rms_box",
-    0x71: "113 - large sub v_rms_box",
+    0x71: "113 - small unsub v_rms_box",
     0x72: "114 - large unsub pks_int v/(xx+yy)",
-    0x73: "115 - large sub pks_int v/(xx+yy)",
+    0x73: "115 - small unsub pks_int v/(xx+yy)",
     0x74: "116 - large unsub pks_int |xx-yy|",
-    0x75: "117 - large sub pks_int |xx-yy|",
+    0x75: "117 - small unsub pks_int |xx-yy|",
     0x76: "118 - large sub_xx_pks_int:xx_pks_int",
-    0x77: "119 - large sub_yy_pks_int:yy_pks_int",
-    0x78: "120 - large sub xx_pks_int",
-    0x79: "121 - large sub yy_pks_int",
+    0x77: "119 - small sub_xx_pks_int:xx_pks_int",
+    0x78: "120 - large sub_yy_pks_int:yy_pks_int",
+    0x79: "121 - small sub_yy_pks_int:yy_pks_int",
+    // 0x7 : "    - large sub xx_pks_int",
+    // 0x7 : "    - large sub yy_pks_int",
+    // 0x7 : "    - large sub v_rms_box",
+    // 0x7 : "    - large sub pks_int v/(xx+yy)",
+    // 0x7 : "    - large sub pks_int |xx-yy|",
+    // 0x77: "119 - large sub_yy_pks_int:yy_pks_int",
 ]
 
 // pass in a list of codes and (optianally) other associated items,
