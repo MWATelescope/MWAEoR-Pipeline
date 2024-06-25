@@ -1731,7 +1731,7 @@ process uvMeta {
 
     label "python"
     label "nvme"
-    memory = 40.GB
+    label "mem_quarter"
     // memory = (vis.size * 3)
     time = {
         // max 25 min for 60ts, 144T, 768chans
@@ -1741,8 +1741,8 @@ process uvMeta {
             4.hour
         ].min()
     }
-    // stageInMode "symlink"
-    // can't symlink any more, scratch too slow
+    // stageInMode "symlink" // can't symlink any more, scratch too slow
+    stageInMode "copy"
 
     script:
     base = vis.baseName
