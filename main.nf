@@ -4494,6 +4494,9 @@ workflow ssinsQA {
                     ssins.out.map { obsid, meta, mask, _, __ ->
                             [obsid, meta, mask]
                         }
+                        .filter { _, meta, __ ->
+                            !(((meta.subobs?:'').split('_')?:[''])[-1] =~ /rx\d+/)
+                        }
                 )
                 .map { obsid, _, uvfits, meta, mask ->
                     [obsid, meta, uvfits, mask]
