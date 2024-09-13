@@ -284,6 +284,11 @@ process birliPrepUV {
         suffix += "_${params.prep_time_res_s}s"
     }
     if (params.prep_freq_res_khz != null) {
+        // validate this resolution is supported
+        if (meta.freq_res != null && meta.freq_res > params.prep_freq_res_khz) {
+            throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
+        }
+
         args['avg-freq-res'] = params.prep_freq_res_khz
         suffix += "_${params.prep_freq_res_khz}kHz"
     }
@@ -299,6 +304,11 @@ process birliPrepUV {
         args['flag-edge-width'] = params.prep_edge_width
         suffix += "_edg${params.prep_edge_width}"
     }
+
+    def coarse_chans = (meta.coarse_chans?:[]).sort(false)
+    def not_contiguous = (coarse_chans.size > 1 && coarse_chans.size < coarse_chans[-1] - coarse_chans[0])
+    def channel_glob = (not_contiguous ? "_ch{??,???,??-??,??-???,???-???}" : "")
+    meta['channel_glob'] = channel_glob
     meta['birli_args'] = args
     meta['birli_suffix'] = suffix
     argstr = args.collect { k, v ->
@@ -310,7 +320,7 @@ process birliPrepUV {
         }
         .flatten()
         .join(' ');
-    uvfits = ''+"${prefix}${obsid}${suffix}.uvfits"
+    uvfits = ''+"${prefix}${obsid}${suffix}${channel_glob}.uvfits"
     """
     set -eux
     ${params.birli} \
@@ -358,9 +368,19 @@ workflow extRaw {
         }
         | birliPrepUV
 
-    birliPrepUV.out.flatMap { obsid, meta, uvfits ->
-            coerceList(uvfits).collect { f ->
-                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
+            def uvfits = coerceList(uvfits_)
+            if (uvfits.size > 1) {
+                uvfits.collect { f ->
+                    def newMeta = [:]
+                    def last_token = '' + f.baseName.split('_')[-1]
+                    if (last_token =~ /ch[\d-]+/) {
+                        newMeta.subobs = last_token
+                    }
+                    [obsid, mapMerge(meta, newMeta), f]
+                }
+            } else {
+                [[obsid, meta, uvfits_]]
             }
         }
         .tap { subobsVis }
@@ -460,13 +480,25 @@ workflow asvoRawFlow {
 
     obsWsmetaVis = obsMetaRaw.join(ws.out.obsMeta).join(ws.out.obsMetafits)
         .map { obsid, meta, vis, wsMeta, metafits ->
-            [ obsid,  mapMerge(meta, wsMeta), metafits, vis ]
+            [ obsid, mapMerge(meta, wsMeta), metafits, vis ]
         }
+        .tap { obsMetaMetafitsRaw }
         | birliPrepUV
 
-    birliPrepUV.out.flatMap { obsid, meta, uvfits ->
-            coerceList(uvfits).collect { f ->
-                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
+
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
+            def uvfits = coerceList(uvfits_)
+            if (uvfits.size > 1) {
+                uvfits.collect { f ->
+                    def newMeta = [:]
+                    def last_token = '' + f.baseName.split('_')[-1]
+                    if (last_token =~ /ch[\d-]+/) {
+                        newMeta.subobs = last_token
+                    }
+                    [obsid, mapMerge(meta, newMeta), f]
+                }
+            } else {
+                [[obsid, meta, uvfits_]]
             }
         }
         .tap { subobsVis }
@@ -546,11 +578,23 @@ workflow extCache {
             [ obsid, deepcopy(meta) ]
         }
         | cacheBoxRaw
+        .tap { obsMetaMetafitsRaw }
         | birliPrepUV
 
-    birliPrepUV.out.flatMap { obsid, meta, uvfits ->
-            uvfits.collect { f ->
-                [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[-1]]), f]
+
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
+            def uvfits = coerceList(uvfits_)
+            if (uvfits.size > 1) {
+                uvfits.collect { f ->
+                    def newMeta = [:]
+                    def last_token = '' + f.baseName.split('_')[-1]
+                    if (last_token =~ /ch[\d-]+/) {
+                        newMeta.subobs = last_token
+                    }
+                    [obsid, mapMerge(meta, newMeta), f]
+                }
+            } else {
+                [[obsid, meta, metafits, uvfits_]]
             }
         }
         .tap { subobsVis }
@@ -605,6 +649,8 @@ process asvoRaw {
     time { 1.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
     disk { 100.GB * Math.pow(task.attempt, 4) }
     memory { 50.GB * Math.pow(task.attempt, 4) }
+
+    label "rate_limit"
 
     // allow multiple retries
     maxRetries 2
@@ -741,7 +787,7 @@ process asvoPrep {
     }
     // label "datamover" # memory limit 8G not enough
 
-    label "rate_limit_20"
+    label "rate_limit"
     label "nvme"
     // label "mem_full"
 
@@ -4521,7 +4567,12 @@ workflow prep {
                 def uvfits = coerceList(uvfits_)
                 if (uvfits.size > 1) {
                     uvfits.collect { f ->
-                        [obsid, mapMerge(meta, [subobs: f.baseName.split('_')[2]]), metafits, f]
+                        def newMeta = [:]
+                        def last_token = '' + f.baseName.split('_')[-1]
+                        if (last_token =~ /ch\d+/) {
+                            newMeta.subobs = last_token
+                        }
+                        [obsid, mapMerge(meta, newMeta), metafits, f]
                     }
                 } else {
                     [[obsid, meta, metafits, uvfits_]]
