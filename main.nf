@@ -331,6 +331,37 @@ process birliPrepUV {
     """
 }
 
+process demo03_mwalib {
+    input:
+    tuple val(obsid), val(meta), path(metafits)
+    output:
+    tuple val(obsid), val(meta), path("${metafits.baseName}-antennas.tsv"), path("${metafits.baseName}-channels.tsv")
+
+    stageInMode "symlink"
+    storeDir "${params.outdir}/${obsid}/raw_qa"
+    label "mwa_demo"
+
+    script:
+    """
+    /demo/03_mwalib.py ${metafits}
+    """
+}
+
+process demo04_ssins {
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(raw)
+    output:
+    tuple val(obsid), val(meta), path("${obsid}${meta.plot_suffix?:''}.png")
+
+    stageInMode "symlink"
+    storeDir "${params.outdir}/${obsid}/raw_qa"
+    label "mwa_demo"
+
+    script:
+    """
+    /demo/04_ssins.py --no-cache ${meta.argstr?:''} ${metafits} ${coerceList(raw).join(' ')}
+    """
+}
 
 workflow extRaw {
 
@@ -485,6 +516,20 @@ workflow asvoRawFlow {
         .tap { obsMetaMetafitsRaw }
         | birliPrepUV
 
+    obsMetaMetafitsRaw.map { obsid, meta, metafits, vis ->
+            [ obsid, meta, metafits]
+        }
+        | demo03_mwalib
+
+    obsMetaMetafitsRaw.flatMap { obsid, meta, metafits, vis ->
+            [
+                ['', '.diff.auto_spectrum'],
+                ['--no-diff', '.auto_spectrum'],
+            ].collect { argstr, plot_suffix ->
+                def newMeta = [argstr:argstr, plot_suffix:plot_suffix]
+                [obsid, mapMerge(meta, newMeta), metafits, vis]
+            }
+        } | demo04_ssins
 
     birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
             def uvfits = coerceList(uvfits_)
@@ -581,6 +626,7 @@ workflow extCache {
         .tap { obsMetaMetafitsRaw }
         | birliPrepUV
 
+    obsMetaMetafitsRaw | demo04_ssins
 
     birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
             def uvfits = coerceList(uvfits_)
