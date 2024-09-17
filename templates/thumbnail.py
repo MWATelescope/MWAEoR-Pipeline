@@ -8,6 +8,13 @@ from astropy.wcs import WCS
 from matplotlib.colors import LinearSegmentedColormap
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+try:
+    import matplotlib.cm.get_cmap as get_cmap
+except:
+    try:
+        import matplotlib.colormaps.get_cmap as get_cmap
+    except:
+        get_cmap = lambda cmap: mpl.colormaps[cmap]
 import numpy as np
 from argparse import ArgumentParser
 import sys
@@ -156,7 +163,7 @@ def main():
 
         nColors = 256
         if not args.symmetric and args.cmap:
-            color_array = mpl.cm.get_cmap(args.cmap)(range(nColors))
+            color_array = get_cmap(args.cmap)(range(nColors))
         else:
             base_color_name = 'blue-bl-red' if args.symmetric else 'bl-red'
             base_colors = ['blue', 'black', 'red'] if args.symmetric \
