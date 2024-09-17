@@ -7,7 +7,11 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from scipy.signal import blackmanharris
+try:
+    from scipy.signal import blackmanharris
+except ImportError:
+    from scipy.signal.windows import blackmanharris
+
 from astropy.cosmology import LambdaCDM
 import sys
 
