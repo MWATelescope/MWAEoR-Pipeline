@@ -11,7 +11,7 @@ def obsids_file = file(params.obsids_path)
 if (params.obsids_suffix) {
     obsids_file = file("${obsids_file.parent}/${obsids_file.baseName}${params.obsids_suffix}.${obsids_file.extension}")
 }
-def results_dir = '' + "${params.resultsdir}/results${params.obsids_suffix}${params.result_suffix}"
+def results_dir = '' + "${params.resultsdir}/results${params.obsids_suffix}" + (params.visName?".${params.visName}":"") + "${params.result_suffix}"
 
 // whether imaging is configured for multiple channels
 img_channels_out = (params.img_channels_out instanceof String ? \
@@ -6758,7 +6758,9 @@ workflow chips {
             | chipsCombine
 
         if (params.lssaObs) {
-            lssaExtra = chipsGrid.out
+            lssaExtra = chipsGrid.out.map { obsid, meta, grid ->
+                    [obsid, mapMerge(meta, [sort_bounds: [0, 0]]), [grid]]
+                }
         } else {
             lssaExtra = channel.empty()
         }
@@ -6813,7 +6815,8 @@ workflow chips {
                     .flatMap { it -> it }
             )
             .collectFile(
-                name: ''+"chips1d_delta_${params.lssa_bin}.tsv", newLine: true, sort: false,
+                name: ''+"chips1d_delta_${params.lssa_bin}${params.lssa_bias_mode?:0}${params.obsids_suffix}" + (params.visName?".${params.visName}":"") + "${params.result_suffix}.tsv",
+                newLine: true, sort: false,
                 storeDir: "${results_dir}${params.img_suffix}${params.cal_suffix}"
             )
             .tap { chips1d_delta_tsv }
