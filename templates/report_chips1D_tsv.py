@@ -72,7 +72,7 @@ def render(df):
         var_name='k_modes',
         value_name='delta'
     )
-    dfm['GRID_NAME_POL'] = dfm['GRID'] + '_' + dfm['NAME'] + '_' + dfm['POL']
+    dfm['GRID_NAME_POL'] = dfm['GRID'].astype(str) + '_' + dfm['NAME'] + '_' + dfm['POL']
     dfm['k_modes'] = dfm['k_modes'].astype(float)
     # strip commas
     dfm['delta'] = dfm['delta'].astype(str).str.replace(',', '')
