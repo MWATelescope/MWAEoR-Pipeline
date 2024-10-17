@@ -277,37 +277,10 @@ process birliPrepUV {
     script:
     meta = deepcopy(meta_)
     prefix = "birli_"
-    suffix = params.prep_suffix ?: ''
-    args = [:]
-    if (params.prep_time_res_s != null) {
-        args['avg-time-res'] = params.prep_time_res_s
-        suffix += "_${params.prep_time_res_s}s"
+    def (_, argstr_cli, suffix) = birli_argstr_suffix()
+    if (meta.freq_res != null && meta.freq_res > params.prep_freq_res_khz) {
+        throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
     }
-    if (params.prep_freq_res_khz != null) {
-        // validate this resolution is supported
-        if (meta.freq_res != null && meta.freq_res > params.prep_freq_res_khz) {
-            throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
-        }
-
-        args['avg-freq-res'] = params.prep_freq_res_khz
-        suffix += "_${params.prep_freq_res_khz}kHz"
-    }
-    if (params.prep_rfi != null && !params.prep_rfi) {
-        args['no-rfi'] = null
-        suffix += '_norfi'
-    }
-    if (params.prep_pc != null) {
-        // --phase-centre <RA> <DEC>
-        args['phase-centre'] = params.prep_pc
-    }
-    if (params.prep_edge_width != null) {
-        args['flag-edge-width'] = params.prep_edge_width
-        suffix += "_edg${params.prep_edge_width}"
-    }
-    if (meta.birli_chan_ranges != null) {
-        args['sel-chan-ranges'] = meta.birli_chan_ranges.join(',')
-    }
-
     def coarse_chans = (meta.coarse_chans?:[]).sort(false)
     def not_contiguous = (coarse_chans.size > 1 && coarse_chans.size < coarse_chans[-1] - coarse_chans[0])
     def channel_glob = ""
@@ -320,22 +293,12 @@ process birliPrepUV {
         }
     }
     meta['channel_glob'] = channel_glob
-    meta['birli_args'] = args
     meta['birli_suffix'] = suffix
-    argstr = args.collect { k, v ->
-            if (v == null) {
-                ['--'+k]
-            } else {
-                ['--'+k] + v
-            }
-        }
-        .flatten()
-        .join(' ');
     uvfits = ''+"${prefix}${obsid}${suffix}${channel_glob}.uvfits"
     """
     set -eux
     ${params.birli} \
-        ${argstr} \
+        ${argstr_cli} \
         -u "${prefix}${obsid}${suffix}.uvfits" \
         -m "${metafits}" \
         ${raw}
@@ -829,24 +792,55 @@ process asvoRaw {
     """
 }
 
-// get birli args and filename suffix from params
+// get birli argstr (asvo), argstr (cli), and filename suffix from params
 def birli_argstr_suffix() {
-    def suffix = ''
-    def args = [output: "uvfits"]
+    // asvo argstr reference: https://github.com/MWATelescope/manta-ray-client#conversion-job-options
+    // birli cli reference: https://github.com/MWATelescope/Birli#usage
+    def suffix = params.prep_suffix ?: ''
+    def args_asvo = [output: "uvfits"]
+    def args_cli = [:]
     if (params.prep_time_res_s != null) {
-        args.avg_time_res = params.prep_time_res_s
+        args_asvo.avg_time_res = params.prep_time_res_s
+        args_cli['avg-time-res'] = params.prep_time_res_s
         suffix += "_${params.prep_time_res_s}s"
     }
     if (params.prep_freq_res_khz != null) {
-        args.avg_freq_res = params.prep_freq_res_khz
+        // validate this resolution is supported
+        args_asvo.avg_freq_res = params.prep_freq_res_khz
+        args_cli['avg-freq-res'] = params.prep_freq_res_khz
         suffix += "_${params.prep_freq_res_khz}kHz"
     }
     if (params.prep_rfi != null && !params.prep_rfi) {
-        args.no_rfi = "true"
+        args_asvo.no_rfi = "true"
+        args_cli['no-rfi'] = null
         suffix += '_norfi'
     }
-    def argstr = args.collect { k, v -> ''+"${k}=${v}" }.join(',')
-    [argstr, suffix]
+    if (params.prep_pc != null && params.prep_pc.size() == 2) {
+        // --phase-centre <RA> <DEC>
+        args_cli['phase-centre'] = params.prep_pc
+
+        args_asvo.centre = "custom"
+        // <ra formatted as: 0.0 deg> ICRS (J2000.0).
+        args_asvo.phase_centre_ra = sprintf("%f", params.prep_edge_width[0])
+        // <dec formatted as: +00.0 deg> ICRS (J2000.0).
+        args_asvo.phase_centre_dec = sprintf("%+f", params.prep_edge_width[1])
+    }
+    if (params.prep_edge_width != null) {
+        args_cli['flag-edge-width'] = params.prep_edge_width
+        args_asvo.flag_edge_width = params.prep_edge_width
+        suffix += "_edg${params.prep_edge_width}"
+    }
+    def argstr_asvo = args_asvo.collect { k, v -> ''+"${k}=${v}" }.join(',')
+    def argstr_cli = args_cli.collect { k, v ->
+            if (v == null) {
+                ['--'+k]
+            } else {
+                ['--'+k] + v
+            }
+        }
+        .flatten()
+        .join(' ');
+    [argstr_asvo, argstr_cli, suffix]
 }
 
 def hyp_apply_name(time_res, freq_res) {
@@ -917,7 +911,7 @@ process asvoPrep {
 
     script:
     prefix = "birli_"
-    def (argstr, suffix) = birli_argstr_suffix();
+    def (argstr, _, suffix) = birli_argstr_suffix();
     uvfits = ''+"${prefix}${obsid}*${suffix}.uvfits"
 
     // echo \$'meta=${meta}'
@@ -7728,9 +7722,10 @@ workflow extPrep {
         .unique()
         .map { obsid_ ->
             def obsid = coerceList(obsid_)[0]
-            def meta = [name:name, cal_prog:cal_prog, obsid: obsid]
-            def (_, suffix) = birli_argstr_suffix()
+            def (_, __, suffix) = birli_argstr_suffix()
+            def meta = [name:name, cal_prog:cal_prog, obsid: obsid, birli_suffix: suffix]
             def vis = file("${params.outdir}/${obsid}/prep/birli_${obsid}${suffix}.${name}.uvfits")
+            // def vis = file("${params.outdir}/${obsid}.uvfits")
             [ obsid, deepcopy(meta), vis ]
         }
         .filter { _, __, vis -> vis.exists() }
@@ -7813,7 +7808,7 @@ workflow bootstrap {
         .unique()
         .flatMap { obsid_ ->
             def obsid = coerceList(obsid_)[0]
-            def (_, prep_suffix) = birli_argstr_suffix()
+            def (_, __, prep_suffix) = birli_argstr_suffix()
             def apply_name = hyp_apply_name(params.apply_time_res, params.apply_freq_res)
             params.dical_args.keySet().collect { dical_name ->
                 def meta = [
