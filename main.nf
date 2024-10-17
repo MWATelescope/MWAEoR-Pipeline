@@ -4478,10 +4478,10 @@ workflow ssinsQA {
                     ([
                         obsid,
                         meta.subobs?:'',
-                        occ.total?:'',
-                        occ.streak?:'',
-                        occ.dab_total?:'',
-                        occ.narrow_total?:'',
+                        isNaN(occ.total)?'':String.format("%.2f", occ.total),
+                        isNaN(occ.streak)?'':String.format("%.2f", occ.streak),
+                        isNaN(occ.dab_total)?'':String.format("%.2f", occ.dab_total),
+                        isNaN(occ.narrow_total)?'':String.format("%.2f", occ.narrow_total),
                     ]).join("\t")
                 }
                 .collectFile(
