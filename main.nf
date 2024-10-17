@@ -1145,6 +1145,8 @@ process hypSrclistAO {
     label "cpu_full"
     time 15.minute
 
+    when: !params.nosrclist
+
     script:
     reduced = "${obsid}_reduced_n${params.sub_nsrcs}.txt"
     """
@@ -1173,6 +1175,8 @@ process hypSrclistYaml {
     label "hyperdrive"
     label "cpu_full"
     time 15.minute
+
+    when: !params.nosrclist
 
     script:
     reduced = ''+"${obsid}_reduced_n${params.sub_nsrcs}.yaml"
