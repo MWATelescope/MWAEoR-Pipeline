@@ -2645,6 +2645,8 @@ process chipsPlot {
 
     time 15.minute
 
+    when: !params.noplotchips
+
     script:
     bias_mode = params.lssa_bias_mode?:0
     pol = meta.pol?:"both"
