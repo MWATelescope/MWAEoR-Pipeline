@@ -263,6 +263,7 @@ process birliPrepUV {
 
     storeDir "${params.outdir}/${obsid}/prep"
 
+    label "birli"
     label "cpu_half"
     time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 2) }
     disk { 50.GB * Math.pow(task.attempt, 2) }
@@ -317,24 +318,53 @@ process demo03_mwalib {
 
     script:
     """
+    ${params.demo_prelude?:''}
     /demo/03_mwalib.py ${metafits}
     """
 }
 
 process demo04_ssins {
     input:
-    tuple val(obsid), val(meta), path(metafits), path(raw)
+    tuple val(obsid), val(meta), path(metafits), path(vis)
     output:
-    tuple val(obsid), val(meta), path("${obsid}${meta.plot_suffix?:''}.png")
+    tuple val(obsid), val(meta), path("${base}${meta.plot_suffix?:''}.png")
 
     stageInMode "symlink"
-    storeDir "${params.outdir}/${obsid}/raw_qa"
+    storeDir "${params.outdir}/${obsid}/${qa}_qa"
     label "mwa_demo"
-    tag "${obsid} ${meta.argstr?:''}"
+    tag "${base}${meta.plot_suffix?:''}"
 
     script:
+    firstVis = coerceList(vis)[0]
+    if (firstVis.extension == "uvfits") {
+        base = firstVis.baseName
+        qa = "prep"
+    } else {
+        base = obsid
+        qa = "raw"
+    }
     """
-    /demo/04_ssins.py ${meta.argstr?:''} ${metafits} ${coerceList(raw).join(' ')}
+    ${params.demo_prelude?:''}
+    /demo/04_ssins.py ${meta.argstr?:''} ${metafits} ${coerceList(vis).join(' ')}
+    """
+}
+
+process demo11_allsky {
+    input:
+    tuple val(obsid), val(meta), path(vis)
+    output:
+    tuple val(obsid), val(meta), path("${base}${meta.plot_suffix?:''}*.fits")
+
+    stageInMode "symlink"
+    storeDir "${params.outdir}/${obsid}/img"
+    label "mwa_demo"
+    tag "${base}${meta.plot_suffix?:''}"
+
+    script:
+    base = coerceList(vis)[0].baseName
+    """
+    ${params.demo_prelude?:''}
+    /demo/11_allsky.py ${meta.argstr?:''} ${coerceList(vis).join(' ')}
     """
 }
 
@@ -532,12 +562,14 @@ workflow asvoRawFlow {
 
     obsMetafitsRawByCh.flatMap { obsid, meta, metafits, vis ->
             [
-                ['',                     '.diff.auto',  '.spectrum'],
-                ['--no-diff',            '.auto',       '.spectrum'],
-                ['--crosses',            '.diff.cross', '.spectrum'],
-                ['--crosses --no-diff',  '.cross',      '.spectrum'],
-                ['--sigchain',           '.diff.auto',  '.sigchain'],
-                ['--sigchain --no-diff', '.auto',       '.sigchain'],
+                ['',                               '.diff.auto',  '.spectrum'],
+                ['--no-diff',                      '.auto',       '.spectrum'],
+                ['--crosses',                      '.diff.cross', '.spectrum'],
+                ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                ['--sigchain',                     '.diff.auto',  '.sigchain'],
+                ['--sigchain --no-diff',           '.auto',       '.sigchain'],
+                ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
+                ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
             ].collect { argstr, plot_prefix, plot_suffix ->
                 def newMeta = [argstr:argstr, plot_suffix:"${plot_prefix}${plot_suffix}"]
                 if (meta.subobs != null) {
@@ -547,7 +579,7 @@ workflow asvoRawFlow {
                 [obsid, mapMerge(meta, newMeta), metafits, vis]
             }
         }
-        | demo04_ssins
+        .tap { obsMetaMetafitsRawSsins }
 
     birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
             def uvfits = coerceList(uvfits_)
@@ -566,6 +598,34 @@ workflow asvoRawFlow {
         }
         .tap { subobsVis }
         | uvMeta
+
+
+    subobsVis.join(ws.out.obsMetafits)
+        .flatMap { obsid, meta, vis, metafits ->
+            [
+                ['--autos',                        '.diff.auto',  '.spectrum'],
+                ['--autos --no-diff',              '.auto',       '.spectrum'],
+                ['--crosses',                      '.diff.cross', '.spectrum'],
+                ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
+                ['--sigchain --autos --no-diff',   '.auto',       '.sigchain'],
+                ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
+                ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
+                ['--flags --autos --no-diff',      '.auto',       '.flags'],
+                ['--flags --no-diff --crosses',    '.cross',      '.flags'],
+            ].collect { argstr, plot_prefix, plot_suffix ->
+                def newMeta = [argstr:argstr, plot_suffix:"${plot_prefix}${plot_suffix}"]
+                if (meta.subobs != null) {
+                    newMeta.argstr += " --suffix=${meta.subobs}"
+                    newMeta.plot_suffix = "${plot_prefix}${meta.subobs}${plot_suffix}"
+                }
+                [obsid, mapMerge(meta, newMeta), metafits, vis]
+            }
+        }
+        .tap { obsMetaMetafitsPrepSsins }
+
+    obsMetaMetafitsRawSsins.mix(obsMetaMetafitsPrepSsins)
+        | demo04_ssins
 
     ws.out.obsMeta.cross(uvMeta.out) { it[0] }
         .map { obsMeta_, uvMeta_ ->
@@ -5840,6 +5900,15 @@ workflow img {
         // tuple of (obsid, meta, vis)
         obsMetaVis
     main:
+
+        obsMetaVis.map { obsid, meta, vis ->
+                def newMeta = [
+                    argstr:"--no-diff --crosses --suffix '${meta.subobs?:''}.${meta.name}' --combine-freq",
+                    plot_suffix:".cross"
+                ]
+                [obsid, mapMerge(meta, newMeta), vis]
+            }
+            | demo11_allsky
 
         // wsclean: make deconvolved images
         if (params.img_split_intervals) {
