@@ -566,12 +566,12 @@ workflow asvoRawFlow {
 
     obsMetafitsRawByCh.flatMap { obsid, meta, metafits, vis ->
             [
-                ['',                               '.diff.auto',  '.spectrum'],
-                ['--no-diff',                      '.auto',       '.spectrum'],
+                ['--autos',                        '.diff.auto',  '.spectrum'],
+                ['--no-diff --autos',              '.auto',       '.spectrum'],
                 ['--crosses',                      '.diff.cross', '.spectrum'],
                 ['--crosses --no-diff',            '.cross',      '.spectrum'],
-                ['--sigchain',                     '.diff.auto',  '.sigchain'],
-                ['--sigchain --no-diff',           '.auto',       '.sigchain'],
+                ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
+                ['--sigchain --no-diff --autos',   '.auto',       '.sigchain'],
                 ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
                 ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
             ].collect { argstr, plot_prefix, plot_suffix ->
