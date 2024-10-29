@@ -1388,7 +1388,7 @@ process hypCalSol {
     """
     #!/bin/bash -eux
     """ + (para ? "export CUDA_VISIBLE_DEVICES=0" : "") + """
-    export num_gpus="\$(nvidia-smi -L | wc -l)"
+    export num_gpus="\$(${params.cmd_gpu_count})"
     if [ \$num_gpus -eq 0 ]; then
         echo "no gpus found"
         exit 1
@@ -2452,7 +2452,7 @@ process chipsGrid {
 
     label "chips"
     label "cpu_half"
-    label "mem_half"
+    label "mem_full"
     label "nvme"
 
     maxRetries 3
