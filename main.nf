@@ -268,10 +268,10 @@ process birliPrepUV {
     time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 2) }
     disk { 50.GB * Math.pow(task.attempt, 2) }
     stageInMode "symlink"
-    memory { 300.GB * task.attempt }
+    memory { 200.GB * task.attempt }
     errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
 
-    tag "${obsid}${suffix}"
+    tag "${obsid}${suffix?:''}"
 
     when: !params.noprep
 
@@ -315,6 +315,7 @@ process demo03_mwalib {
     stageInMode "symlink"
     storeDir "${params.outdir}/${obsid}/raw_qa"
     label "mwa_demo"
+    tag "${metafits.baseName}"
 
     script:
     """
@@ -329,9 +330,11 @@ process demo04_ssins {
     output:
     tuple val(obsid), val(meta), path("${base}${meta.plot_suffix?:''}.png")
 
-    stageInMode "symlink"
+    stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/${qa}_qa"
     label "mwa_demo"
+    label "mem_full"
+    time 1.hour
     tag "${base}${meta.plot_suffix?:''}"
 
     script:
@@ -358,6 +361,7 @@ process demo11_allsky {
     stageInMode "symlink"
     storeDir "${params.outdir}/${obsid}/img"
     label "mwa_demo"
+    label "mem_half"
     tag "${base}${meta.plot_suffix?:''}"
 
     script:
@@ -859,6 +863,10 @@ def birli_argstr_suffix() {
     def suffix = params.prep_suffix ?: ''
     def args_asvo = [output: "uvfits"]
     def args_cli = [:]
+    if (params.van_vleck) {
+        args_cli['van-vleck'] = null
+        suffix += "_vv"
+    }
     if (params.prep_time_res_s != null) {
         args_asvo.avg_time_res = params.prep_time_res_s
         args_cli['avg-time-res'] = params.prep_time_res_s
