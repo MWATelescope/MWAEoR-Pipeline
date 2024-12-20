@@ -349,6 +349,8 @@ process birliPrepUV {
     if (meta.freq_res != null && meta.freq_res > params.prep_freq_res_khz) {
         throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
     }
+    meta.prep_freq_res = params.prep_freq_res_khz?:meta.freq_res
+    meta.prep_time_res = params.prep_time_res_s?:meta.time_res
     def coarse_chans = (meta.coarse_chans?:[]).sort(false)
     def not_contiguous = (coarse_chans.size > 1 && coarse_chans.size < coarse_chans[-1] - coarse_chans[0])
     def channel_glob = ""
@@ -370,6 +372,81 @@ process birliPrepUV {
         -u "${prefix}${obsid}${suffix}.uvfits" \
         -m "${metafits}" \
         ${raw}
+    """
+}
+
+process hypPrepVisConvert {
+    storeDir "${params.outdir}/${obsid}/prep"
+    label "hyperdrive_cpu"
+    time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 2) }
+    disk { 50.GB * Math.pow(task.attempt, 2) }
+    stageInMode "symlink"
+    memory { 200.GB * task.attempt }
+    // errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    errorStrategy 'terminate'
+    tag "${obsid}${suffix}"
+
+    input:
+    tuple val(obsid), val(meta_), path(metafits), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(vis)
+
+    when: (params.prep_export_time_res_s != null || params.prep_export_freq_res_khz != null)
+
+    script:
+    meta = deepcopy(meta_)
+    prefix = "birli_"
+    suffix = '' + (params.prep_suffix ?: '')
+    args = [:]
+    if (meta['subobs'] != null) {
+        suffix += "_${subobs}"
+    }
+    if (params.prep_export_time_res_s != null) {
+        if (meta.prep_time_res != null && meta.prep_time_res > params.prep_export_time_res_s) {
+            throw new Exception("error: target time_res ${params.prep_export_time_res_s} < prep time res ${meta.prep_time_res}. \nmeta=${meta}")
+        }
+        suffix += "_${params.prep_export_time_res_s}s"
+        args['time-average'] = params.prep_export_time_res_s
+    }
+    if (params.prep_export_freq_res_khz != null) {
+        if (meta.prep_freq_res != null && meta.prep_freq_res > params.prep_export_freq_res_khz) {
+            throw new Exception("error: target freq_res ${params.prep_export_freq_res_khz} < prep freq res ${meta.prep_freq_res}. \nmeta=${meta}")
+        }
+        suffix += "_${params.prep_export_freq_res_khz}kHz"
+        args['freq-average'] = params.prep_export_freq_res_khz
+    }
+    if (params.ssins_apply) {
+        suffix += ".ssins"
+    }
+    prepFlags = meta.prepFlags?:[]
+    fineChanFlags = meta.fineChanFlags?:[]
+    if (prepFlags.size() > 0) {
+        args["tile-flags"] = "${prepFlags.join(' ')}"
+    }
+    if (prepFlags.size() > 0) {
+        args["tile-flags"] = "${prepFlags.join(' ')}"
+    }
+    if (fineChanFlags.size() > 0) {
+        args["fine-chan-flags-per-coarse-chan"] = "${fineChanFlags.join(' ')}"
+    }
+    argstr = args
+        .collect { k, v ->
+            if (v == null) {
+                ['--' + k]
+            }
+            else {
+                ['--' + k] + v
+            }
+        }
+        .flatten()
+        .join(' ')
+    vis = ''+"${prefix}${obsid}${suffix}.${params.prep_export_ext}"
+    """
+    set -eux
+    ${params.hyperdrive_cpu} vis-convert \
+        ${argstr} \
+        -d $metafits $uvfits \
+        -o "${vis}"
     """
 }
 
@@ -398,13 +475,13 @@ process demo04_ssins {
     storeDir "${params.outdir}/${obsid}/${qa}_qa"
     label "mwa_demo"
     label "mem_super"
-    time 1.hour
-    tag "${base}${meta.plot_suffix?:''}"
+    time 3.hour
+    tag "${base}${meta.plot_base?:''}"
 
     input:
     tuple val(obsid), val(meta), path(metafits), path(vis)
     output:
-    tuple val(obsid), val(meta), path("${base}${meta.plot_suffix?:''}.png")
+    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"), path("${base}${meta.mask_base?:''}*_SSINS_mask.h5")
 
     when: !params.nodemo
 
@@ -424,16 +501,17 @@ process demo04_ssins {
 }
 
 process demo11_allsky {
-    stageInMode "symlink"
+    stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/img"
     label "mwa_demo"
     label "mem_super"
-    tag "${base}${meta.plot_suffix?:''}"
+    tag "${base}${meta.plot_base?:''}"
+    time 23.hour
 
     input:
     tuple val(obsid), val(meta), path(vis)
     output:
-    tuple val(obsid), val(meta), path("${base}${meta.plot_suffix?:''}*.fits")
+    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}*.fits")
 
     when: !params.nodemo
 
@@ -643,15 +721,16 @@ workflow asvoRawFlow {
                 ['--no-diff --autos',              '.auto',       '.spectrum'],
                 ['--crosses',                      '.diff.cross', '.spectrum'],
                 ['--crosses --no-diff',            '.cross',      '.spectrum'],
-                ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
-                ['--sigchain --no-diff --autos',   '.auto',       '.sigchain'],
-                ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
-                ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
+                // ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
+                // ['--sigchain --no-diff --autos',   '.auto',       '.sigchain'],
+                // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
+                // ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
             ].collect { argstr, plot_prefix, plot_suffix ->
-                def newMeta = [argstr:argstr, plot_suffix:"${plot_prefix}${plot_suffix}"]
+                def newMeta = [argstr:argstr, plot_base:"${plot_prefix}${plot_suffix}"]
                 if (meta.subobs != null) {
                     newMeta.argstr += " --suffix=${meta.subobs}"
-                    newMeta.plot_suffix = "${plot_prefix}${meta.subobs}${plot_suffix}"
+                    newMeta.mask_base = "${plot_prefix}${meta.subobs}"
+                    newMeta.plot_base = "${plot_prefix}${meta.subobs}${plot_suffix}"
                 }
                 [obsid, mapMerge(meta, newMeta), metafits, vis]
             }
@@ -684,17 +763,18 @@ workflow asvoRawFlow {
                 ['--autos --no-diff',              '.auto',       '.spectrum'],
                 ['--crosses',                      '.diff.cross', '.spectrum'],
                 ['--crosses --no-diff',            '.cross',      '.spectrum'],
-                ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
-                ['--sigchain --autos --no-diff',   '.auto',       '.sigchain'],
-                ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
-                ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
-                ['--flags --autos --no-diff',      '.auto',       '.flags'],
-                ['--flags --no-diff --crosses',    '.cross',      '.flags'],
+                // ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
+                // ['--sigchain --autos --no-diff',   '.auto',       '.sigchain'],
+                // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
+                // ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
+                // ['--flags --autos --no-diff',      '.auto',       '.flags'],
+                // ['--flags --no-diff --crosses',    '.cross',      '.flags'],
             ].collect { argstr, plot_prefix, plot_suffix ->
-                def newMeta = [argstr:argstr, plot_suffix:"${plot_prefix}${plot_suffix}"]
+                def newMeta = [argstr:argstr, plot_base:"${plot_prefix}${plot_suffix}"]
                 if (meta.subobs != null) {
                     newMeta.argstr += " --suffix=${meta.subobs}"
-                    newMeta.plot_suffix = "${plot_prefix}${meta.subobs}${plot_suffix}"
+                    newMeta.mask_base = "${plot_prefix}${meta.subobs}"
+                    newMeta.plot_base = "${plot_prefix}${meta.subobs}${plot_suffix}"
                 }
                 [obsid, mapMerge(meta, newMeta), metafits, vis]
             }
@@ -833,7 +913,7 @@ process asvoRaw {
     tag "${obsid}"
     time { 1.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
     disk { 100.GB * Math.pow(task.attempt, 4) }
-    memory { 50.GB * Math.pow(task.attempt, 4) }
+    memory { 60.GB * Math.pow(task.attempt, 4) }
     label "giant_squid"
     label "rate_limit"
     maxRetries 2
@@ -1497,7 +1577,7 @@ process phaseFit {
 process hypApplyUV {
     storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
-    label "hyperdrive"
+    label "hyperdrive_cpu"
     label "cpu_half"
     label "nvme"
     label "mem_half"
@@ -1516,7 +1596,7 @@ process hypApplyUV {
     // echo \$'meta=${meta}'
     """
     #!/bin/bash -eux
-    ${params.hyperdrive} solutions-apply ${meta.apply_args} \
+    ${params.hyperdrive_cpu} solutions-apply ${meta.apply_args} \
         --time-average=${meta.time_res}s \
         --freq-average=${meta.freq_res}kHz \
         --data "${metafits}" "${vis}" \
@@ -1544,7 +1624,7 @@ process hypApplyMS {
     // storeDir "/data/curtin_mwaeor/FRB_hopper/"
 
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
-    label "hyperdrive"
+    label "hyperdrive_cpu"
     label "cpu_half"
     label "gpu"
 
@@ -1563,7 +1643,7 @@ process hypApplyMS {
     // echo \$'meta=${meta}'
     """
     #!/bin/bash -eux
-    ${params.hyperdrive} solutions-apply ${meta.apply_args} \
+    ${params.hyperdrive_cpu} solutions-apply ${meta.apply_args} \
         --time-average=${meta.time_res}s \
         --freq-average=${meta.freq_res}kHz \
         --data "${metafits}" "${vis}" \
@@ -1690,7 +1770,7 @@ process hypIonoSubUV {
     when: !params.noionosub
 
     script:
-    meta = mapMerge(meta_, [sub: "ionosub", name: ''+"ionosub_${meta_.name}_i${meta_.ionosub_nsrcs}"])
+    meta = mapMerge(meta_, [sub: "ionosub", name: ''+"ionosub_${meta_.name}${params.peel_suffix?:''}_i${meta_.ionosub_nsrcs}"])
     sub_vis = ''+"hyp_${obsid}${meta.subobs?:''}_${meta.name}.uvfits"
     logs = ''+"hyp_vis-${meta.name}_uv.log"
     json = ''+"hyp_peel_${obsid}${meta.subobs?:''}_${meta.name}_uv.json"
@@ -1991,7 +2071,7 @@ process plotPrepVisQA {
 process plotSols {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
-    label "hyperdrive"
+    label "hyperdrive_cpu"
 
     input:
     tuple val(obsid), val(meta), path(metafits), path(soln)
@@ -2001,7 +2081,7 @@ process plotSols {
     script:
     plots_glob = ''+"${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}*_${meta.name}_{phases,amps}*.png"
     """
-    ${params.hyperdrive} solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
+    ${params.hyperdrive_cpu} solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${soln}
     """
 }
 
@@ -2537,7 +2617,7 @@ EOF
 
 process chipsLssa {
     storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}_b${bias_mode}/${meta.name}"
-    tag "${group}.${params.lssa_bin}.${meta.name}"
+    tag "${group}.${params.lssa_bin}.${meta.name}.${pol}_${bias_mode}"
     label "chips"
     label "cpu_half"
     label "mem_half"
@@ -2549,47 +2629,92 @@ process chipsLssa {
 
     output:
     tuple val(group), val(meta),
-        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_${pol}_${bias_mode}.iter.${ext}.dat")
+        path("{crosspower,residpower,residpowerimag,totpower,flagpower,fg_num,outputweights}_${pol}_${bias_number}.iter.${ext}.dat")
 
     script:
     maxu = params.lssa_maxu
     nbins = params.lssa_nbins
-    meta = mapMerge(meta_, [nbins: nbins, maxu: maxu])
+    bias_mode = (meta_.bias_mode ?: params.lssa_bias_mode ?:0 )
+    // TODO: pretty sure meta_.lowfreq is midpoint but chips wants start frequency
+    lowfreq = meta_.lowfreq
+    nchan = meta_.nchans
+    chanwidth = (meta_.freq_res * 1e3)
+    period = meta_.int_time
+
+    // lssa = "lssa_${group}.${meta.name}.${pol}.tar.gz"
+
+    if (bias_mode==0) {
+        nchan_out = nchan
+        start_chan = 0
+    } else if (bias_mode==10) {
+        nchan_out = Math.round(nchan / 2)
+        start_chan = Math.round(nchan / 2)
+    } else if (bias_mode==12) {
+        nchan_out = Math.round(nchan / 2)
+        start_chan = Math.round(nchan / 4)
+    } else if (bias_mode==13) {
+        nchan_out = Math.round(nchan / 2)
+        start_chan = Math.round(nchan / 8)
+    } else {
+        throw new Exception("unknown bias_mode ${bias_mode}")
+    }
+    lssa_bin = params.lssa_bin
+    // simple fft takes bias_mode
+    bias_number = bias_mode // general fft takes  uses channel start in filename instead of bias_mode
+    syntax_specific_args = "${bias_mode}"
+    if (lssa_bin =~ /.*general.*/) {
+        bias_number = start_chan
+        syntax_specific_args = "${nchan_out} ${start_chan}"
+    }
+    meta = mapMerge(meta_, [
+        nbins: nbins,
+        maxu: maxu,
+        bias_mode: bias_mode,
+        bias_number: bias_number,
+        nchan_out: nchan_out,
+        start_chan: start_chan,
+        lssa_bin: lssa_bin,
+    ])
+
     ext = meta.ext
     pol = meta.pol?:"xx"
-    bias_mode = params.lssa_bias_mode?:0
-
-    nchans = meta.nchans
     eorband = meta.eorband
     details = "details_${group}.${meta.name}.${pol}.${params.lssa_bin}_b${bias_mode}.txt"
-    // lssa = "lssa_${group}.${meta.name}.${pol}.tar.gz"
+
+    if (eorband!=1) {
+        throw new Exception("eorband=${eorband} currently hardcoded as 1 (high) in fft")
+    }
 
     // echo "meta=${meta}"
     """
     #!/bin/bash -eux
-    """ + (eorband == null || !nchans || nbins == null || !ext || maxu == null || bias_mode == null ? "exit 2" : "" ) + """
+    """ + (eorband == null || !nchan || nbins == null || !ext || maxu == null || bias_mode == null ? "exit 2" : "" ) + """
 
     tar -zxvf ${grid}
 
     export DATADIR="\$PWD" INPUTDIR="\$PWD/" OUTPUTDIR="\$PWD/" OBSDIR="\$PWD/" OMP_NUM_THREADS=${task.cpus}
 
     echo ext=${ext} | tee -a ${details}
-    echo nchans=${nchans} | tee -a ${details}
+    echo nchan=${nchan} | tee -a ${details}
+    echo nchan_out=${nchan_out} | tee -a ${details}
     echo nbins=${nbins} | tee -a ${details}
     echo pol=${pol} | tee -a ${details}
     echo maxu=${maxu} | tee -a ${details}
     echo bias_mode=${bias_mode} | tee -a ${details}
     echo eorband=${eorband} | tee -a ${details}
+    echo lowfreq=${lowfreq} | tee -a ${details}
+    echo chanwidth=${chanwidth} | tee -a ${details}
+    echo period=${period} | tee -a ${details}
     echo date=\$(date -Is) | tee -a ${details}
     echo host=\$(hostname) | tee -a ${details}
-    echo lssa_bin=\$(which ${params.lssa_bin}) | tee -a ${details}
+    echo lssa_bin=\$(which ${lssa_bin}) | tee -a ${details}
 
-    ${params.lssa_bin} "${ext}" "${nchans}" "${nbins}" "${pol}" "${maxu}" "${ext}" "${bias_mode}" "${eorband}" \
-        2>&1 | tee syslog_lssa_simple_${pol}.txt
+    ${lssa_bin} "${ext}" "${nchan}" "${nbins}" "${pol}" "${maxu}" "${ext}" ${syntax_specific_args} -p "${period}" -c "${chanwidth}" \
+        2>&1 | tee ${lssa_bin}.txt
 
-    export cross_size="\$(stat -c%s crosspower_${pol}_${bias_mode}.iter.${ext}.dat)"
+    export cross_size="\$(stat -c%s crosspower_${pol}_${bias_number}.iter.${ext}.dat)"
     if (( cross_size < 4097 )); then
-        echo "crosspower_${pol}_${bias_mode}.iter.${ext}.dat is too small (\$cross_size), exiting"
+        echo "crosspower_${pol}_${bias_number}.iter.${ext}.dat is too small (\$cross_size), exiting"
         exit 3
     fi
     """
@@ -2685,7 +2810,7 @@ process chipsPlot {
         args += " --plot_wedge_cut_2D"
     }
     if (meta.nchans) {
-        args += " --N_chan ${meta.nchans}"
+        args += " --N_chan_orig ${meta.nchans}"
     }
     if (meta.kperp) {
         args += " --K_perp ${meta.kperp}"
@@ -2696,7 +2821,7 @@ process chipsPlot {
 
 process chips1d_tsv {
     storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}_b${bias_mode}/${meta.name}"
-    tag "${group}.${meta.name}.${pol}"
+    tag "${group}.${meta.name}.${pol}_${bias_mode}"
     label "chips_wrappers"
     label "nvme"
     time 15.minute
@@ -2704,25 +2829,17 @@ process chips1d_tsv {
     input:
     tuple val(group), val(meta), path(grid)
     output:
-    tuple val(group), val(meta), path("1D_power_${pol}.${suffix}.tsv")
+    tuple val(group), val(meta), path(tsv)
 
     script:
     pol = meta.pol?:"null"
 
     suffix = "${meta.ext}"
-    bias_mode = params.lssa_bias_mode?:0
+    bias_mode = (meta.bias_mode ?: params.lssa_bias_mode ?: 0 )
+    tsv = "1D_power_${pol}_${bias_mode}.${suffix}.tsv"
     lowerfreq = meta.lowfreq
-    nchans = meta.nchans
+    nchan = meta.nchans
     eorband = meta.eorband?:1
-    if (bias_mode != 0) {
-        suffix += "_b${bias_mode}"
-        if (bias_mode == 10 && nchans == 384 && eorband == 1) {
-            nchans = 192
-            lowerfreq = 182515000
-        } else {
-            throw new Exception("Unknown bias_mode=${bias_mode}, channel=${nchans}, eorband=${eorband} combo")
-        }
-    }
 
     args = [
         title: meta.title,
@@ -2738,23 +2855,26 @@ process chips1d_tsv {
         kperp_max: (meta.kperp_max ?: params.kperp_max),
         kperp_min: (meta.kperp_min ?: params.kperp_min),
         kparra_min: (meta.kparra_min ?: params.kparra_min),
+        kparra_max: (meta.kparra_max ?: params.kparra_max),
 
         // chips group
         lowerfreq: lowerfreq,
         chan_width: (meta.freq_res * 1e3),
         umax: meta.maxu,
-        // density_correction: meta.density_correction,
-        // omega_matter: meta.omega_matter,
-        // omega_baryon: meta.omega_baryon,
-        // omega_lambda: meta.omega_lambda,
-        // hubble: meta.hubble,
+        bias_mode: bias_mode,
+        density_correction: (meta.density_correction ?: params.density_correction),
+        omega_matter: (meta.omega_matter ?: params.omega_matter),
+        omega_baryon: (meta.omega_baryon ?: params.omega_baryon),
+        omega_lambda: (meta.omega_lambda ?: params.omega_lambda),
+        hubble: (meta.hubble ?: params.hubble),
+        // num obs
 
     ].findAll { _k, v -> v != null }
         .collect { k, v -> """--${k} "${v}" """ }
         .join(" ")
 
-    if (nchans) {
-        args += " --N_chan ${nchans}"
+    if (nchan) {
+        args += " --N_chan_orig ${nchan}"
     }
     if (meta.kperp) {
         args += " --K_perp ${meta.kperp}"
@@ -2765,7 +2885,7 @@ process chips1d_tsv {
 
     """
     chips1D_tsv.py ${args}
-    cp "1D_power_${pol}.tsv" "1D_power_${pol}.${suffix}.tsv"
+    cat *.tsv
     """
 }
 
@@ -4417,7 +4537,7 @@ workflow cal {
                         .toSortedList()
                         .flatten()
                 ).collectFile(
-                    name: "phase_fits_${key}.tsv", newLine: true, sort: false,
+                    name: "phase_fits_${params.dical_name}_${key}.tsv", newLine: true, sort: false,
                     storeDir: "${results_dir()}${params.cal_suffix}"
                 )
                 .view { [it, it.readLines().size()] }
@@ -4480,7 +4600,7 @@ workflow cal {
                     ].join("\t")
                 }
                 .collectFile(
-                    name: "cal_metrics${params.cal_suffix}.tsv", newLine: true, sort: true,
+                    name: "cal_metrics_${params.dical_name}${params.cal_suffix}.tsv", newLine: true, sort: true,
                     seed: [
                         "OBS", "SUBOBS", "LST", "EWP", "CAL NAME", "STATUS",
                         "N BAD ANTS", "BAD ANTS",
@@ -4521,9 +4641,9 @@ workflow cal {
                     [ obsid, failCode, reason?:'' ].join("\t")
                 }
                 .collectFile(
-                    name: "reasons_calqa.tsv", newLine: true, sort: true,
+                    name: "reasons_calqa_${params.dical_name}${params.cal_suffix}.tsv", newLine: true, sort: true,
                     seed: ([ "OBSID", "FAIL CODE", "REASON" ]).join("\t"),
-                    storeDir: "${results_dir()}"
+                    storeDir: "${results_dir()}${params.cal_suffix}"
                 )
                 | view { it.readLines().size() }
 
@@ -4878,8 +4998,8 @@ workflow img {
 
         obsMetaVis.map { obsid, meta, vis ->
                 def newMeta = [
-                    argstr:"--no-diff --crosses --suffix '${meta.subobs?:''}.${meta.name}' --combine-freq",
-                    plot_suffix:".cross"
+                    argstr:"--no-diff --crosses --combine-freq --pix 501",
+                    plot_base:".cross"
                 ]
                 [obsid, mapMerge(meta, newMeta), vis]
             }
@@ -6157,6 +6277,8 @@ workflow qaPrep {
             .map { obsid, meta, _metafits, _vis -> [obsid, meta] }
             .tap { obsMeta }
 
+        // subobsMetaMetafitsVis | hypPrepVisConvert
+
         // get sourcelists for each obs (only currently used in subtraction, not calibration)
         subobsMetaMetafitsVis.map { obsid, _m, metafits, _vis -> [obsid, metafits ] }
             .unique()
@@ -6752,7 +6874,7 @@ workflow bootstrap {
                     prep_suffix:prep_suffix,
                     apply_suffix: (apply_name ? "_${apply_name}" : ""),
                     dical_suffix:"_${dical_name}",
-                    peel_suffix: (params.ionosub_nsrcs != null ? "_i${params.ionosub_nsrcs}" : ""),
+                    peel_suffix: "${params.peel_suffix}" + (params.ionosub_nsrcs != null ? "_i${params.ionosub_nsrcs}" : ""),
                 ]
                 [ obsid, deepcopy(meta) ]
             }
