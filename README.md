@@ -319,7 +319,17 @@ nextflow run main.nf --img_suffix='-briggs+0.5' --img_weight='briggs +0.5'
 
 ### pawsey quirks
 
-Running this pipeline on Pawsey requires the `cluster_edit` nextflow module. Get the available versions of nextflow with `module avail nextflow` and load the module with (e.g.)
+#### stack space
+
+For absolutely huge runs (20k obs), you need a bunch of stack space. This can be set with `NXF_OPTS="-Xms256000m -Xmx512000m"` in the nextflow command line. Slowly remove each `--no...` argument as you wish to progress to the next stage, to avoid filling up your filesystem with petabytes e.g.
+
+```bash
+module load java/17; NXF_OPTS="-Xms256000m -Xmx512000m" nextflow run main.nf -profile garrawarla -with-tower -w /scratch/mwaeor/dev/nfwork -c eor0high-dn-2024-04-03.conf --nothumbnail --nopolcomp --thumbnail_limits=false --novideo --noimg --noionosub --nosub --noimg --noprep --noimgqa --novisqa --nops
+```
+
+#### cross-cluster
+
+Using the data mover nodes on Garrawarla requires the `cluster_edit` nextflow module. Get the available versions of nextflow with `module avail nextflow` and load the module with (e.g.)
 
 ```bash
 module load nextflow_cluster_edit/22.04.3_cluster_edit
@@ -341,6 +351,10 @@ architecture reference:
 
 ```bash
 tail -n 999999 -F .nextflow.log | grep -E '(COMPLETED; exit: [^0]|WARN|WorkflowStatsObserver)'
+```
+
+```bash
+tail -F $(scontrol -d show job $jobid | awk -F= '/StdOut/ {print $2}')
 ```
 
 ### dug quirks
@@ -388,6 +402,16 @@ while read run; do
 done < <(nextflow log -q | tail -n 50 | head -n -1) | tee runs.txt
 ```
 
+### debug GPU failures
+
+```bash
+nextflow log lethal_watson -F 'process =~ /.*hyp.*/ && status == "FAILED"' -f "workdir,start,process,tag,exit" | while IFS=$'\t' read -r workdir start process tag exit ; do
+  [ -f ${workdir}/.command.log ] \
+  && echo workdir=$workdir start=$start process=$process tag=$tag exit=$exit \
+  && grep -E 'SLURM_(JOBID|NODELIST)' ${workdir}/.command.log ; \
+done | tee gpu_issues.txt
+```
+
 ### suffixes
 
 ```bash
@@ -432,11 +456,23 @@ optional: update `profiles.<profile>.params.<container>_sif` in `nextflow.config
 squeue -u $USER --format %A -h --states SE | sort | xargs scancel
 ```
 
+### Hold all pending jobs
+
+```bash
+scontrol hold $(squeue --me --states=pd --format='%i' --noheader | tr $'\n' ' ')
+```
+
+### Cancel certain jobs pending, or running for less than 5 minutes
+
+```bash
+while true; do squeue --me --states=R --json | jq -r '.jobs[]|select([(.name|contains("hypIonoSubUV")),(.user_name=="dev"),(.start_time>($now+300))]|all)|[.job_id]|@tsv' --argjson now $(date +%s) | tee /dev/stderr | while read -r jobid; do scancel $jobid; done; sleep 60; done
+```
+
 ### get info for jobid: standard out
 
 ```bash
 export jobid=...
-squeue --json | /pawsey/mwa/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid $jobid
+squeue --json | /pawsey/mwa/mwaeor/dev/bin/jq -r '.jobs[]|select(.job_id==$jobid)|.standard_output' --argjson jobid $jobid
 ```
 
 ### get info for asvo jobs stuck in queue
@@ -468,6 +504,13 @@ while true; do echo ""; date -Is; squeue -u $USER -t R --format "%.7i %.9P %60j 
 
 ```bash
 squeue -u $USER -t R --format "%.7i %.9P %30j %.2t %.8M %.8L %.36Z"
+```
+
+### sinfo get available resources
+
+```bash
+# name, partition, state, cpus (avail/idle/other/total), tmp(mb), free mem
+sinfo --Node --format="%9N %10P %6t %14C %9d %e" | tee sinfo_idle.txt
 ```
 
 ## Handy Giant Squid Commands
@@ -537,9 +580,10 @@ find $outdir -type f -path '*/prep/birli_*.ssins.uvfits' -print | sed -e 's!.*/\
 # calibrated
 find $outdir -type f -path '*/cal/hyp_*.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-calibrated.csv | tee /dev/stderr | wc -l
 # iono peeled
-find $outdir -type f -path '*/cal/hyp_peel*.json' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-peeled.csv | tee /dev/stderr | wc -l
+find $outdir -type f -path '*/cal/hyp_*_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000.uvfits' -print | sed -e 's!.*/\([0-9]\{10\}\)/.*!\1!g' | sort | uniq | tee obsids-peeled.csv | tee /dev/stderr | wc -l
 # images
-ls $outdir/*/img/*.fits | cut -d / -f 5 | sort | uniq | tee obsids-imgd.csv | tee /dev/stderr | wc -l
+cd $outdir
+find . -path '*/img/*.fits' | cut -d / -f 2 | sort | uniq | tee ~/MWAEoR-Pipeline/obsids-imgd.csv | tee /dev/stderr | wc -l
 ```
 
 ### get files not downloaded
@@ -622,6 +666,23 @@ done
 find ${outdir} -type d -maxdepth 2 -regextype posix-egrep -regex $'.*[0-9]{10}/(cal|cal_qa|img|img_qa|iono_qa|prep_qa|vis_qa|ps_metrics).*' -exec rm -rv {} \;
 ```
 
+## Handy rclone commands
+
+- on Garrawarla, you can use this rclone `/pawsey/mwa/mwaeor/dev/bin/rclone`
+
+### list Acacia buckets
+
+```bash
+rclone lsd mwaeor:
+```
+
+### list obsids of prep files
+
+```bash
+rclone ls mwaeor:high0.prep --include '*_2s_40kHz.ssins.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.ssins.csv
+rclone ls mwaeor:high0.prep --include '*_2s_40kHz.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.csv
+```
+
 ### download prep to outdir by suffix
 
 the fast way
@@ -669,7 +730,15 @@ while read -r obsid; do
 done < obsids.csv
 ```
 
-### Bootstrap visibility files
+### replace di-cal logs
+
+```bash
+cat ~/MWAEoR-Pipeline/obsids-eor0high-nodrift-passimg.csv | while read -r obsid; do
+  touch ${obsid}/cal/hyp_di-cal_${obsid}_30l_src4k_8s_80kHz.log
+done
+```
+
+### Bootstrap visibility files prep from acacia
 
 ```bash
 salloc --nodes=1 --mem=350G --gres=gpu:1 --time=8:00:00 --clusters=garrawarla --partition=gpuq -c 18 --tmp=500G
@@ -715,22 +784,313 @@ hyperdrive peel \
 # copy files off /nvmetmp before the interactive job ends
 ```
 
+### Bootstrap visibility files raw from asvo
+
+
+aaaa
+
+```bash
+cat <<- 'EoF' > /pawsey/mwa/mwaeor/dev/slurm/dl_raw.slurm
+#!/bin/bash -ex
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --account=mwaeor
+#SBATCH --partition=copyq
+#SBATCH --mem=60G
+#SBATCH --time=0:30:00
+if [[ ! -d $outdir ]]; then echo "invalid outdir=$outdir"; exit 1; fi
+if [[ -n $obsid ]]; then echo "invalid obsid=$obsid"; exit 1; fi
+mkdir -p $outdir/$obsid/raw; cd $_
+giant-squid submit-vis $obsid
+giant-squid list -j --types download_visibilities --states ready -- $obsid |
+    tee /dev/stderr |
+    jq -r '.[]|[.jobId,.files[0].fileUrl//"",.files[0].fileSize//"",.files[0].fileHash//""]|@tsv' |
+    tee ready.tsv
+if read -r jobid url size hash <ready.tsv; then
+    echo "$(date -Is) downloading obsid=$obsid jobid=$jobid url=$url size=$size hash=$hash"
+    srun --ntasks=1 wget $url -O- --progress=dot:giga --wait=60 --random-wait | tee >(tar -x) | sha1sum -c <(echo "$hash -")
+fi
+EoF
+
+salloc --nodes=1 --time=23:00:00 --partition=copyq --cpus-per-task=2 --ntasks=1
+if [[ ! -d $outdir ]]; then echo "invalid outdir=$outdir"; exit 1; fi
+
+# alias giant-squid='module load singularity; singularity exec -B $PWD /pawsey/mwa/singularity/giant-squid/giant-squid_latest.sif /opt/cargo/bin/giant-squid'
+cat ~/MWAEoR-Pipeline/obsids-nb_validate_ewp_-2..+3_480.csv | while read -r obsid; do
+  mkdir -p $outdir/$obsid/raw; cd $_
+  export raw_glob="${obsid}_2*.fits";
+  export n_raw=$(ls $raw_glob 2>/dev/null | wc -l);
+  if [[ $n_raw -ge 23 ]]; then echo "skipping $obsid n_raw=$n_raw"; continue; fi
+  sbatch -D"$PWD" -J"dl_raw${obsid}" --export=obsid=$obsid /pawsey/mwa/mwaeor/dev/slurm/dl_raw.slurm
+done | tee ~/MWAEoR-Pipeline/download.log
+
+# srun --ntasks=1 wget $url -O- --progress=dot:giga --wait=60 --random-wait | tee >(tar -x) | sha1sum -c <(echo "$hash -")
+# srun --ntasks=1 wget $url -O- --progress=dot:giga --wait=60 --random-wait | tee >(tar -x) | sha1sum -c <(echo "$hash -") ) &
+
+# ps=("${PIPESTATUS[@]}")
+# if [ ${ps[0]} -ne 0 ]; then
+#     echo "Download failed. status=${ps[0]}"
+#     exit \${ps[0]}
+# elif [ ${ps[1]} -ne 0 ]; then
+#     echo "Untar failed. status=${ps[1]}"
+#     exit \${ps[1]}
+# elif [ ${ps[2]} -ne 0 ]; then
+#     echo "Hash check failed. status=${ps[2]}"
+#     exit ${ps[2]}
+# fi
+```
+
+TODO: fix this
+```
+> echo '1066570904' | while read -r obsid; do
+>   srun giant-squid submit-vis --wait $obsid
+>   cd $outdir/$obsid/
+>   mkdir -p raw
+>   cd $_
+>   srun giant-squid download $obsid
+>   break
+> done
+Error: Obsid 1066570904 is associated with multiple jobs; cannot continue due to ambiguity.
+Error: Obsid 1066570904 is associated with multiple jobs; cannot continue due to ambiguity.
+Error: Obsid 1066570904 is associated with multiple jobs; cannot continue due to ambiguity.
+srun: error: hpc-data5: tasks 0-2: Exited with exit code 1
+```
+
+### Boostrap obsid qa files from acacia prep
+
+```bash
+export obsid=...
+cd $outdir
+mkdir $obsid
+cd $obsid
+mkdir -p raw
+wget -O raw/${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
+mkdir -p prep
+rclone copy mwaeor:high0.prep/birli_${obsid}_2s_40kHz.uvfits prep/
+mkdir -p cal
+touch cal/hyp_di-cal_${obsid}_30l_src4k.log
+rclone copy mwaeor:high0.soln/hyp_soln_${obsid}_30l_src4k.fits cal/
+touch cal/hyp_apply_30l_src4k_8s_80kHz.log
+rclone copy mwaeor:high0.uvfits/hyp_${obsid}_30l_src4k_8s_80kHz.uvfits cal/
+touch cal/hyp_vis-sub_30l_src4k_8s_80kHz_uv.log
+rclone copy mwaeor:high0.uvfits/hyp_${obsid}_sub_30l_src4k_8s_80kHz.uvfits cal/
+mkdir -p img
+touch img/wsclean_30l_src4k_8s_80kHz.log
+rclone copy mwaeor:high0.img/wsclean_hyp_${obsid}_30l_src4k_8s_80kHz-MFS-$'{XX,YY,V}'-dirty.fits img/
+touch img/wsclean_sub_30l_src4k_8s_80kHz.log
+```
+
+### redo imagqa from acacia
+
+```bash
+export name="sub_30l_src4k_8s_80kHz"
+while read -r obsid; do rclone copy mwaeor:high0.imgqa/wsclean_hyp_${obsid}_${name}.json .; jq -r '['${obsid}',"'${name}'",.XX.RMS_ALL,.XX.RMS_BOX,.XX.PKS0023_026?.PEAK_FLUX,.XX.PKS0023_026?.INT_FLUX,.YY.RMS_ALL,.YY.RMS_BOX,.YY.PKS0023_026.PEAK_FLUX,.YY.PKS0023_026.INT_FLUX,.V.RMS_ALL,.V.RMS_BOX,.V.PKS0023_026?.PEAK_FLUX,.V.PKS0023_026?.INT_FLUX,.V_XX.RMS_RATIO,.V_XX.RMS_RATIO_BOX]|@csv' wsclean_hyp_${obsid}_${name}.json; done < obsids-stage2imgqa.csv | tee img_metrics.csv
+```
+
+### copy from backup
+
+```bash
+cd $outdir
+for o in ??????????; do
+  f=cal/hyp_soln_${o}_30l_src4k.fits;
+  # f=raw/${o}.metafits;
+  [ -f $o/$f ] && echo $o | tee -a /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/obsids-calib.csv
+
+  # echo -n $f - ;
+  # && [ -f $o/$f ] && echo -n e \
+  # && [ ! -f ../nfdata/$o/$f ] && echo -n r \
+  # && mkdir -p ../nfdata/$o/${f%/*} && mv $o/$f ../nfdata/$o/$f && echo -n m; \
+  # echo '';
+done
+```
+
+### manual archive
+
+```bash
+export outdir=/scratch/$PAWSEY_PROJECT/$USER/nfdata/
+ssh hpc-data
+# ssins prep
+mkdir -p ${outdir}/ssinsprep; cd ${outdir}/ssinsprep
+cat ~/MWAEoR-Pipeline/obsids-eor0high-nodrift-passprep.csv | while read -r obsid; do
+  [[ -f ../${obsid}/prep/birli_${obsid}_2s_40kHz.ssins.uvfits && ! -f ./birli_${obsid}_2s_40kHz.ssins.uvfits ]] && ln -s ../${obsid}/prep/birli_${obsid}_2s_40kHz.ssins.uvfits ./ ;
+done
+rclone copy -L -u --ignore-existing --progress ./ mwaeor:high0.prep/
+
+# ssins cal
+mkdir -p ${outdir}/ssinscal; cd ${outdir}/ssinscal
+cat ~/MWAEoR-Pipeline/obsids-eor0high-nodrift-passprep.csv | while read -r obsid; do
+  [[ ! -f ../${obsid}/cal/hyp_soln_${obsid}_ssins_30l_src8k_300it.fits ]] && echo "../${obsid}/cal/hyp_soln_${obsid}_ssins_30l_src8k_300it.fits not present" && continue
+  [[ -f ./hyp_soln_${obsid}_ssins_30l_src8k_300it.fits ]] && echo "./hyp_soln_${obsid}_ssins_30l_src8k_300it.fits exists" && continue
+  ln -s ../${obsid}/cal/hyp_soln_${obsid}_ssins_30l_src8k_300it.fits ./ ;
+done
+rclone copy -L -u --ignore-existing --progress ./ mwaeor:high0.soln/
+
+# prep ssins soln calqa uvf uvfits visqa img imgqa
+
+cat << 'EoF' > templates.tsv
+soln|cal|hyp_soln_${obsid}_ssins_30l_src8k_300it.fits
+calqa|cal_qa|metrics_hyp_soln_${obsid}_ssins_30l_src8k_300it_X.json
+calqa|cal_qa|hyp_soln_${obsid}_ssins_30l_src8k_300it.fits.json
+uvfits|cal|hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000.uvfits
+uvfits|cal|hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz.uvfits
+peel|cal|hyp_peel_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000_uv.json
+visqa|vis_qa|uvmeta_birli_${obsid}_2s_40kHz.json
+visqa|vis_qa|uvmeta_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000.json
+visqa|vis_qa|uvmeta_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz.json
+img|img|wsclean_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000-MFS-I-image.fits
+img|img|wsclean_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000-MFS-V-image.fits
+img|img|wsclean_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000-MFS-XX-image.fits
+img|img|wsclean_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000-MFS-YY-image.fits
+img|img|wsclean_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz-MFS-I-image.fits
+img|img|wsclean_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz-MFS-V-image.fits
+img|img|wsclean_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz-MFS-XX-image.fits
+img|img|wsclean_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz-MFS-YY-image.fits
+EoF
+# prep|prep|birli_${obsid}_2s_40kHz.uvfits
+# imgqa|img_qa|wsclean_hyp_${obsid}_ionosub_ssins_30l_src8k_300it_8s_80kHz_i1000-MFS.json
+# imgqa|img_qa|wsclean_hyp_${obsid}_ssins_30l_src8k_300it_8s_80kHz-MFS.json
+set -x
+# cat ~/MWAEoR-Pipeline/obsids-eor0high-nodrift-passimg.csv | while read -r obsid; do
+cat templates.tsv | while IFS='|' read -r bucket subdir template; do
+  echo "bucket=$bucket subdir=$subdir template=$template"
+  mkdir -p $outdir/$bucket; cd $outdir/$bucket
+  cat ~/MWAEoR-Pipeline/obsids-as_2024-06-13_CRAM.csv | while read -r obsid; do
+    cd $outdir/$bucket
+    export file=$(eval echo $template);
+    # echo $obsid $file $template;
+    [[ ! -f $outdir/${obsid}/${subdir}/${file} ]] && echo "$outdir/${obsid}/${subdir}/${file} not found" && continue
+    [[ -f ./${file} ]] && continue
+    ln -s $outdir/${obsid}/${subdir}/${file} ./ ;
+  done
+done
+ # echo "./${file} exists" && continue
+# echo "$outdir/${obsid}/${subdir}/${file} not present" && continue
+# cd $outdir/${obsid}/${subdir}/
+# rclone copy -L -u --progress ${file} mwaeor:high0.${bucket}/
+# cat ~/MWAEoR-Pipeline/obsids-nb_validate_ewp_-2..+3_480.csv | while read -r obsid; do
+
+export grp="cram" # "high0"
+for bucket in calqa visqa peel img imgqa uvfits soln; # prep; do
+  [[ ! -d $outdir/$bucket/ ]] && echo "$outdir/$bucket/ not found" && continue
+  rclone mkdir mwaeor:${grp}.${bucket}
+  rclone copy -L -u --progress $outdir/$bucket/ mwaeor:${grp}.${bucket}/
+done
+# rclone copy -L -u --progress $outdir/$bucket/ mwaeor:high0.${bucket}/
+
+
+# fail prep
+cd  ~/MWAEoR-Pipeline/
+comm -23 <(sort obsids-eor0high-nodrift.csv) <(sort obsids-eor0high-nodrift-passprep.csv) > obsids-eor0high-nodrift-failprep.csv
+
+mkdir -p ${outdir}/failprep; cd ${outdir}/failprep
+cat ~/MWAEoR-Pipeline/obsids-eor0high-nodrift-failprep.csv | while read -r obsid; do
+  [[ ! -f ../${obsid}/prep/birli_${obsid}_2s_40kHz.uvfits ]] && echo "../${obsid}/prep/birli_${obsid}_2s_40kHz.uvfits not present" && continue
+  [[ -f ./birli_${obsid}_2s_40kHz.uvfits ]] && echo "./birli_${obsid}_2s_40kHz.uvfits exists" && continue
+  ln -s ../${obsid}/prep/birli_${obsid}_2s_40kHz.uvfits ./ ;
+done
+rclone copy -L -u --ignore-existing --progress ./ mwaeor:high0.prep/
+```
+
+## Handy ffmpeg commands
+
+### render prepvisqa
+
+```bash
+# singularity exec /pawsey/mwa/singularity/ffmpeg/ffmpeg_latest.sif ffmpeg
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+ffmpeg -y -framerate 5 -pattern_type glob \
+ -i "${outdir}/??????????/prep/prepvis_metrics_??????????_rms.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/prepvis_metrics_rms.mp4"
+```
+
+### render polcomps
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l sub_30l; do
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/img_qa/??????????_${name}_*.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p \
+  "${outdir}/results/polcomp_${name}.mp4"
+done
+for range in 122 125 132; do
+  for name in 30l sub_30l; do
+    ffmpeg -y -framerate 5 -pattern_type glob\
+    -i "${outdir}/${range}???????/img_qa-briggs+0.5_4096px/??????????_${name}_*.png" \
+    -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+    -pix_fmt yuv420p \
+    "${outdir}/results/polcomp_${range}_${name}_briggs+0.5_4096px.mp4"
+  done
+done
+```
+
+### render visQA
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/vis_qa/hyp_??????????_30l_src4k_8s_80kHz_vis_metrics_rms.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/vis_metrics_rms.mp4"
+```
+
+### render calQA
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l_src4k_dlyspectrum poly_30l_src4k_dlyspectrum 30l_src4k_fft poly_30l_src4k_fft 30l_src4k_variance poly_30l_src4k_variance; do
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/cal_qa/calmetrics_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/calmetrics_${name}.mp4"
+done
+```
+
+### plot solutions
+
+```bash
+module load ffmpeg
+# ,crop=in_w-3600:in_h:800:in_h
+for name in 30l_src4k_phases poly_30l_src4k_phases 30l_src4k_amps poly_30l_src4k_amps; do
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/??????????/cal_qa/hyp_soln_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/hyp_soln_${name}.mp4"
+done
+for name in 30l_src4k_phases 30l_src4k_amps; do
+  ffmpeg -y -framerate 5 -pattern_type glob\
+  -i "${outdir}/12????????/cal_qa/hyp_soln_??????????_${name}.png" \
+  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
+  -pix_fmt yuv420p \
+  "${outdir}/results/hyp_soln_12_${name}.mp4"
+done
+```
+
+### Fast flagged vs unflagged
+
+```bash
+for name in 30l_src4_fast_amps 30l_src4_fast_phases; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-unflagged.mp4"
+done
+for name in 30l_src4_fast_variance 30l_src4_fast_fft 30l_src4_fast_dlyspectrum; do
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
+  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
+done
+```
+
+
 ## Misc handy commands
-
-### rclone
-
-list buckets
-
-```bash
-rclone lsd mwaeor:
-```
-
-list obsids of prep files
-
-```bash
-rclone ls mwaeor:high0.prep --include '*_2s_40kHz.ssins.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.ssins.csv
-rclone ls mwaeor:high0.prep --include '*_2s_40kHz.uvfits' | cut -d' ' -f2 | cut -d'_' -f2 | sort | uniq | tee obsids-acacia-prep-2s_40kHz.csv
-```
 
 ### Carta
 
@@ -890,157 +1250,6 @@ for name in sub_30l ionosub_30l; do
     done;
   done;
 done
-```
-
-### manually render movies
-
-#### render prepvisqa
-
-```bash
-# singularity exec /pawsey/mwa/singularity/ffmpeg/ffmpeg_latest.sif ffmpeg
-module load ffmpeg
-# ,crop=in_w-3600:in_h:800:in_h
-ffmpeg -y -framerate 5 -pattern_type glob \
- -i "${outdir}/??????????/prep/prepvis_metrics_??????????_rms.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/prepvis_metrics_rms.mp4"
-```
-
-#### render polcomps
-
-```bash
-module load ffmpeg
-# ,crop=in_w-3600:in_h:800:in_h
-for name in 30l sub_30l; do
-  ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/??????????/img_qa/??????????_${name}_*.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p \
-  "${outdir}/results/polcomp_${name}.mp4"
-done
-for range in 122 125 132; do
-  for name in 30l sub_30l; do
-    ffmpeg -y -framerate 5 -pattern_type glob\
-    -i "${outdir}/${range}???????/img_qa-briggs+0.5_4096px/??????????_${name}_*.png" \
-    -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-    -pix_fmt yuv420p \
-    "${outdir}/results/polcomp_${range}_${name}_briggs+0.5_4096px.mp4"
-  done
-done
-```
-
-#### render visQA
-
-```bash
-module load ffmpeg
-# ,crop=in_w-3600:in_h:800:in_h
-ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/??????????/vis_qa/hyp_??????????_30l_src4k_8s_80kHz_vis_metrics_rms.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/vis_metrics_rms.mp4"
-```
-
-#### render calQA
-
-```bash
-module load ffmpeg
-# ,crop=in_w-3600:in_h:800:in_h
-for name in 30l_src4k_dlyspectrum poly_30l_src4k_dlyspectrum 30l_src4k_fft poly_30l_src4k_fft 30l_src4k_variance poly_30l_src4k_variance; do
-  ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/??????????/cal_qa/calmetrics_??????????_${name}.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/calmetrics_${name}.mp4"
-done
-```
-
-#### plot solutions
-
-```bash
-module load ffmpeg
-# ,crop=in_w-3600:in_h:800:in_h
-for name in 30l_src4k_phases poly_30l_src4k_phases 30l_src4k_amps poly_30l_src4k_amps; do
-  ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/??????????/cal_qa/hyp_soln_??????????_${name}.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/hyp_soln_${name}.mp4"
-done
-for name in 30l_src4k_phases 30l_src4k_amps; do
-  ffmpeg -y -framerate 5 -pattern_type glob\
-  -i "${outdir}/12????????/cal_qa/hyp_soln_??????????_${name}.png" \
-  -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" \
-  -pix_fmt yuv420p \
-  "${outdir}/results/hyp_soln_12_${name}.mp4"
-done
-```
-
-### kickstart obsid from acacia
-
-```bash
-export obsid=...
-cd $outdir
-mkdir $obsid
-cd $obsid
-mkdir -p raw
-wget -O raw/${obsid}.metafits "http://ws.mwatelescope.org/metadata/fits?obs_id=${obsid}&include_ppds=1"
-mkdir -p prep
-rclone copy mwaeor:high0.prep/birli_${obsid}_2s_40kHz.uvfits prep/
-mkdir -p cal
-touch cal/hyp_di-cal_${obsid}_30l_src4k.log
-rclone copy mwaeor:high0.soln/hyp_soln_${obsid}_30l_src4k.fits cal/
-touch cal/hyp_apply_30l_src4k_8s_80kHz.log
-rclone copy mwaeor:high0.uvfits/hyp_${obsid}_30l_src4k_8s_80kHz.uvfits cal/
-touch cal/hyp_vis-sub_30l_src4k_8s_80kHz_uv.log
-rclone copy mwaeor:high0.uvfits/hyp_${obsid}_sub_30l_src4k_8s_80kHz.uvfits cal/
-mkdir -p img
-touch img/wsclean_30l_src4k_8s_80kHz.log
-rclone copy mwaeor:high0.img/wsclean_hyp_${obsid}_30l_src4k_8s_80kHz-MFS-$'{XX,YY,V}'-dirty.fits img/
-touch img/wsclean_sub_30l_src4k_8s_80kHz.log
-```
-
-#### redo imagqa from acacia
-
-```bash
-export name="sub_30l_src4k_8s_80kHz"
-while read -r obsid; do rclone copy mwaeor:high0.imgqa/wsclean_hyp_${obsid}_${name}.json .; jq -r '['${obsid}',"'${name}'",.XX.RMS_ALL,.XX.RMS_BOX,.XX.PKS0023_026?.PEAK_FLUX,.XX.PKS0023_026?.INT_FLUX,.YY.RMS_ALL,.YY.RMS_BOX,.YY.PKS0023_026.PEAK_FLUX,.YY.PKS0023_026.INT_FLUX,.V.RMS_ALL,.V.RMS_BOX,.V.PKS0023_026?.PEAK_FLUX,.V.PKS0023_026?.INT_FLUX,.V_XX.RMS_RATIO,.V_XX.RMS_RATIO_BOX]|@csv' wsclean_hyp_${obsid}_${name}.json; done < obsids-stage2imgqa.csv | tee img_metrics.csv
-```
-
-#### copy from backup
-
-```bash
-for o in ??????????; do
-  f=cal/hyp_soln_${o}_30l_src4k.fits;
-  # f=raw/${o}.metafits;
-  [ -f $o/$f ] && echo $o | tee -a /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/obsids-calib.csv
-
-  # echo -n $f - ;
-  # && [ -f $o/$f ] && echo -n e \
-  # && [ ! -f ../nfdata/$o/$f ] && echo -n r \
-  # && mkdir -p ../nfdata/$o/${f%/*} && mv $o/$f ../nfdata/$o/$f && echo -n m; \
-  # echo '';
-done
-```
-
-#### Fast flagged vs unflagged
-
-```bash
-for name in 30l_src4_fast_amps 30l_src4_fast_phases; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-flagged.mp4"
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/hyp_soln_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/hyp_soln_${name}-unflagged.mp4"
-done
-for name in 30l_src4_fast_variance 30l_src4_fast_fft 30l_src4_fast_dlyspectrum; do
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-flagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-flagged.mp4"
-  ffmpeg -y -framerate 5 -pattern_type glob -i '/data/curtin_mwaeor/data/??????????/cal_qa-unflagged-fast/calmetrics_??????????_'$name'.png' -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -pix_fmt yuv420p "/data/curtin_mwaeor/data/results-test/calmetrics_${name}-unflagged.mp4"
-done
-```
-
-### sinfo get available resources
-
-```bash
-# name, partition, state, cpus (avail/idle/other/total), tmp(mb), free mem
-sinfo --Node --format="%9N %10P %6t %14C %9d %e" | tee sinfo_idle.txt
 ```
 
 ### ionpeel?
@@ -1267,4 +1476,15 @@ singularity exec --bind \$PWD --cleanenv --home /astro/mwaeor/dev/mplhome /pawse
     --offsets=offsets.json \
     --obsid=${obsid} \
     --output_name="/pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/test/ionoqa_${obsid}.json"
+```
+
+### average files
+
+```bash
+module use /pawsey/mwa/software/python3/modulefiles
+module load hyperdrive
+cd /scratch/mwaeor/dev/nbdata/
+cat ~/MWAEoR-Pipeline/obsids-nb_validate_ewp_-2..+3_480.csv | while read -r obsid; do
+  [[ ! -f birli_${obsid}_2s_80kHz.ssins.uvfits ]] && hyperdrive vis-convert --freq-average 80kHz --data $outdir/${obsid}/prep/birli_${obsid}_2s_40kHz.ssins.uvfits --outputs birli_${obsid}_2s_80kHz.ssins.uvfits
+done
 ```
