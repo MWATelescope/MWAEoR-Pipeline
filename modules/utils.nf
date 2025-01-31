@@ -51,7 +51,6 @@ def deepcopy(orig) {
     if (ident =~ /.*HashMap.*/) {
         ident += ' ' + orig.keySet().toString()
     }
-    println("deepcopy ${byteArray.size()} bytes ${ident}")
     def bin = new ByteArrayInputStream(byteArray)
     def ois = new ObjectInputStream(bin)
     return ois.readObject()
@@ -85,7 +84,7 @@ def exitCodes() {
         135: "??? qaPrep:img:thumbnail",
         137: "SIGKILL - killed (OOM)",
         139: "SIGSEGV - segmentation fault",
-        140: "SIGUSR2 - out of time"
+        140: "SIGUSR2 - out of time",
     ]
 }
 
@@ -180,8 +179,7 @@ def parseJson(path) {
     // TODO: fix nasty hack to deal with NaNs
     try {
         // try reading the file first, it may not be ready yet.
-        def size = file(path).size()
-        print("reading ${size} bytes from ${path}")
+        file(path).size()
     }
     catch (Exception _e) {
         Thread.sleep(5)
@@ -189,25 +187,33 @@ def parseJson(path) {
     try {
         def text = path.getText().replaceAll(/(NaN|-?Infinity)/, '"$1"')
         def parsed = getSlurper().parseText(text)
-        return deepcopy(parsed)
+        return parsed
     }
     catch (Exception e) {
         println("error parsing ${path} ${e}")
     }
 }
 
-def parseCsv(path, header=true, skipBytes=0, delimeter=',') {
+def parseCsv(path, header = true, skipBytes = 0, delimeter = ',') {
     def allLines = path.readLines()
     if (!header) {
         return allLines.collect { it.split(delimeter) }
     }
+    if (allLines.size() == 0) {
+        println("empty file ${path}")
+        return []
+    }
     else {
-        def head = allLines[0][skipBytes..-1].split(delimeter)
+        def head = allLines[0]
+        if (head.size() > skipBytes) {
+            head = head[skipBytes..-1]
+        }
+        head = head.split(delimeter)
         def body = allLines[1..-1]
         def parsed = body.collect { row ->
             [head, row.split(delimeter)].transpose().collectEntries()
         }
-        return deepcopy(parsed)
+        return parsed
     }
 }
 
@@ -253,11 +259,11 @@ def isNaN(n) {
 
 // display a long list of ints, replace bursts of consecutive numbers with ranges
 // start, end, delim
-def displayRange(s, e, d=',') {
+def displayRange(s, e, d = ',') {
     return s == e ? "${s}${d}" : s == e - 1 ? "${s}${d}${e}${d}" : "${s}-${e}${d}"
 }
 
-def displayInts(l_, delim=',') {
+def displayInts(l_, delim = ',') {
     def max_ints_display = 50
     def mid_ints_display = (max_ints_display - 1).intdiv(2)
     def l = (l_ as ArrayList).sort(false).unique()
@@ -327,7 +333,7 @@ def get_seconds(time, unit) {
         s: 1,
         ms: 0.001,
         µs: 0.000001,
-        ns: 1E-9
+        ns: 1E-9,
     ]
     if (unit_conversions[unit] == null) {
         println("unknown duration unit ${unit} for time ${time}")
@@ -371,12 +377,16 @@ def prepqa_pass(flagMeta) {
         fail_code = fail_code == 0 ? 55 : fail_code
     }
 
-    if (params.filter_bad_tile_frac != null && flagMeta.n_tiles != null && (flagMeta.prepFlags ?: []).size() > 0) {
-        // print("prepqa_pass filter_bad_tile_frac=${params.filter_bad_tile_frac} n_tiles=${flagMeta.n_tiles} flagAnts=${flagMeta.flagAnts?:[]} prepFlags=${flagMeta.prepFlags?:[]}")
+    if (flagMeta.n_tiles != null && (flagMeta.prepFlags ?: []).size() > 0) {
         def n_tiles = flagMeta.n_tiles
         def n_bad_tiles = ((((flagMeta.flagAnts ?: []) as Set) + ((flagMeta.prepFlags ?: []) as Set)) as ArrayList).size()
-        if (n_bad_tiles > params.filter_bad_tile_frac * n_tiles) {
+        def n_good_tiles = n_tiles - n_bad_tiles
+        if (params.filter_bad_tile_frac != null && n_bad_tiles > params.filter_bad_tile_frac * n_tiles) {
             reasons += "n_bad_tiles(${n_bad_tiles}) > ${params.filter_bad_tile_frac} * n_tiles(${n_tiles})"
+            fail_code = fail_code == 0 ? 63 : fail_code
+        }
+        if (params.filter_min_good_tiles != null && n_good_tiles < params.filter_min_good_tiles) {
+            reasons += "n_good_tiles(${n_good_tiles}) < ${params.filter_min_good_tiles}"
             fail_code = fail_code == 0 ? 63 : fail_code
         }
     }
@@ -409,15 +419,6 @@ def calqa_pass(meta) {
             fail_code = fail_code == 0 ? 66 : fail_code
         }
     }
-    // TODO: this
-    // if (params.filter_bad_tile_frac != null && flagMeta.n_tiles != null && (flagMeta.prepFlags?:[]).size() > 0) {
-    //     n_tiles = flagMeta.n_tiles
-    //     n_bad_tiles = ((Set(flagMeta.bad_ants?:[]) + Set(flagMeta.prepFlags?:[])) as ArrayList).size()
-    //     if (n_bad_tiles > params.filter_bad_tile_frac * n_tiles) {
-    //         reasons += "n_bad_tiles(${n_bad_tiles}) > ${params.filter_bad_tile_frac} * n_tiles(${n_tiles})"
-    //         fail_code = fail_code==0x00 ? 0x3F : fail_code
-    //     }
-    // }
     def reason = null
     if (reasons.size() > 0) {
         reason = reasons.join('|')
@@ -607,7 +608,7 @@ def decomposeImg(img) {
         meta.inter = inter_tok[1..-1] as int
         meta.suffix = "${inter_tok}-${meta.inter_suffix}"
     }
-    deepcopy(meta)
+    meta
 }
 
 def groupMeta(meta) {
@@ -655,13 +656,13 @@ def groupMeta(meta) {
         "eorfield",
         "config",
         "name",
-        "sub"
+        "sub",
     ].each { key ->
         if (meta[key] != null) {
             newMeta[key] = meta[key]
         }
     }
-    deepcopy(newMeta)
+    newMeta
 }
 
 def getFailReason(code) {
@@ -714,7 +715,7 @@ def getFailReason(code) {
         118: "118 - large sub_xx_pks_int:xx_pks_int",
         119: "119 - small sub_xx_pks_int:xx_pks_int",
         120: "120 - large sub_yy_pks_int:yy_pks_int",
-        121: "121 - small sub_yy_pks_int:yy_pks_int"
+        121: "121 - small sub_yy_pks_int:yy_pks_int",
     ]
     failCodes[code] ?: "unknown fail code ${code}"
 }
@@ -811,7 +812,7 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
         7: 51,
         8: 54,
         9: 83,
-        10: 87
+        10: 87,
     ]
 
     def gridpoint_number = (wsStats.metadata ?: [:]).gridpoint_number
@@ -980,7 +981,11 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
 
     // 0x1X - runtime
     if (params.filter_bad_tile_frac != null && bad_tile_frac > params.filter_bad_tile_frac) {
-        fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}"]
+        fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}, (bad_tile_frac=${bad_tile_frac})>${params.filter_bad_tile_frac})"]
+        fail_code = fail_code == 0 ? 16 : fail_code
+    }
+    else if (params.filter_min_good_tiles != null && n_good_tiles < params.filter_min_good_tiles) {
+        fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}, (n_good_tiles=${n_good_tiles})<${params.filter_min_good_tiles})"]
         fail_code = fail_code == 0 ? 16 : fail_code
     }
     if (params.filter_dead_dipole_frac != null && dead_dipole_frac > params.filter_dead_dipole_frac) {
@@ -1059,7 +1064,7 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
         badbeamshape: badbeamshape.size(),
         fault_str: faults.shortstring.replaceAll(java.util.regex.Pattern.compile('\\s+'), '|'),
         num_data_files: fileStats.num_data_files,
-        num_data_files_archived: fileStats.num_data_files_archived
+        num_data_files_archived: fileStats.num_data_files_archived,
     ]
 }
 
@@ -1073,7 +1078,7 @@ def wscleanParams() {
         intervals_out: params.img_intervals_out,
         split_intervals: params.img_split_intervals,
         pol: params.img_pol,
-        args: params.wsclean_args
+        args: params.wsclean_args,
     ]
 }
 
@@ -1087,8 +1092,8 @@ def wscleanDConvParams() {
             major_clean_gain: params.img_major_clean_gain,
             auto_threshold: params.img_auto_threshold,
             auto_mask: params.img_auto_mask,
-            mwa_path: params.img_mwa_path
-        ]
+            mwa_path: params.img_mwa_path,
+        ],
     )
 }
 

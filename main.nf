@@ -506,7 +506,7 @@ process demo11_allsky {
     label "mwa_demo"
     label "mem_super"
     tag "${base}${meta.plot_base?:''}"
-    time 23.hour
+    time 8.hours
 
     input:
     tuple val(obsid), val(meta), path(vis)
@@ -1760,7 +1760,7 @@ process hypIonoSubUV {
     label "mem_full" // need a full node otherwise gpu runs out of memory
     label "gpu"
     label "rate_limit_50"
-    time { params.scratchFactor * 1.5.hour }
+    time { params.scratchFactor * 2.5.hour }
 
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
@@ -2538,16 +2538,16 @@ process chipsCombine {
     tag "${group}.${pol}.${meta.name}"
     label "chips"
     label "cpu_full"
-    label "mem_full"
+    label "mem_super"
     label "nvme_full"
     stageInMode "symlink"
     // takes about 6 hours for 300, 16 hours for 1000,
     // double it for safety
     // clamp 1h < x < 24h
     time {
-        def t = 1.hour
+        def t = 2.hour
         if (exts.size() < 1000) {
-            t = [1.hour, 6.hour * (exts.size() - 0.5) / 300].max()
+            t = [2.hour, 6.hour * (exts.size() - 0.5) / 300].max()
         } else {
             t = [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
         }
@@ -4573,7 +4573,7 @@ workflow cal {
                         }
                         def newflags = (calFlags - prepFlags) as ArrayList
                         if (newflags) {
-                            newMeta.calFlags = deepcopy(newflags.sort(false))
+                            newMeta.calFlags = newflags.sort(false)
                         }
                     }
                     [obsid, mapMerge(meta, newMeta)]
@@ -6318,7 +6318,7 @@ workflow qaPrep {
 
         cal.out.obsMetaCalPass
             .map { def (obsid, meta, _soln) = it;
-                def calFlags = deepcopy(meta.calFlags?:[])
+                def calFlags = meta.calFlags?:[]
                 ([obsid, meta.name, meta.subobs?:'', displayInts(meta.prepFlags?:[]), displayInts(calFlags)]).join("\t")
             }
             .collectFile(
@@ -6343,7 +6343,7 @@ workflow qaPrep {
                     nodut1: params.nodut1,
                     apply_args: params.apply_args?:'',
                 ]
-                def calFlags = deepcopy(meta.calFlags?:[])
+                def calFlags = meta.calFlags?:[]
                 if (calFlags) {
                     newMeta.apply_args = ''+"${params.apply_args?:''} --tile-flags ${calFlags.join(' ')}"
                 }
@@ -6748,7 +6748,7 @@ workflow makeVideos {
                 def frames = coerceList(frames_).flatten()
                 def latest = frames.collect { it.lastModified() }.max()
                 def cachebust = "${latest}_x" + String.format("%04d", frames.size())
-                def sorted = frames.collect { path -> file(deepcopy(path.toString())) }.sort(false)
+                def sorted = frames.collect { path -> file(path.toString()) }.sort(false)
                 [name, sorted, cachebust]
             }
             | ffmpeg
@@ -6762,7 +6762,7 @@ workflow makeTarchives {
         zips = zip.map { name, files ->
                 def latest = files.collect { file -> file.lastModified() }.max()
                 def cachebust = ''+"${latest}_x" + String.format("%04d", files.size())
-                // sorted = files.collect { path -> file(deepcopy(path.toString())) }.sort(false)
+                // sorted = files.collect { path -> file(path.toString()) }.sort(false)
                 [name, files, cachebust]
             }
             | tarchive
@@ -6800,7 +6800,7 @@ workflow extPrep {
 
     obsWsmetaVis = obsMetaVis.join(ws.out.obsMeta)
         .map { obsid, meta, vis, wsMeta ->
-            [ deepcopy(obsid), mapMerge(meta, wsMeta), vis ]
+            [ obsid, mapMerge(meta, wsMeta), vis ]
         }
 
     flag(obsWsmetaVis, ws.out.obsMetafits)
