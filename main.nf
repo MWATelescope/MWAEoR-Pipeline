@@ -2723,20 +2723,29 @@ process chipsLssa {
 
 process chipsPlot {
     storeDir "${params.outdir}/${group}/${params.lssa_bin}${params.cal_suffix}_b${bias_mode}/${meta.name}"
-    tag "${group}.${meta.name}.${ptype}"
-    label "python"
+    tag "${group}.${meta.name}.${ptype}.${pol}_${bias_mode}"
+    label "chips_wrappers"
     time 15.minute
 
     input:
-    tuple val(group), val(meta), path(grid)
+    tuple val(group), val(meta_), path(grid)
     output:
-    tuple val(group), val(meta), path("chips${dims}D_${pol}_${suffix}.png")
+    tuple val(group), val(meta), path(plot)
 
     when: !params.noplotchips
 
     script:
-    bias_mode = params.lssa_bias_mode?:0
-    pol = meta.pol?:"both"
+    bias_mode = (meta_.bias_mode ?: params.lssa_bias_mode ?: 0 )
+    pols_present = coerceList(grid).collect { (it.name =~ /[\w_]+_([xy]{2})_[\d]+.*/)[0][1] }.unique()
+    if (pols_present.size() == 1) {
+        pol = pols_present[0]
+    } else if (pols_present.size() == 2) {
+        pol = "both"
+    } else {
+        throw new Exception("unknown polarisations in ${grid}")
+    }
+    // meta.pol is the argument passed to plot, pol determines the filename
+    meta = mapMerge(meta_, [pol: pol, bias_mode: bias_mode])
     if (pol == "both") {
         pol = "xx+yy"
     }
@@ -2761,9 +2770,10 @@ process chipsPlot {
         suffix = "${meta.ext}${suffix}"
     }
     args = [
-        title: meta.title,
+        // title: meta.title,
         // file group
         basedir: "./",
+        bias_mode: bias_mode,
         chips_tag: meta.ext,
         chips_tag_one: (meta.tags?:[])[0],
         chips_tag_two: (meta.tags?:[])[1],
@@ -2815,8 +2825,13 @@ process chipsPlot {
     if (meta.kperp) {
         args += " --K_perp ${meta.kperp}"
     }
+    plot = "chips${dims}D_${pol}_${suffix}.png"
 
-    template "jline_plotchips.py"
+    // template "jline_plotchips.py"
+    """
+    plotchips_all.py ${args}
+    mv *.png ${plot} || true # in case plot is not named correctly
+    """
 }
 
 process chips1d_tsv {
@@ -5991,7 +6006,7 @@ workflow chips {
         singles1D = chipsLssa.out.map { chunk, meta, lssa ->
                 def newMeta = [
                     ptype: '1D',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips1d',
                     max_power: 1e15,
@@ -6004,7 +6019,7 @@ workflow chips {
         singles1DDelta = chipsLssa.out.map { chunk, meta, lssa ->
                 def newMeta = [
                     ptype: '1D',
-                    pol: 'both',
+                    // pol: 'both',
                     plot_delta: true,
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips1d',
@@ -6018,7 +6033,7 @@ workflow chips {
         singles2D = chipsLssa.out.map { chunk, meta, lssa ->
                 def newMeta = [
                     ptype: '2D',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips2d',
                     max_power: 1e15,
@@ -6039,7 +6054,7 @@ workflow chips {
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
                 def newMeta = [
                     ptype: '1D_comp',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower\\n${chunk}",
                     plot_name: 'chips1d_comp',
                     name: nosubMeta.name,
@@ -6068,7 +6083,7 @@ workflow chips {
                 def subMeta = metas.find { it.sub == 'sub'} ?: [:]
                 def newMeta = [
                     ptype: '2D_diff',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower diff (nosub-sub)\\n${chunk}",
                     plot_name: 'chips2d_diff_nosub_sub',
                     name: subMeta.name,
@@ -6097,7 +6112,7 @@ workflow chips {
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
                 def newMeta = [
                     ptype: '2D_diff',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower diff (nosub-ionosub)\\n${chunk}",
                     plot_name: 'chips2d_diff_nosub_ionosub',
                     name: ionosubMeta.name,
@@ -6127,7 +6142,7 @@ workflow chips {
                 def subMeta = metas.find { it.sub == 'sub'} ?: [:]
                 def newMeta = [
                     ptype: '2D_diff',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower diff (ionosub-sub)\\n${chunk}",
                     plot_name: 'chips2d_diff_ionosub_sub',
                     name: ionosubMeta.name,
@@ -6157,7 +6172,7 @@ workflow chips {
                 def subMeta = metas.find { it.sub == 'sub'} ?: [:]
                 def newMeta = [
                     ptype: '2D_ratio',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower ratio (nosub:sub)\\n${chunk}",
                     plot_name: 'chips2d_ratio_nosub_sub',
                     name: subMeta.name,
@@ -6189,7 +6204,7 @@ workflow chips {
                 def ionosubMeta = metas.find { it.sub == 'ionosub'} ?: [:]
                 def newMeta = [
                     ptype: '2D_ratio',
-                    pol: 'both',
+                    // pol: 'both',
                     title: ''+"crosspower ratio (nosub:ionosub)\\n${chunk}",
                     plot_name: 'chips2d_ratio_nosub_ionosub',
                     name: ionosubMeta.name,
