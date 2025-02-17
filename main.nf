@@ -27,7 +27,7 @@ include {
     mapMerge;
     obsids_file;
     openWithDelay;
-    parseCsv;
+    parseCsv2;
     parseFloatOrNaN;
     parseJson;
     prepqa_pass;
@@ -474,8 +474,8 @@ process demo04_ssins {
     stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/${qa}_qa"
     label "mwa_demo"
-    label "mem_super"
-    time 3.hour
+    label "mem_super" // cross jobs need tonnes, autos don't
+    time 6.hour
     tag "${base}${meta.plot_base?:''}"
 
     input:
@@ -3424,7 +3424,7 @@ workflow ws {
 
                     // channels
                     summary.freq_res,
-                    displayInts(summary.coarse_chans),
+                    displayInts(summary.coarse_chans, ' '),
                     isNaN(summary.eorband)?'':summary.eorband,
 
                     // times
@@ -3511,10 +3511,14 @@ workflow ws {
             }
             | demo03_mwalib
 
-        demo03_mwalib.out.map { obsid, meta, antennasTsv, channelsTsv ->
+        demo03_mwalib.out.map { obsid, meta, antennasTsv_, channelsTsv_ ->
+                def antennasTsv = coerceList(antennasTsv_)[0]
+                def antennas = parseCsv2(antennasTsv, true, 0, '\t')
+                def channelsTsv = coerceList(channelsTsv_)[0]
+                def channels = parseCsv2(channelsTsv, true, 0, '\t')
                 def newMeta = [
-                    channels: parseCsv(coerceList(channelsTsv)[0], true, 0, '\t'),
-                    antennas: parseCsv(coerceList(antennasTsv)[0], true, 0, '\t'),
+                    channels: channels,
+                    antennas: antennas,
                 ]
                 [obsid, mapMerge(meta, newMeta)]
             }
@@ -4543,7 +4547,7 @@ workflow cal {
                 .map { it.join("\t") }
                 .concat(
                     phaseFits.out.combine(allTiles).map { obsid, meta, tsv, _pngs, tiles ->
-                            phaseFits = parseCsv(coerceList(tsv)[0], true, 0, '\t')
+                            phaseFits = parseCsv2(coerceList(tsv)[0], true, 0, '\t')
                             ([obsid, meta.lst] + tiles.collect { tile ->
                                 def tilePhaseFits = phaseFits.find { "${it['tile_id']}" == "${tile}" }?:[:]
                                 tilePhaseFits[key]?:''
@@ -5116,10 +5120,10 @@ workflow img {
             // limits are used to set the color scale of each type of image.
             imgLimits = imgQuantiles.out
                 .map { obsid, meta, hist ->
-                    def high = parseCsv(hist, true, 2)
+                    def high = parseCsv2(hist, true, 2, ',')
                         .find { row -> Float.compare(parseFloatOrNaN(row.quantile), params.thumbnail_quantile as Float) == 0 }
                     high = parseFloatOrNaN(high == null ? null : high.value)
-                    def low = parseCsv(hist, true, 2)
+                    def low = parseCsv2(hist, true, 2, ',')
                         .find { row -> Float.compare(parseFloatOrNaN(row.quantile), (1-params.thumbnail_quantile) as Float) == 0 }
                     low = parseFloatOrNaN(low == null ? null : low.value)
                     // subobs = meta.subobs?:''
@@ -5977,7 +5981,7 @@ workflow chips {
             .map { it.join("\t") }
             .concat(
                 chips1d_tsv.out.combine(all_k_modes).map { group, meta, tsv, k_modes ->
-                        def table = parseCsv(coerceList(tsv)[0], true, 0, '\t')
+                        def table = parseCsv2(coerceList(tsv)[0], true, 0, '\t')
                         def (deltas, _noises) = k_modes.collect { k_mode ->
                             def row = table.find { it.k_modes == k_mode }
                             if (row == null) {

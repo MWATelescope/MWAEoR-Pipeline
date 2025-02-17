@@ -194,7 +194,8 @@ def parseJson(path) {
     }
 }
 
-def parseCsv(path, header = true, skipBytes = 0, delimeter = ',') {
+// no idea what's going on but there appears to be a name collision with another parseCsv
+def parseCsv2(path, header = true, skipBytes = 0, delimeter = ',') {
     def allLines = path.readLines()
     if (!header) {
         return allLines.collect { it.split(delimeter) }
