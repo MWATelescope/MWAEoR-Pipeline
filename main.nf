@@ -346,7 +346,7 @@ process birliPrepUV {
     meta = deepcopy(meta_)
     prefix = "birli_"
     def (_argstr_asvo, argstr_cli, suffix) = birli_argstr_suffix()
-    if (meta.freq_res != null && meta.freq_res > params.prep_freq_res_khz) {
+    if (meta.freq_res != null && params.prep_freq_res_khz != null && meta.freq_res > params.prep_freq_res_khz) {
         throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
     }
     meta.prep_freq_res = params.prep_freq_res_khz?:meta.freq_res
@@ -474,19 +474,22 @@ process demo04_ssins {
     stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/${qa}_qa"
     label "mwa_demo"
-    label "mem_super" // cross jobs need tonnes, autos don't
+    label "cpu_quarter"
+    memory { MemoryUnit.of(6 * vis_bytes) } // TODO: make ssins memory footprint suck less
     time 6.hour
     tag "${base}${meta.plot_base?:''}"
 
     input:
-    tuple val(obsid), val(meta), path(metafits), path(vis)
+    tuple val(obsid), val(meta), path(metafits), path(vis_)
     output:
     tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"), path("${base}${meta.mask_base?:''}*_SSINS_mask.h5")
 
     when: !params.nodemo
 
     script:
-    firstVis = coerceList(vis)[0]
+    vis = coerceList(vis_)
+    vis_bytes = vis.collect { it.size() }.sum()
+    firstVis = vis[0]
     if (firstVis.extension == "uvfits") {
         base = firstVis.baseName
         qa = "prep"
@@ -496,7 +499,7 @@ process demo04_ssins {
     }
     """
     ${params.demo_prelude?:''}
-    /demo/04_ssins.py ${meta.argstr?:''} ${metafits} ${coerceList(vis).join(' ')}
+    /demo/04_ssins.py ${meta.argstr?:''} ${metafits} ${vis.join(' ')}
     """
 }
 
@@ -1154,8 +1157,13 @@ process ssins {
     storeDir "${params.outdir}/${obsid}/prep_qa"
     tag "${base}"
     label "ssins"
+    label "cpu_quarter"
     label "nvme"
-    label "mem_half" // TODO: set these from uvfits size // "mem_full"
+    // TODO: make ssins memory footprint suck less
+    // set memory limit from uvfits size. e.g. need 137GB for a 31GB file
+    // should be 4.5×, but apparently it needs 6×
+    memory { MemoryUnit.of(6 * uvfits.size()) }
+    // set
     time { params.scratchFactor * 15.minute }
     // can't do this because no ntimes in prep meta
     // time { 30.min * ((meta.ntimes?:15) * (meta.nchans?:384) / (15 * 384) ) }
