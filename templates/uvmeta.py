@@ -171,6 +171,7 @@ def main():
         antnames = []
         antnums = []
 
+        print("reading antenna header")
         if ant_hdu := hdus['AIPS AN']:
             for key, value in ant_hdu.header.items():
                 print(f"AN {key:8} => {value}")
@@ -217,7 +218,7 @@ def main():
         OrderedDict(
             gps=float(f"{time.to_value('gps'):.2f}"),
             iso=time.to_value('iso', 'date_hms'),
-            lst_rad=time.sidereal_time('apparent').radian,
+            lst_rad=float(time.sidereal_time('apparent').radian),
             jd1=time.jd1,
             jd2=time.jd2,
         )
@@ -226,8 +227,9 @@ def main():
     if args.weights:
         total_weight = 0
         for i, jd in enumerate(jds):
-            times[i]['weight'] = jd_weights[jd]
-            total_weight += jd_weights[jd]
+            weight = float(jd_weights[jd])
+            times[i]['weight'] = weight
+            total_weight += weight
         data['total_weight'] = total_weight
 
     ants = [
@@ -270,4 +272,4 @@ def main():
 if __name__ == '__main__':
     main()
     from os import system
-    system('date =Is')
+    system('date -Is')

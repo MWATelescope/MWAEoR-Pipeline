@@ -43,7 +43,7 @@ def read_h5(h5file):
         # h5data['jd_array'] =
         jd_array = h5stream['Header']['time_array'][:]
         # weights are bool[time, channel, pol, ]
-        weights = h5stream['Data']['flag_array'].astype(np.float_)
+        weights = h5stream['Data']['flag_array'].astype(np.float64)
         # make weights float
         h5data['weights'] = 1.0 - weights[:, :, :]
     h5data['gps_array'] = jd_to_gps(jd_array)

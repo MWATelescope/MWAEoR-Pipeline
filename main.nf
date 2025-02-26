@@ -327,7 +327,7 @@ process birliPrepUV {
     storeDir "${params.outdir}/${obsid}/prep"
     label "birli"
     label "cpu_half"
-    time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 2) }
+    time { params.scratchFactor * 2.hour * Math.pow(task.attempt, 2) }
     disk { 50.GB * Math.pow(task.attempt, 2) }
     stageInMode "symlink"
     memory { 200.GB * task.attempt }
@@ -473,9 +473,10 @@ process demo03_mwalib {
 process demo04_ssins {
     stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/${qa}_qa"
+    label "ssins"
     label "mwa_demo"
     label "cpu_quarter"
-    memory { MemoryUnit.of(6 * vis_bytes) } // TODO: make ssins memory footprint suck less
+    memory { MemoryUnit.of(7 * vis_bytes) } // TODO: make ssins memory footprint suck less
     time 6.hour
     tag "${base}${meta.plot_base?:''}"
 
@@ -771,7 +772,7 @@ workflow asvoRawFlow {
                 // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
                 // ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
                 // ['--flags --autos --no-diff',      '.auto',       '.flags'],
-                // ['--flags --no-diff --crosses',    '.cross',      '.flags'],
+                // ['--flags --crosses --no-diff',    '.cross',      '.flags'],
             ].collect { argstr, plot_prefix, plot_suffix ->
                 def newMeta = [argstr:argstr, plot_base:"${plot_prefix}${plot_suffix}"]
                 if (meta.subobs != null) {
@@ -1161,10 +1162,10 @@ process ssins {
     label "nvme"
     // TODO: make ssins memory footprint suck less
     // set memory limit from uvfits size. e.g. need 137GB for a 31GB file
-    // should be 4.5×, but apparently it needs 6×
-    memory { MemoryUnit.of(6 * uvfits.size()) }
+    // should be 4.5×, but apparently it needs 6× (+1 if shm)
+    memory { MemoryUnit.of(7 * uvfits.size()) }
     // set
-    time { params.scratchFactor * 15.minute }
+    time { params.scratchFactor * 30.minute }
     // can't do this because no ntimes in prep meta
     // time { 30.min * ((meta.ntimes?:15) * (meta.nchans?:384) / (15 * 384) ) }
 
@@ -1601,16 +1602,24 @@ process hypApplyUV {
     meta = mapMerge(meta_, [name: ''+"${meta_.name}_${meta_.apply_name}"])
     cal_vis = ''+"hyp_${obsid}${meta.subobs?:''}_${meta.name}.uvfits"
     logs = ''+"hyp_apply_${meta.name}.log"
+    args = meta.apply_args?:""
+    if (meta.time_res != null) {
+        args += " --time-average=${meta.time_res}s"
+    }
+    if (meta.freq_res != null) {
+        args += " --freq-average=${meta.freq_res}kHz"
+    }
+    if (meta.nodut1) {
+        args += " --ignore-dut1"
+    }
+
     // echo \$'meta=${meta}'
     """
     #!/bin/bash -eux
-    ${params.hyperdrive_cpu} solutions-apply ${meta.apply_args} \
-        --time-average=${meta.time_res}s \
-        --freq-average=${meta.freq_res}kHz \
+    ${params.hyperdrive_cpu} solutions-apply ${args} \
         --data "${metafits}" "${vis}" \
         --solutions "${soln}" \
         --outputs "${cal_vis}" \
-        ${meta.nodut1 ? "--ignore-dut1" : ""} \
         | tee "${logs}"
     ps=("\${PIPESTATUS[@]}")
     if [ \${ps[0]} -ne 0 ]; then
@@ -1791,7 +1800,6 @@ process hypIonoSubUV {
         --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
         --iono-sub ${meta.ionosub_nsrcs} \
-        --sub ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
         | tee "${logs}"
     ps=("\${PIPESTATUS[@]}")
@@ -1969,7 +1977,7 @@ process uvMeta {
         // max 35 min for 60ts, 144T, 768chans
         [
             (
-                params.scratchFactor * task.attempt * 15.minute * (meta.ntimes?:60) \
+                params.scratchFactor * task.attempt * 20.minute * (meta.ntimes?:60) \
                 * (meta.num_ants?:144) * (meta.num_chans?:768) \
                 / (60 * 128 * 768)
             ),
@@ -2455,7 +2463,7 @@ process chipsGrid {
     label "nvme"
     maxRetries 3
     errorStrategy { return task.exitStatus > 1 ? "retry" : "ignore" }
-    time { 30.minute * obsids.size() * params.scratchFactor }
+    time { 40.minute * obsids.size() * params.scratchFactor }
 
     input:
     tuple val(group), val(meta), val(obsids), path(viss)
@@ -2553,9 +2561,9 @@ process chipsCombine {
     // double it for safety
     // clamp 1h < x < 24h
     time {
-        def t = 2.hour
+        def t = 3.hour
         if (exts.size() < 1000) {
-            t = [2.hour, 6.hour * (exts.size() - 0.5) / 300].max()
+            t = [2.hour, 6.hour * (exts.size() - 0.5) / 200].max()
         } else {
             t = [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
         }
@@ -2597,10 +2605,17 @@ EOF
     cat > grids.txt <<EOF
 """ + grids.join('\n') + """
 EOF
-    paste exts.txt grids.txt | while read -r ext grid; do
-        tar -zxvf "\$grid" | grep details | while read -r details; do cat \$details; done
+    set -euxo pipefail
+    pwd
+    df -h .
+    while read -r ext grid; do
+        tar -zxvf "\$grid" &
         echo "${pol}.\${ext}" | tee -a combine_${pol}.${combined_ext}.txt
-    done
+    done < <(paste exts.txt grids.txt)
+    # wait for all to finish.
+    # the while ... done < <(paste ...) process substitution works with wait but
+    # paste ... | while read ... done won't work with wait!
+    wait
 
     # check error code, allow 0 or 42
     set +e
@@ -6365,6 +6380,7 @@ workflow qaPrep {
                 def (obsid, _m, metafits, prepUVFits) = subobsMetaMetafitsVis_
                 def (_o, meta, soln) = obsMetaCalPass_
                 def newMeta = [
+                    // warning: freq_res is overloaded, could be in hz or kHz
                     time_res: params.apply_time_res,
                     freq_res: params.apply_freq_res,
                     nodut1: params.nodut1,
