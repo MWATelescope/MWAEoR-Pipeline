@@ -119,6 +119,9 @@ def main():
                 if axis_data['NAXIS'] > 1:
                     axis_data['_min'] = axis_array[0]
                     axis_data['_max'] = axis_array[-1]
+            elif axis_data['NAXIS'] == 1 and 'CRVAL' in axis_data:
+                axis_array = [axis_data['CRVAL']]
+            print(f"{axis=}, {axis_data=} {axis_array=}")
             # axes.append(axis_data)
             if 'FREQ' in axis_data.get('CTYPE', ''):
                 if freq_data is not None:
@@ -137,8 +140,6 @@ def main():
                 weight_selection[naxis-axis] = 0
             elif axis > 0:
                 weight_selection[naxis-axis] = 0
-
-            print(f"{axis=}, {axis_data=}")
         # assumption: weight idx 3
         weight_selection[naxis-1] = 2
         weight_selection[0] = slice(None)

@@ -644,6 +644,9 @@ def groupMeta(meta) {
         def nearest_lst = ((meta.lst.round().intValue() + 180) % 360 - 180)
         group_tokens << String.format("lst%+03d", nearest_lst)
     }
+    if (params.groupSuffix != null) {
+        group_tokens << params.groupSuffix
+    }
 
     newMeta.group = group_tokens.join('_')
 
