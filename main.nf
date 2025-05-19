@@ -6047,8 +6047,8 @@ workflow chips {
                     // pol: 'both',
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips1d',
-                    max_power: 1e15,
-                    min_power: 1e3,
+                    max_power: params.chips_max_power,
+                    min_power: params.chips_min_power,
                     tags: [],
                 ]
                 [chunk, mapMerge(meta, newMeta), lssa]
@@ -6061,8 +6061,8 @@ workflow chips {
                     plot_delta: true,
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips1d',
-                    max_power: 1e15,
-                    min_power: 1e3,
+                    max_power: params.chips_max_power,
+                    min_power: params.chips_min_power,
                     tags: [],
                 ]
                 [chunk, mapMerge(meta, newMeta), lssa]
@@ -6074,8 +6074,8 @@ workflow chips {
                     // pol: 'both',
                     title: ''+"crosspower\\n${chunk}\\n${meta.name}",
                     plot_name: 'chips2d',
-                    max_power: 1e15,
-                    min_power: 1e3,
+                    max_power: params.chips_max_power,
+                    min_power: params.chips_min_power,
                     tags: [],
                 ]
                 [chunk, mapMerge(meta, newMeta), lssa]
@@ -6107,8 +6107,8 @@ workflow chips {
                         subMeta.name,
                         ionosubMeta.name,
                     ],
-                    max_power: 1e15,
-                    min_power: 1e3,
+                    max_power: params.chips_max_power,
+                    min_power: params.chips_min_power,
                 ]
                 [chunk, mapMerge(nosubMeta, newMeta), lssas.flatten()]
             }
