@@ -38,6 +38,8 @@ cp \${obsid}_uvmeta.json /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/
 def make_fits_axis_array(hdu, axis):
     count = hdu.header[f"NAXIS{axis}"]
     crval = hdu.header[f"CRVAL{axis}"]
+    if count == 1:
+        return np.array([crval])
     cdelt = hdu.header[f"CDELT{axis}"]
     crpix = hdu.header[f"CRPIX{axis}"]
     return cdelt * (np.arange(count) + (1 - crpix)) + crval
