@@ -486,7 +486,7 @@ process demo04_ssins {
     input:
     tuple val(obsid), val(meta), path(metafits), path(vis_)
     output:
-    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"), path("${base}${meta.mask_base?:''}*_SSINS_mask.h5")
+    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"), path("${base}${meta.mask_base?:''}*_SSINS_mask.h5", optional: true)
 
     when: !params.nodemo
 
@@ -507,6 +507,40 @@ process demo04_ssins {
     """
 }
 
+process demo10_phase {
+    stageInMode "copy"
+    storeDir "${params.outdir}/${obsid}/bf"
+    label "mwa_demo"
+    label "mem_super"
+    tag "${base}${meta.plot_base?:''}"
+    time 8.hours
+
+    input:
+    tuple val(obsid), val(meta), path(vis)
+    output:
+    tuple val(obsid), val(meta), path("${base}.${meta.plot_base?:''}*.fits")
+
+    when: !(params.nodemo || params.noimg || params.nodemoallsky)
+
+    script:
+    base = coerceList(vis)[0].baseName
+    suffix = ''
+    argstr = ''
+    if (meta.phase_centre != null) {
+        suffix += ".${meta.phase_centre}"
+    }
+    if (meta.avg_time != null) {
+        suffix += ".${meta.avg_time}"
+    }
+    if (meta.avg_time != null) {
+        suffix += ".${meta.avg_time}"
+    }
+    """
+    ${params.demo_prelude?:''}
+    /demo/10_phase.py ${meta.argstr?:''} ${coerceList(vis).join(' ')}
+    """
+}
+
 process demo11_allsky {
     stageInMode "copy"
     storeDir "${params.outdir}/${obsid}/img"
@@ -520,7 +554,7 @@ process demo11_allsky {
     output:
     tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}*.fits")
 
-    when: !params.nodemo
+    when: !(params.nodemo || params.noimg || params.nodemoallsky)
 
     script:
     base = coerceList(vis)[0].baseName
@@ -766,14 +800,14 @@ workflow asvoRawFlow {
     subobsVis.join(ws.out.obsMetafits)
         .flatMap { obsid, meta, vis, metafits ->
             [
-                ['--autos',                        '.diff.auto',  '.spectrum'],
-                ['--autos --no-diff',              '.auto',       '.spectrum'],
+                // ['--autos',                        '.diff.auto',  '.spectrum'],
+                // ['--autos --no-diff',              '.auto',       '.spectrum'],
                 ['--crosses',                      '.diff.cross', '.spectrum'],
-                ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                // ['--crosses --no-diff',            '.cross',      '.spectrum'],
                 // ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
                 // ['--sigchain --autos --no-diff',   '.auto',       '.sigchain'],
                 // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
-                // ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
+                // ['--sigchain --crosses --no-diff', '.cross',      '.sigchain'],
                 // ['--flags --autos --no-diff',      '.auto',       '.flags'],
                 // ['--flags --crosses --no-diff',    '.cross',      '.flags'],
             ].collect { argstr, plot_prefix, plot_suffix ->
@@ -1399,8 +1433,7 @@ process hypCalSol {
     label "rate_limit_20"
     time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 4) }
     errorStrategy {
-        return 'ignore'
-        // task.exitStatus in 137..140 ? 'retry' : 'ignore'
+        task.exitStatus in 137..140 ? 'retry' : 'ignore'
     }
     maxRetries 2
 
@@ -1780,7 +1813,8 @@ process hypIonoSubUV {
     label "mem_full" // need a full node otherwise gpu runs out of memory
     label "gpu"
     label "rate_limit_50"
-    time { params.scratchFactor * 2.5.hour }
+    // 2.5h per 10GB file
+    time { params.scratchFactor * (coerceList(vis).collect { it.size() }.sum() / 10.GB.toBytes()) * 2.5.hour }
 
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
@@ -1799,6 +1833,7 @@ process hypIonoSubUV {
     export RUST_BACKTRACE=1
     ${params.hyperdrive} peel ${params.hyp_peel_args} \
         ${params.hyp_srclist_args} \
+        -n ${params.sub_nsrcs} \
         --data "${metafits}" "${vis}" \
         --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
@@ -1974,15 +2009,12 @@ process uvMeta {
     tag "${base}"
     label "python"
     label "nvme"
-    label "mem_quarter"
-    // memory = (vis.size * 3)
+    // max 20min, 60GB for 60ts, 144T, 768chans
+    memory = { task.attempt * volume * 60.GB }
     time {
-        // max 35 min for 60ts, 144T, 768chans
         [
             (
-                params.scratchFactor * task.attempt * 20.minute * (meta.ntimes?:60) \
-                * (meta.num_ants?:144) * (meta.num_chans?:768) \
-                / (60 * 128 * 768)
+                params.scratchFactor * task.attempt * 20.minute * volume
             ),
             task.attempt * 4.hour
         ].min()
@@ -1999,6 +2031,7 @@ process uvMeta {
         // tuple val(obsid), val(meta), path(vis), path(uvmeta), emit: obsMetaVisJson
 
     script:
+    volume = (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768) / (60 * 128 * 768)
     base = vis.baseName
     uvmeta = ''+"uvmeta_${base}.json"
     template "uvmeta.py"
@@ -6637,7 +6670,12 @@ workflow qaPrep {
                             hash: hash,
                             nobs: obs_list.size(),
                         ]
-                        ["${group}_${hash}", mapMerge(groupMeta, chunkMeta), obs_list, metas]
+                        // if $group already ends with $hash then don't add it to the group
+                        def group_hash = group
+                        if (!group_hash.endsWith(hash)) {
+                            group_hash = "${group}_${hash}"
+                        }
+                        [group_hash, mapMerge(groupMeta, chunkMeta), obs_list, metas]
                     }
             }
             // .view { it -> "\n -> chunked by obsid: ${it}"}
