@@ -36,6 +36,8 @@ include {
     wscleanDConvParams;
     wscleanParams;
     wsSummarize;
+    getFreqResHz;
+    getFreqReskHz;
 } from './modules/utils.nf'
 
 
@@ -343,13 +345,14 @@ process birliPrepUV {
     when: !params.noprep
 
     script:
+    freq_res_khz = getFreqReskHz(meta_)
+    if (freq_res_khz != null && params.prep_freq_res_khz != null && freq_res_khz > params.prep_freq_res_khz) {
+        throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${freq_res_khz}. \nmeta=${meta}")
+    }
     meta = deepcopy(meta_)
     prefix = "birli_"
     def (_argstr_asvo, argstr_cli, suffix) = birli_argstr_suffix()
-    if (meta.freq_res != null && params.prep_freq_res_khz != null && meta.freq_res > params.prep_freq_res_khz) {
-        throw new Exception("error: target freq_res ${params.prep_freq_res_khz} < obs freq res ${meta.freq_res}. \nmeta=${meta}")
-    }
-    meta.prep_freq_res = params.prep_freq_res_khz?:meta.freq_res
+    meta.prep_freq_res = params.prep_freq_res_khz?:freq_res_khz
     meta.prep_time_res = params.prep_time_res_s?:meta.time_res
     def coarse_chans = (meta.coarse_chans?:[]).sort(false)
     def not_contiguous = (coarse_chans.size > 1 && coarse_chans.size < coarse_chans[-1] - coarse_chans[0])
@@ -588,7 +591,7 @@ workflow extRaw {
             def uvmeta = parseJson(uvJson)
             def newMeta = [
                 lowfreq: uvmeta.freqs[0],
-                freq_res: (uvmeta.freqs[1] - uvmeta.freqs[0]),
+                freq_res_hz: (uvmeta.freqs[1] - uvmeta.freqs[0]),
                 nchans: (uvmeta.freqs?:[]).size(),
                 ntimes: (uvmeta.times?:[]).size(),
             ]
@@ -1606,8 +1609,8 @@ process hypApplyUV {
     if (meta.time_res != null) {
         args += " --time-average=${meta.time_res}s"
     }
-    if (meta.freq_res != null) {
-        args += " --freq-average=${meta.freq_res}kHz"
+    if (meta.freq_res_khz != null) {
+        args += " --freq-average=${meta.freq_res_khz}kHz"
     }
     if (meta.nodut1) {
         args += " --ignore-dut1"
@@ -2487,15 +2490,15 @@ process chipsGrid {
     eorband = meta.eorband
     eorfield = meta.eorfield
     period = meta.period?:"8.0"
-    freq_res = "${(meta.freq_res?:80) * 1000}"
+    freq_res_hz = getFreqResHz(meta)
     freq_idx_start = meta.freq_idx_start?:0
     details = "details_${group}.${meta.name}.${pol}.txt"
-    prepare_diff_cmd = """prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res}" -n "${lowfreq}" """
+    prepare_diff_cmd = """prepare_diff "${ext}" "${nchans}" "${freq_idx_start}" "${pol}" "${ext}" "${eorband}" -p "${period}" -c "${freq_res_hz}" -n "${lowfreq}" """
 
     // echo "meta=${meta}"
     """
     #!/bin/bash -ux
-    """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res || freq_idx_start == null || period == null ? "exit 2" : "" ) + """
+    """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res_hz || freq_idx_start == null || period == null ? "exit 2" : "" ) + """
     export DATADIR="\$PWD" INPUTDIR="\$PWD/" OUTPUTDIR="\$PWD/" OBSDIR="\$PWD/" OMP_NUM_THREADS=${task.cpus}
 
     echo eorfield=${eorfield} | tee -a ${details}
@@ -2504,7 +2507,7 @@ process chipsGrid {
     echo ext=${ext} | tee -a ${details}
     echo pol=${pol} | tee -a ${details}
     echo lowfreq=${lowfreq} | tee -a ${details}
-    echo freq_res=${freq_res} | tee -a ${details}
+    echo freq_res=${freq_res_hz} | tee -a ${details}
     echo freq_idx_start=${freq_idx_start} | tee -a ${details}
     echo period=${period} | tee -a ${details}
     echo date=\$(date -Is) | tee -a ${details}
@@ -2661,7 +2664,7 @@ process chipsLssa {
     // TODO: pretty sure meta_.lowfreq is midpoint but chips wants start frequency
     lowfreq = meta_.lowfreq
     nchan = meta_.nchans
-    chanwidth = (meta_.freq_res * 1e3)
+    freq_res_hz = getFreqResHz(meta_)
     period = meta_.int_time
 
     // lssa = "lssa_${group}.${meta.name}.${pol}.tar.gz"
@@ -2726,13 +2729,13 @@ process chipsLssa {
     echo bias_mode=${bias_mode} | tee -a ${details}
     echo eorband=${eorband} | tee -a ${details}
     echo lowfreq=${lowfreq} | tee -a ${details}
-    echo chanwidth=${chanwidth} | tee -a ${details}
+    echo chanwidth=${freq_res_hz} | tee -a ${details}
     echo period=${period} | tee -a ${details}
     echo date=\$(date -Is) | tee -a ${details}
     echo host=\$(hostname) | tee -a ${details}
     echo lssa_bin=\$(which ${lssa_bin}) | tee -a ${details}
 
-    ${lssa_bin} "${ext}" "${nchan}" "${nbins}" "${pol}" "${maxu}" "${ext}" ${syntax_specific_args} -p "${period}" -c "${chanwidth}" \
+    ${lssa_bin} "${ext}" "${nchan}" "${nbins}" "${pol}" "${maxu}" "${ext}" ${syntax_specific_args} -p "${period}" -c "${freq_res_hz}" \
         2>&1 | tee ${lssa_bin}.txt
 
     export cross_size="\$(stat -c%s crosspower_${pol}_${bias_number}.iter.${ext}.dat)"
@@ -2792,6 +2795,7 @@ process chipsPlot {
     } else {
         suffix = "${meta.ext}${suffix}"
     }
+    freq_res_hz = getFreqResHz(meta)
     args = [
         // title: meta.title,
         // file group
@@ -2824,7 +2828,7 @@ process chipsPlot {
         chips_tag_three_label: (meta.labels?:[])[2],
         // chips group
         lowerfreq: meta.lowfreq,
-        chan_width: (meta.freq_res * 1e3),
+        chan_width: freq_res_hz,
         umax: meta.maxu,
         // density_correction: meta.density_correction,
         // omega_matter: meta.omega_matter,
@@ -2879,6 +2883,8 @@ process chips1d_tsv {
     nchan = meta.nchans
     eorband = meta.eorband?:1
 
+    freq_res_hz = getFreqResHz(meta)
+
     args = [
         title: meta.title,
         // file group
@@ -2897,7 +2903,7 @@ process chips1d_tsv {
 
         // chips group
         lowerfreq: lowerfreq,
-        chan_width: (meta.freq_res * 1e3),
+        chan_width: freq_res_hz,
         umax: meta.maxu,
         bias_mode: bias_mode,
         density_correction: (meta.density_correction ?: params.density_correction),
@@ -3565,13 +3571,17 @@ workflow ws {
                 // "groupid", "starttime_utc", "starttime_mjd", "obs_name"
                 "ew_pointing", "centre_freq",
                 "n_tiles", "bad_ants", "manual_ants", "tile_nums",
-                "eorband", "eorfield", "lst", "int_time", "freq_res",
+                "eorband", "eorfield", "lst", "int_time",
                 "ra_phase_center", "dec_phase_center",
                 "coarse_chans"
             ].each { key ->
                 if (summary[key] != null) {
                     meta[key] = summary[key]
                 }
+            }
+            if (summary['freq_res'] != null) {
+                meta['freq_res_khz'] = summary['freq_res']
+                meta['freq_res_hz'] = summary['freq_res'] * 1e3
             }
             if (summary["config"] != null) {
                 meta["longconfig"] = summary["config"]
@@ -4799,7 +4809,7 @@ workflow uvfits {
         obsMetaUV.map { obsid, meta, vis ->
             [
                 obsid, meta.name, meta.config?:'', meta.eorband?:'', meta.eorfield?:'',
-                meta.nchans?:'', meta.lowfreq?:'', meta.freq_res?:'', vis
+                meta.nchans?:'', meta.lowfreq?:'', meta.freq_res_khz?:'', vis
             ].join('\t') }
             .collectFile(
                 name: "eor_params.tsv", newLine: true, sort: true,
@@ -5830,9 +5840,10 @@ workflow extChips {
             def uvmeta = parseJson(metaJson)
             def newMeta = [
                 lowfreq: uvmeta.freqs[0],
-                freq_res: (uvmeta.freqs[1] - uvmeta.freqs[0]),
+                freq_res_hz: (uvmeta.freqs[1] - uvmeta.freqs[0]),
                 nchans: (uvmeta.freqs?:[]).size(),
                 ntimes: (uvmeta.times?:[]).size(),
+                int_time: (uvmeta.times[1].gps - uvmeta.times[0].gps),
             ]
             ['eorband', 'num_ants', 'total_weight'].each { key ->
                 if (uvmeta[key] != null) {
@@ -5859,7 +5870,7 @@ workflow extChips {
                 p_window: p_window,
             ]
             [
-                "nchans", "eorband", "eorfield", "lowfreq", "freq_res",
+                "nchans", "eorband", "eorfield", "lowfreq", "freq_res_hz", "int_time"
             ].each { key ->
                 if (meta_[key] == null) {
                     throw new Exception("obs=${obs} meta.${key} is null")
@@ -5890,12 +5901,12 @@ workflow extChips {
                     def chunkSorts = coerceList(chunkSorts_)
                     // meta.obsids = chunkObss.sort(false)
                     def obsids = coerceList(chunkObss).sort(false)
-                    def newMeta = [
+                    def newMeta = mapMerge(meta, [
                         nobs: obsids.size(),
                         hash: obsids.join(' ').md5()[0..7],
                         sort_bounds: [chunkSorts[0], chunkSorts[-1]],
-                    ]
-                    ["${group}_${meta.hash}", mapMerge(meta, newMeta), obsids]
+                    ])
+                    ["${group}_${newMeta.hash}", newMeta, obsids]
                 }
         }
         // .view { it -> "\n -> chunked by obsid: ${it}"}
@@ -6382,7 +6393,7 @@ workflow qaPrep {
                 def newMeta = [
                     // warning: freq_res is overloaded, could be in hz or kHz
                     time_res: params.apply_time_res,
-                    freq_res: params.apply_freq_res,
+                    freq_res_khz: params.apply_freq_res,
                     nodut1: params.nodut1,
                     apply_args: params.apply_args?:'',
                 ]
@@ -6392,7 +6403,7 @@ workflow qaPrep {
                 }
                 // calFlags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
                 // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calFlags.join(' ')}"
-                newMeta.apply_name = hyp_apply_name(newMeta.time_res, newMeta.freq_res)
+                newMeta.apply_name = hyp_apply_name(newMeta.time_res, newMeta.freq_res_khz)
                 [obsid, mapMerge(meta, newMeta), metafits, prepUVFits, soln]
             }
             | (hypApplyUV & hypApplyMS)

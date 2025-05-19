@@ -645,7 +645,12 @@ def groupMeta(meta) {
         group_tokens << String.format("lst%+03d", nearest_lst)
     }
     if (params.groupSuffix != null) {
-        group_tokens << params.groupSuffix
+        // if groupSuffix starts with $first_token then remove it from the start
+        def group_suffix = params.groupSuffix
+        if (group_suffix.startsWith(first_token)) {
+            group_suffix = group_suffix.substring(first_token.size()+1)
+        }
+        group_tokens << group_suffix
     }
 
     newMeta.group = group_tokens.join('_')
@@ -653,7 +658,9 @@ def groupMeta(meta) {
     [
         "cal_prog",
         "time_res",
-        "freq_res",
+        "freq_res_khz",
+        "freq_res_hz",
+        "int_time",
         "lowfreq",
         "nchans",
         "eorband",
@@ -1038,7 +1045,7 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
         sweet_pointing: sweet_pointing,
         lst: lst,
         eorfield: eorfield,
-        freq_res: wsStats.freq_res,
+        freq_res_khz: wsStats.freq_res,
         coarse_chans: coarse_chans,
         eorband: eorband,
         centre_freq: ((coarse_chans[0] + coarse_chans[-1]) * 1.28E+6 / 2),
@@ -1107,4 +1114,23 @@ def openWithDelay(f) {
         it.read(0)
         Thread.sleep(50 + new Random().nextInt(450))
     }
+}
+
+def getFreqResHz(meta) {
+    freq_res_hz = 80000
+    if (meta.freq_res_khz != null) {
+        freq_res = meta.freq_res_khz * 1000
+    }
+    if (meta.freq_res_hz != null) {
+        freq_res = meta.freq_res_hz
+    }
+    if (freq_res_hz > 1e6) {
+        raise new Exception("freq_res_hz too high ${freq_res_hz} > 1e6")
+    }
+    return freq_res_hz
+}
+
+def getFreqReskHz(meta) {
+    freq_res_hz = getFreqResHz(meta)
+    return freq_res_hz / 1e6
 }
