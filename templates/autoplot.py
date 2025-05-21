@@ -243,7 +243,9 @@ def autoplot(args):
                 ax.scatter(
                     freqs, np.log(line) if args.log_scale else line,
                     label=f"{ant_idx}|{ant_name}",
-                    s=0.5,
+                    s=1,
+                    edgecolor='none',
+                    marker='.',
                 #    alpha=(0.2 if args.highlight_ants else 0.5),
                 )
             if args.highlight_ants:
