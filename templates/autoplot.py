@@ -72,6 +72,9 @@ def get_parser():
     plot_group.add_argument('--log_scale', default=False, action="store_true")
     plot_group.add_argument(
         '--transparent', default=False, action="store_true")
+    plot_group.add_argument(
+        '--reduction', default="rms", choices=["rms", "std", "mean", "rm"],
+        help="Reduction method to use for the plot")
 
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
     flag_group.add_argument('--flag_style', default="metafits",
@@ -155,8 +158,8 @@ def autoplot(args):
     # reals, imaginaries squard
     reals2 = data[:, :, :, :, 0] ** 2
     imags2 = data[:, :, :, :, 1] ** 2
-    # auto amplitudes squared
-    autos2 = reals2 + imags2
+    # auto amplitudes
+    autos = np.sqrt(reals2 + imags2)
 
     if args.flag_style == "metafits":
         # flag quack time, edge channels, center channels
@@ -164,12 +167,12 @@ def autoplot(args):
         edge_chans = round(
             ((float(args.edge_width) * u.kHz) / freq_res).decompose().value)
         print(f"quack_scans={quack_scans}, edge_chans={edge_chans}")
-        autos2[:quack_scans, :, :, :] = np.nan
+        autos[:quack_scans, :, :, :] = np.nan
 
         flagged_tile_idxs = np.array([], dtype=bool)
         if args.sel_ants is None:
             flagged_tile_idxs = np.where(metafits_ants['Flag'].values == 1)[0]
-        autos2[:, flagged_tile_idxs, :, :] = np.nan
+        autos[:, flagged_tile_idxs, :, :] = np.nan
 
         cchan_bandwidth = bandwidth / num_cchans
         # number of fine chans per coarse
@@ -185,11 +188,11 @@ def autoplot(args):
         # print("chan_flags:", chan_flags)
         chan_idxs = np.where(chan_flags.flatten())[0]
         # print("chan_idxs: ", chan_idxs)
-        autos2[:, :, chan_idxs, :] = np.nan
+        autos[:, :, chan_idxs, :] = np.nan
     elif args.flag_style == "weights":
         # flag based on uvfits weights
         wghts = data[:, :, :, :, 2]
-        autos2[np.where(wghts < 0)] = np.nan
+        autos[np.where(wghts < 0)] = np.nan
 
     # pols = ["XX", "YY"]
     pols = ["XX", "YY"]
@@ -199,10 +202,18 @@ def autoplot(args):
     for pol, ax in zip(pols, axs.flatten()):
         pol_idx = uv_pol_order.index(pol)
 
-        # rms across time, for each antenna, freq
-        rms_ant_freq = np.sqrt(np.nanmean(autos2[:, :, :, pol_idx], axis=0))
-        # rms across time, freq for each antenna
-        rms_ant = np.sqrt(np.nanmean(rms_ant_freq ** 2, axis=1))
+        # reduce across time, for each antenna, freq
+        if args.reduction == "rms":
+            rdx_ant_freq = np.sqrt(np.nanmean(autos[:, :, :, pol_idx] ** 2, axis=0))
+        if args.reduction == "rm":
+            rdx_ant_freq = np.sqrt(np.nanmean(autos[:, :, :, pol_idx], axis=0))
+        elif args.reduction == "std":
+            rdx_ant_freq = np.nanstd(autos[:, :, :, pol_idx], axis=0)
+        elif args.reduction == "mean":
+            rdx_ant_freq = np.nanmean(autos[:, :, :, pol_idx], axis=0)
+
+        # reduce across time, freq for each antenna
+        rms_ant = np.sqrt(np.nanmean(rdx_ant_freq ** 2, axis=1))
         # median, std for this pol
         pol_median = np.nanmedian(rms_ant)
         pol_std = np.nanstd(rms_ant)
@@ -212,7 +223,7 @@ def autoplot(args):
             f"{pol} median={pol_median}, std={pol_std}, high={pol_high_cutoff}, low={pol_low_cutoff}")
 
         norm = simple_norm(
-            rms_ant_freq,
+            rdx_ant_freq,
             # 'log' if args.log_scale else 'linear',
             min_cut=pol_low_cutoff,
             max_cut=pol_high_cutoff,
@@ -220,26 +231,29 @@ def autoplot(args):
         )
 
         ax.set_title(f"{pol}")
+        quantity = f"auto {args.reduction}"
+        if args.log_scale:
+            quantity = f"log({quantity})"
         if args.plot_style == "imshow":
             cmap = copy.copy(plt.get_cmap('viridis'))
             # cmap.set_over('fuchsia')
             # cmap.set_under('red')
-            ax.imshow(rms_ant_freq, interpolation='none',
+            ax.imshow(rdx_ant_freq, interpolation='none',
                       norm=norm, cmap=cmap, aspect=6)
             ax.set_ylabel("Antenna")
         elif args.plot_style == "lines":
-            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rms_ant_freq):
+            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rdx_ant_freq):
                 ax.plot(freqs, np.log(line) if args.log_scale else line,
                         alpha=(0.2 if args.highlight_ants else 0.5),
                         label=f"{ant_idx}|{ant_name}")
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
-                for line in rms_ant_freq[highlight_idxs, :]:
+                for line in rdx_ant_freq[highlight_idxs, :]:
                     ax.plot(freqs, np.log(line) if args.log_scale else line,
                             alpha=1, linewidth=4, color='yellow')
-            ax.set_ylabel("log(RMS)" if args.log_scale else "RMS")
+            ax.set_ylabel(quantity)
         elif args.plot_style == "scatter":
-            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rms_ant_freq):
+            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rdx_ant_freq):
                 ax.scatter(
                     freqs, np.log(line) if args.log_scale else line,
                     label=f"{ant_idx}|{ant_name}",
@@ -250,10 +264,10 @@ def autoplot(args):
                 )
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
-                for line in rms_ant_freq[highlight_idxs, :]:
+                for line in rdx_ant_freq[highlight_idxs, :]:
                     ax.scatter(freqs, np.log(line) if args.log_scale else line,
                                alpha=1, s=4, color='yellow')
-            ax.set_ylabel("log(RMS)" if args.log_scale else "RMS")
+            ax.set_ylabel(quantity)
         ax.grid(None)
         # ax.set_xticks([])
         ax.set_yticks([])
@@ -269,15 +283,15 @@ def autoplot(args):
     # plt.tick_params(labelcolor='none', which='both', top=False, bottom=False, left=False, right=False)
     # plt.grid(None)
     # plt.tight_layout()
-    plot_title = args.plot_title
-    if args.plot_title is None:
-        plot_title = f"{args.uvfits}"
-    plt.suptitle(plot_title)
-    print(f"title={plot_title}")
     output_name = args.output_name
     if args.output_name is None:
-        output_name = args.uvfits.replace(".uvfits", "_autoplot.png")
+        output_name = args.uvfits.replace(".uvfits", f"_autoplot_{args.reduction}.png")
     print(f"output_name={output_name}")
+
+    plot_title = args.plot_title
+    if args.plot_title is None:
+        plot_title = output_name
+    plt.suptitle(plot_title)
     plt.savefig(output_name, bbox_inches='tight', dpi=args.dpi, transparent=args.transparent)
 
 
