@@ -61,14 +61,14 @@ def get_parser():
     parser.add_argument(
         '--metafits', help='metafits file for antenna metadata')
     plot_group = parser.add_argument_group('PLOTTING OPTIONS')
-    plot_group.add_argument('--output_name', default=False,
+    plot_group.add_argument('--output_name', default=None,
                             help='Name for output plot file, defaults to using the input uvfits name')
     plot_group.add_argument('--plot_title', default=None,
                             help="Optional title for the plot")
     plot_group.add_argument('--dpi', default=300, type=int,
                             help="dots per inch for the plot")
     plot_group.add_argument('--plot_style', default="lines",
-                            choices=["lines", "imshow"])
+                            choices=["lines", "imshow", "scatter"])
     plot_group.add_argument('--log_scale', default=False, action="store_true")
     plot_group.add_argument(
         '--transparent', default=False, action="store_true")
@@ -76,8 +76,10 @@ def get_parser():
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
     flag_group.add_argument('--flag_style', default="metafits",
                             choices=["metafits", "weights"])
-    flag_group.add_argument('--edge_width', default=80,
+    flag_group.add_argument('--edge_width', default=80, type=float,
                             help="width of the edge channels to be flagged if metafits style [kHz]")
+    flag_group.add_argument('--no_flag_centre', default=False, action="store_true",
+                            help="flag the center channel")
     flag_group.add_argument('--sel_ants', default=None, nargs='+',
                             help="only plot tiles at these indices")
     flag_group.add_argument('--highlight_ants', default=[], nargs='+',
@@ -158,9 +160,9 @@ def autoplot(args):
 
     if args.flag_style == "metafits":
         # flag quack time, edge channels, center channels
-        quack_scans = ceil((quack_time / int_time).decompose().value)
-        edge_chans = ceil(
-            ((args.edge_width * u.kHz) / freq_res).decompose().value)
+        quack_scans = round((quack_time / int_time).decompose().value)
+        edge_chans = round(
+            ((float(args.edge_width) * u.kHz) / freq_res).decompose().value)
         print(f"quack_scans={quack_scans}, edge_chans={edge_chans}")
         autos2[:quack_scans, :, :, :] = np.nan
 
@@ -171,12 +173,15 @@ def autoplot(args):
 
         cchan_bandwidth = bandwidth / num_cchans
         # number of fine chans per coarse
-        num_fchans = ceil((cchan_bandwidth / freq_res).decompose().value)
+        num_fchans = round((cchan_bandwidth / freq_res).decompose().value)
         num_cchans = nchans // num_fchans
-        center_fine_chan = ceil(num_fchans/2)
-        chan_flags = np.full((num_cchans, num_fchans), True)
-        chan_flags[:, edge_chans:-edge_chans] = False
-        chan_flags[:, center_fine_chan] = True
+        center_fine_chan = round(num_fchans/2)
+        if edge_chans > 0:
+            chan_flags = np.full((num_cchans, num_fchans), True)
+            chan_flags[:, edge_chans:-edge_chans] = False
+        else:
+            chan_flags = np.full((num_cchans, num_fchans), False)
+        chan_flags[:, center_fine_chan] = not args.no_flag_centre
         # print("chan_flags:", chan_flags)
         chan_idxs = np.where(chan_flags.flatten())[0]
         # print("chan_idxs: ", chan_idxs)
@@ -185,8 +190,6 @@ def autoplot(args):
         # flag based on uvfits weights
         wghts = data[:, :, :, :, 2]
         autos2[np.where(wghts < 0)] = np.nan
-
-    plt.style.use([astropy_mpl_style, 'dark_background'])
 
     # pols = ["XX", "YY"]
     pols = ["XX", "YY"]
@@ -234,7 +237,20 @@ def autoplot(args):
                 for line in rms_ant_freq[highlight_idxs, :]:
                     ax.plot(freqs, np.log(line) if args.log_scale else line,
                             alpha=1, linewidth=4, color='yellow')
-
+            ax.set_ylabel("log(RMS)" if args.log_scale else "RMS")
+        elif args.plot_style == "scatter":
+            for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rms_ant_freq):
+                ax.scatter(
+                    freqs, np.log(line) if args.log_scale else line,
+                    label=f"{ant_idx}|{ant_name}",
+                    s=0.5,
+                #    alpha=(0.2 if args.highlight_ants else 0.5),
+                )
+            if args.highlight_ants:
+                highlight_idxs = [*map(int, args.highlight_ants)]
+                for line in rms_ant_freq[highlight_idxs, :]:
+                    ax.scatter(freqs, np.log(line) if args.log_scale else line,
+                               alpha=1, s=4, color='yellow')
             ax.set_ylabel("log(RMS)" if args.log_scale else "RMS")
         ax.grid(None)
         # ax.set_xticks([])
@@ -251,10 +267,16 @@ def autoplot(args):
     # plt.tick_params(labelcolor='none', which='both', top=False, bottom=False, left=False, right=False)
     # plt.grid(None)
     # plt.tight_layout()
-    plt.suptitle(args.plot_title)
-    print(f"title={args.plot_title}")
-    plt.savefig(args.output_name, bbox_inches='tight',
-                dpi=args.dpi, transparent=args.transparent)
+    plot_title = args.plot_title
+    if args.plot_title is None:
+        plot_title = f"{args.uvfits}"
+    plt.suptitle(plot_title)
+    print(f"title={plot_title}")
+    output_name = args.output_name
+    if args.output_name is None:
+        output_name = args.uvfits.replace(".uvfits", "_autoplot.png")
+    print(f"output_name={output_name}")
+    plt.savefig(output_name, bbox_inches='tight', dpi=args.dpi, transparent=args.transparent)
 
 
 def main():
