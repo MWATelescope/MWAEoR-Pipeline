@@ -49,9 +49,10 @@ def read_h5(h5file):
     h5data['gps_array'] = jd_to_gps(jd_array)
     return h5data
 
-
+# 0.25s is smallest time interval in MWA
+max_second_denom = 4  # (smallest time interval in fractions of a second)
 def jd_to_gps(jd):
-    return np.round(Time(jd, format='jd').gps).astype(np.int64)
+    return np.round(max_second_denom * Time(jd, format='jd').gps).astype(np.int64).astype(np.float64)/max_second_denom
 
 
 def read_uvfits(uvfile):
