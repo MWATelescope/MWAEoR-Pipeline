@@ -73,7 +73,7 @@ def get_parser():
     plot_group.add_argument(
         '--transparent', default=False, action="store_true")
     plot_group.add_argument(
-        '--reduction', default="rms", choices=["rms", "std", "mean", "rm"],
+        '--reduction', default="rms", choices=["rms", "mean"],
         help="Reduction method to use for the plot")
 
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
@@ -158,21 +158,21 @@ def autoplot(args):
     # reals, imaginaries squard
     reals2 = data[:, :, :, :, 0] ** 2
     imags2 = data[:, :, :, :, 1] ** 2
-    # auto amplitudes
-    autos = np.sqrt(reals2 + imags2)
+    # visibility amplitudes
+    amps = np.sqrt(reals2 + imags2)
 
     if args.flag_style == "metafits":
         # flag quack time, edge channels, center channels
         quack_scans = round((quack_time / int_time).decompose().value)
         edge_chans = round(
             ((float(args.edge_width) * u.kHz) / freq_res).decompose().value)
-        print(f"quack_scans={quack_scans}, edge_chans={edge_chans}")
-        autos[:quack_scans, :, :, :] = np.nan
+        print(f"quack_scans={quack_scans}, edge_chans={edge_chans}, no_flag_centre={args.no_flag_centre}")
+        amps[:quack_scans, :, :, :] = np.nan
 
         flagged_tile_idxs = np.array([], dtype=bool)
         if args.sel_ants is None:
             flagged_tile_idxs = np.where(metafits_ants['Flag'].values == 1)[0]
-        autos[:, flagged_tile_idxs, :, :] = np.nan
+        amps[:, flagged_tile_idxs, :, :] = np.nan
 
         cchan_bandwidth = bandwidth / num_cchans
         # number of fine chans per coarse
@@ -188,11 +188,11 @@ def autoplot(args):
         # print("chan_flags:", chan_flags)
         chan_idxs = np.where(chan_flags.flatten())[0]
         # print("chan_idxs: ", chan_idxs)
-        autos[:, :, chan_idxs, :] = np.nan
+        amps[:, :, chan_idxs, :] = np.nan
     elif args.flag_style == "weights":
         # flag based on uvfits weights
         wghts = data[:, :, :, :, 2]
-        autos[np.where(wghts < 0)] = np.nan
+        amps[np.where(wghts <= 0)] = np.nan
 
     # pols = ["XX", "YY"]
     pols = ["XX", "YY"]
@@ -204,37 +204,35 @@ def autoplot(args):
 
         # reduce across time, for each antenna, freq
         if args.reduction == "rms":
-            rdx_ant_freq = np.sqrt(np.nanmean(autos[:, :, :, pol_idx] ** 2, axis=0))
-        if args.reduction == "rm":
-            rdx_ant_freq = np.sqrt(np.nanmean(autos[:, :, :, pol_idx], axis=0))
-        elif args.reduction == "std":
-            rdx_ant_freq = np.nanstd(autos[:, :, :, pol_idx], axis=0)
+            rdx_ant_freq = np.sqrt(np.nanmean(amps[:, :, :, pol_idx] ** 2, axis=0))
         elif args.reduction == "mean":
-            rdx_ant_freq = np.nanmean(autos[:, :, :, pol_idx], axis=0)
-
-        # reduce across time, freq for each antenna
-        rms_ant = np.sqrt(np.nanmean(rdx_ant_freq ** 2, axis=1))
-        # median, std for this pol
-        pol_median = np.nanmedian(rms_ant)
-        pol_std = np.nanstd(rms_ant)
-        pol_low_cutoff = max(0, pol_median - 3 * pol_std)
-        pol_high_cutoff = pol_median + 3 * pol_std
-        print(
-            f"{pol} median={pol_median}, std={pol_std}, high={pol_high_cutoff}, low={pol_low_cutoff}")
-
-        norm = simple_norm(
-            rdx_ant_freq,
-            # 'log' if args.log_scale else 'linear',
-            min_cut=pol_low_cutoff,
-            max_cut=pol_high_cutoff,
-            clip=False
-        )
+            rdx_ant_freq = np.nanmean(amps[:, :, :, pol_idx], axis=0)
 
         ax.set_title(f"{pol}")
-        quantity = f"auto {args.reduction}"
+        quantity = "amps"
+        if args.reduction != "none":
+            quantity = f"{args.reduction} {quantity}"
         if args.log_scale:
             quantity = f"log({quantity})"
         if args.plot_style == "imshow":
+            # for normalization, reduce across time, freq for each antenna
+            rms_ant = np.sqrt(np.nanmean(rdx_ant_freq ** 2, axis=1))
+            # median, std for this pol
+            pol_median = np.nanmedian(rms_ant)
+            pol_std = np.nanstd(rms_ant)
+            pol_low_cutoff = max(0, pol_median - 3 * pol_std)
+            pol_high_cutoff = pol_median + 3 * pol_std
+            print(
+                f"{pol} median={pol_median}, std={pol_std}, high={pol_high_cutoff}, low={pol_low_cutoff}")
+
+            norm = simple_norm(
+                rdx_ant_freq,
+                # 'log' if args.log_scale else 'linear',
+                min_cut=pol_low_cutoff,
+                max_cut=pol_high_cutoff,
+                clip=False
+            )
+
             cmap = copy.copy(plt.get_cmap('viridis'))
             # cmap.set_over('fuchsia')
             # cmap.set_under('red')
@@ -270,8 +268,8 @@ def autoplot(args):
             ax.set_ylabel(quantity)
         ax.grid(None)
         # ax.set_xticks([])
-        ax.set_yticks([])
-        if args.plot_style == "lines" and not legend_done:
+        # ax.set_yticks([])
+        if args.plot_style != "imshow" and not legend_done:
             ax.legend(fontsize=6)
             legend_done = True
     if args.plot_style == "imshow":
