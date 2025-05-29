@@ -75,6 +75,16 @@ def get_parser():
     plot_group.add_argument(
         '--reduction', default="rms", choices=["rms", "mean"],
         help="Reduction method to use for the plot")
+    plot_group.add_argument(
+        '--ft', default=False, action="store_true",
+        help="Fourier transform along frequency axis")
+    plot_group.add_argument(
+        '--min-delay', default=10, type=int,
+        help="max x axis range for Fourier transform plot [ns]")
+    plot_group.add_argument(
+        '--max-delay', default=1000, type=int,
+        help="max x axis range for Fourier transform plot [ns]")
+
 
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
     flag_group.add_argument('--flag_style', default="metafits",
@@ -208,6 +218,35 @@ def autoplot(args):
         elif args.reduction == "mean":
             rdx_ant_freq = np.nanmean(amps[:, :, :, pol_idx], axis=0)
 
+        # Apply Fourier transform along frequency axis if requested
+        x_label = "Freq [MHz]"
+        x_values = freqs
+        if args.ft:
+            # Replace NaNs with zeros before FFT
+            rdx_ant_freq_filled = np.nan_to_num(rdx_ant_freq, nan=0.0)
+            # Apply FFT along frequency axis (axis 1)
+            rdx_ant_freq = np.abs(np.fft.fftshift(np.fft.fft(rdx_ant_freq_filled, axis=1), axes=1))
+            # Create delay axis in nanoseconds
+            freq_spacing = freqs[1] - freqs[0]  # MHz
+            total_bandwidth = freqs[-1] - freqs[0]  # MHz
+            delays = np.fft.fftshift(np.fft.fftfreq(len(freqs), d=freq_spacing.value))
+            delays = delays / total_bandwidth.value * 1000  # Convert to nanoseconds
+            x_values = delays
+            x_label = "Delay [ns]"
+
+            # Set reasonable x-axis limits for delay spectrum
+            # Focus on the central part where the interesting features are
+            # instead of ax.set_xlim(args.min_delay, args.max_delay)
+            # Set values outside of min, max delay to NaN
+            rdx_ant_freq = np.where(
+                (x_values >= args.min_delay) & (x_values <= args.max_delay),
+                rdx_ant_freq, np.nan)
+
+            ax.set_xlim(args.min_delay, args.max_delay)
+
+
+
+
         ax.set_title(f"{pol}")
         quantity = "amps"
         if args.reduction != "none":
@@ -241,19 +280,19 @@ def autoplot(args):
             ax.set_ylabel("Antenna")
         elif args.plot_style == "lines":
             for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rdx_ant_freq):
-                ax.plot(freqs, np.log(line) if args.log_scale else line,
+                ax.plot(x_values, np.log(line) if args.log_scale else line,
                         alpha=(0.2 if args.highlight_ants else 0.5),
                         label=f"{ant_idx}|{ant_name}")
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
                 for line in rdx_ant_freq[highlight_idxs, :]:
-                    ax.plot(freqs, np.log(line) if args.log_scale else line,
+                    ax.plot(x_values, np.log(line) if args.log_scale else line,
                             alpha=1, linewidth=4, color='yellow')
             ax.set_ylabel(quantity)
         elif args.plot_style == "scatter":
             for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rdx_ant_freq):
                 ax.scatter(
-                    freqs, np.log(line) if args.log_scale else line,
+                    x_values, np.log(line) if args.log_scale else line,
                     label=f"{ant_idx}|{ant_name}",
                     s=1,
                     edgecolor='none',
@@ -263,7 +302,7 @@ def autoplot(args):
             if args.highlight_ants:
                 highlight_idxs = [*map(int, args.highlight_ants)]
                 for line in rdx_ant_freq[highlight_idxs, :]:
-                    ax.scatter(freqs, np.log(line) if args.log_scale else line,
+                    ax.scatter(x_values, np.log(line) if args.log_scale else line,
                                alpha=1, s=4, color='yellow')
             ax.set_ylabel(quantity)
         ax.grid(None)
@@ -274,8 +313,8 @@ def autoplot(args):
             legend_done = True
     if args.plot_style == "imshow":
         axs[-1].set_ylabel("Antenna")
-    elif args.plot_style == "lines":
-        axs[-1].set_xlabel("Freq [MHz]")
+    elif args.plot_style in ["lines", "scatter"]:
+        axs[-1].set_xlabel(x_label)
 
     # fig.add_subplot(111, frameon=False)
     # plt.tick_params(labelcolor='none', which='both', top=False, bottom=False, left=False, right=False)
@@ -283,7 +322,10 @@ def autoplot(args):
     # plt.tight_layout()
     output_name = args.output_name
     if args.output_name is None:
-        output_name = args.uvfits.replace(".uvfits", f"_autoplot_{args.reduction}.png")
+        suffix = f"{args.plot_style}_{args.reduction}"
+        if args.ft:
+            suffix += "_ft"
+        output_name = args.uvfits.replace(".uvfits", f"_autoplot_{suffix}.png")
     print(f"output_name={output_name}")
 
     plot_title = args.plot_title
