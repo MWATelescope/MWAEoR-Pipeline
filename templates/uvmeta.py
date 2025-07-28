@@ -29,8 +29,7 @@ eval cp /astro/mwaeor/dev/nfdata/\${obsid}/cal/hyp_\${obsid}_sub_30l_src4k_8s_80
 eval singularity exec -B \$PWD --cleanenv --home /astro/mwaeor/dev/mplhome /pawsey/mwa/singularity/mwa_qa/mwa_qa_latest.sif python \
     /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/templates/uvmeta.py \
     --uvfits=vis.uvfits \
-    --uvmeta="\${obsid}_uvmeta.json" \
-    --weights
+    --uvmeta="\${obsid}_uvmeta.json"
 cp \${obsid}_uvmeta.json /pawsey/mwa/mwaeor/dev/MWAEoR-Pipeline/
 ```
 """
@@ -51,7 +50,6 @@ def get_parser():
 
     parser.add_argument('--uvfits', help='source uvfits file')
     parser.add_argument('--uvmeta', help='output json file', default=None)
-    parser.add_argument('--weights', help='calculate weights', default=True, action='store_true')
 
     return parser
 
@@ -93,9 +91,9 @@ def main():
 
         if obj := vis_hdu.header.get('OBJECT'):
             data['object'] = obj
-        if ra := vis_hdu.header.get('OBSRA'):
+        if (ra := vis_hdu.header.get('OBSRA')) is not None:
             data['ra'] = ra
-        if dec := vis_hdu.header.get('OBSDEC'):
+        if (dec := vis_hdu.header.get('OBSDEC')) is not None:
             data['dec'] = dec
         loc = None
         if inst := vis_hdu.header.get('INSTRUME', vis_hdu.header.get('TELESCOP')):
@@ -165,16 +163,15 @@ def main():
             time_array += np.float64(vis_hdu.data[date_cols.pop()])
         jds = np.sort(np.unique(time_array))
 
-        if args.weights:
-            jd_weights = defaultdict(lambda: 0)
-            weights = vis_hdu.data['DATA'][tuple(weight_selection)].sum(axis=1)
-            for jd, weight in zip(time_array, weights):
-                jd_weights[jd] += weight
-
-        antnames = []
-        antnums = []
+        print("reading weights")
+        jd_weights = defaultdict(lambda: 0)
+        weights = vis_hdu.data['DATA'][tuple(weight_selection)].sum(axis=1)
+        for jd, weight in zip(time_array, weights):
+            jd_weights[jd] += weight
 
         print("reading antenna header")
+        antnames = []
+        antnums = []
         if ant_hdu := hdus['AIPS AN']:
             for key, value in ant_hdu.header.items():
                 print(f"AN {key:8} => {value}")
@@ -196,15 +193,28 @@ def main():
             print(f"updating delta_ut1_utc {times.delta_ut1_utc} -> {dut1}")
             times.delta_ut1_utc = dut1
 
-    if data.get('ra') and data.get('dec'):
-        nearest_ra = round(data['ra'])
+    # eor fields
+    # | field | ra h | ra d | dec |
+    # | ----- | ---- | ---- | --- |
+    # | EoR0  | 0    |    0 | -27 |
+    # | EoR1  | 4    |   60 | -30 |
+    # | EoR2  | 10.3 |  155 | -10 |
+    # | EoR3  | 1    |   15 | -27 |
+    if data.get('ra') is not None and data.get('dec') is not None:
+        nearest_ra = round(data['ra']) % 360
         nearest_dec = round(data['dec'])
-        print(f"nearest ra, dec: {nearest_ra}, nearest_dec")
-
+        eorfield = None
         if nearest_ra == 0 and -30 <= nearest_dec <= -27:
-            data['eorfield'] = 0
-        elif nearest_ra == 0 and 340 <= nearest_dec <= 341:
-            data['eorfield'] = 1
+            eorfield = 0
+        elif 59 <= nearest_ra <= 61 and -30 <= nearest_dec <= -27:
+            eorfield = 1
+        elif 154 <= nearest_ra <= 156 and nearest_dec == -10:
+            eorfield = 2
+        elif 14 <= nearest_ra <= 16 and -30 <= nearest_dec <= -27:
+            eorfield = 3
+        print(f"nearest ra, dec: {nearest_ra}, {nearest_dec} => {eorfield=}")
+        if eorfield is not None:
+            data['eorfield'] = eorfield
 
     first_mhz = round(freqs[0] / 1e6)
     print(f"first_mhz: {first_mhz}")
@@ -227,13 +237,12 @@ def main():
         )
         for time in times
     ]
-    if args.weights:
-        total_weight = 0
-        for i, jd in enumerate(jds):
-            weight = float(jd_weights[jd])
-            times[i]['weight'] = weight
-            total_weight += weight
-        data['total_weight'] = total_weight
+    total_weight = 0
+    for i, jd in enumerate(jds):
+        weight = float(jd_weights[jd])
+        times[i]['weight'] = weight
+        total_weight += weight
+    data['total_weight'] = total_weight
 
     ants = [
         OrderedDict(
@@ -255,8 +264,11 @@ def main():
         data['num_ants'] = num_ants
         data['num_lb'] = num_lb
         data['num_hex'] = num_hex
-        if num_ants > 128:
-            data['config'] = f'phase3-{num_ants}T'
+        if times[0]['gps'] > 1430000000:
+            if num_ants > 128:
+                data['config'] = f'phase3-{num_ants}T'
+            else:
+                data['config'] = 'phase3'
         elif data['num_lb'] > 50:
             data['config'] = f'phase2b-{num_ants}T'
         elif data['num_hex'] > 50:

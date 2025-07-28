@@ -348,8 +348,8 @@ tail -n 999999 -F .nextflow.log | grep -E '(COMPLETED; exit: [^0]|WARN|WorkflowS
 nextflow module conflicts with singularity for dumb Java reasons.
 
 ```bash
-module unload singularity
-module load nextflow
+module unload singularity java
+module load java64/forNextflow singularity/default
 nextflow run main.nf -profile dug
 ```
 

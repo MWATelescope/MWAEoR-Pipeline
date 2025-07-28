@@ -12,6 +12,13 @@ import pandas as pd
 import copy
 from math import ceil
 import shlex
+from os.path import realpath
+# Install finufft if not available: pip install finufft
+try:
+    import finufft
+except ImportError:
+    print("finufft is required for NUFFT. Please install with 'pip install finufft'")
+    sys.exit(1)
 
 """
 example:
@@ -84,7 +91,12 @@ def get_parser():
     plot_group.add_argument(
         '--max-delay', default=1000, type=int,
         help="max x axis range for Fourier transform plot [ns]")
-
+    plot_group.add_argument('--sel_ants', default=None, nargs='+',
+                            help="only plot tiles at these indices")
+    plot_group.add_argument('--highlight_ants', default=[], nargs='+',
+                            help="highlight tiles at these indices")
+    plot_group.add_argument('--sel_times', default=None, nargs='+',
+                            help="only plot times at these indices")
 
     flag_group = parser.add_argument_group('FLAGGING OPTIONS')
     flag_group.add_argument('--flag_style', default="metafits",
@@ -93,12 +105,6 @@ def get_parser():
                             help="width of the edge channels to be flagged if metafits style [kHz]")
     flag_group.add_argument('--no_flag_centre', default=False, action="store_true",
                             help="flag the center channel")
-    flag_group.add_argument('--sel_ants', default=None, nargs='+',
-                            help="only plot tiles at these indices")
-    flag_group.add_argument('--highlight_ants', default=[], nargs='+',
-                            help="only plot tiles at these indices")
-    flag_group.add_argument('--sel_times', default=None, nargs='+',
-                            help="only plot times at these indices")
 
     return parser
 
@@ -207,7 +213,7 @@ def autoplot(args):
     # pols = ["XX", "YY"]
     pols = ["XX", "YY"]
     uv_pol_order = ["XX", "YY", "XY", "YX"]
-    fig, axs = plt.subplots(len(pols), sharex=True, sharey=True)
+    fig, axs = plt.subplots(len(pols), sharex=True, sharey=True, figsize=(36, 36))
     legend_done = False
     for pol, ax in zip(pols, axs.flatten()):
         pol_idx = uv_pol_order.index(pol)
@@ -222,27 +228,90 @@ def autoplot(args):
         x_label = "Freq [MHz]"
         x_values = freqs
         if args.ft:
-            # Replace NaNs with zeros before FFT
-            rdx_ant_freq_filled = np.nan_to_num(rdx_ant_freq, nan=0.0)
-            # Apply FFT along frequency axis (axis 1)
-            rdx_ant_freq = np.abs(np.fft.fftshift(np.fft.fft(rdx_ant_freq_filled, axis=1), axes=1))
-            # Create delay axis in nanoseconds
-            freq_spacing = freqs[1] - freqs[0]  # MHz
-            total_bandwidth = freqs[-1] - freqs[0]  # MHz
-            delays = np.fft.fftshift(np.fft.fftfreq(len(freqs), d=freq_spacing.value))
-            delays = delays / total_bandwidth.value * 1000  # Convert to nanoseconds
-            x_values = delays
+            # Use original complex visibilities for proper delay transform
+            freq_hz = freqs.to(u.Hz).value.astype(np.float64)
+            min_delay_ns, max_delay_ns = float(args.min_delay), float(args.max_delay)
+
+            nants = rdx_ant_freq.shape[0]
+            nfreqs = rdx_ant_freq.shape[1]
+
+            # Use amplitude data with zero-padding for better delay resolution
+            print(f"Computing delay transform: {min_delay_ns}-{max_delay_ns} ns", file=sys.stderr)
+
+            # Zero-pad to improve delay resolution - target ~1 ns resolution
+            freq_res_hz = freq_hz[1] - freq_hz[0]
+            target_delay_res_ns = 1.0
+            pad_factor = max(1, int(1e9 / (target_delay_res_ns * freq_res_hz * nfreqs)))
+            nfreqs_padded = nfreqs * pad_factor
+
+            print(f"Zero-padding: {nfreqs} -> {nfreqs_padded} for {1e9/(nfreqs_padded*freq_res_hz):.1f} ns resolution", file=sys.stderr)
+
+            rdx_ant_delay = np.full((nants, nfreqs_padded), np.nan, dtype=np.float64)
+
+            for ant in range(nants):
+                # Use the original amplitude data that's already been reduced
+                data_freq = rdx_ant_freq[ant].copy()
+                valid_mask = ~np.isnan(data_freq)
+                if not np.any(valid_mask):
+                    continue
+
+                # Replace NaN with 0 for FFT
+                data_freq[~valid_mask] = 0.0
+
+                # Apply window to reduce spectral leakage
+                window = np.blackman(len(data_freq))
+                data_windowed = data_freq * window
+
+                # Zero-pad the data
+                data_padded = np.zeros(nfreqs_padded)
+                data_padded[:nfreqs] = data_windowed
+
+                # FFT to delay domain
+                delay_spectrum = np.fft.fft(data_padded)
+                rdx_ant_delay[ant] = np.abs(delay_spectrum)
+
+            # Calculate delay axis with improved resolution
+            delay_res_s = 1.0 / (nfreqs_padded * freq_res_hz)
+            delays_s = np.arange(nfreqs_padded) * delay_res_s
+            delays_ns = delays_s * 1e9
+
+            print(f"Actual delay range: 0 to {delays_ns.max():.1f} ns, res={delay_res_s*1e9:.2f} ns", file=sys.stderr)
+            print(f"Channel BW = {freq_res_hz/1e6:.3f} MHz -> delay period = {1e9/freq_res_hz:.1f} ns", file=sys.stderr)
+            print(f"Delay data shape: {rdx_ant_delay.shape}, has finite data: {np.any(np.isfinite(rdx_ant_delay))}", file=sys.stderr)
+            print(f"Data range: {np.nanmin(rdx_ant_delay):.2e} to {np.nanmax(rdx_ant_delay):.2e}", file=sys.stderr)
+
+            # Filter to requested delay range
+            delay_mask = (delays_ns >= min_delay_ns) & (delays_ns <= max_delay_ns)
+            print(f"Requested range {min_delay_ns}-{max_delay_ns} ns has {np.sum(delay_mask)} points", file=sys.stderr)
+
+            if np.any(delay_mask) and np.sum(delay_mask) > 5:
+                rdx_ant_delay = rdx_ant_delay[:, delay_mask]
+                delays_ns = delays_ns[delay_mask]
+                print(f"Using filtered range: {delays_ns.min():.1f} to {delays_ns.max():.1f} ns", file=sys.stderr)
+            else:
+                # Show a broader range if requested range is too narrow
+                if delays_ns.max() < max_delay_ns:
+                    # Show all computed delays
+                    print(f"Showing full computed range: 0 to {delays_ns.max():.1f} ns", file=sys.stderr)
+                else:
+                    # Show first part of delays up to max_delay_ns
+                    subset_end = np.where(delays_ns <= max_delay_ns)[0]
+                    if len(subset_end) > 0:
+                        subset_end = subset_end[-1] + 1
+                        rdx_ant_delay = rdx_ant_delay[:, :subset_end]
+                        delays_ns = delays_ns[:subset_end]
+                        print(f"Showing subset: 0 to {delays_ns.max():.1f} ns", file=sys.stderr)
+                    else:
+                        print(f"No delays <= {max_delay_ns} ns found!", file=sys.stderr)
+
+            # For NUFFT, we already have the desired delay range
+            rdx_ant_freq = rdx_ant_delay
+            x_values = delays_ns
             x_label = "Delay [ns]"
 
-            # Set reasonable x-axis limits for delay spectrum
-            # Focus on the central part where the interesting features are
-            # instead of ax.set_xlim(args.min_delay, args.max_delay)
-            # Set values outside of min, max delay to NaN
-            rdx_ant_freq = np.where(
-                (x_values >= args.min_delay) & (x_values <= args.max_delay),
-                rdx_ant_freq, np.nan)
+            print(f"NUFFT result: {x_values.min():.1f} to {x_values.max():.1f} ns, {len(x_values)} points", file=sys.stderr)
 
-            ax.set_xlim(args.min_delay, args.max_delay)
+            ax.set_xlim(min_delay_ns, max_delay_ns)
 
 
 
@@ -253,7 +322,7 @@ def autoplot(args):
             quantity = f"{args.reduction} {quantity}"
         if args.log_scale:
             quantity = f"log({quantity})"
-        if args.plot_style == "imshow":
+        if args.plot_style == "imshow" or args.ft:
             # for normalization, reduce across time, freq for each antenna
             rms_ant = np.sqrt(np.nanmean(rdx_ant_freq ** 2, axis=1))
             # median, std for this pol
@@ -275,8 +344,18 @@ def autoplot(args):
             cmap = copy.copy(plt.get_cmap('viridis'))
             # cmap.set_over('fuchsia')
             # cmap.set_under('red')
-            ax.imshow(rdx_ant_freq, interpolation='none',
-                      norm=norm, cmap=cmap, aspect=6)
+
+            # Adjust aspect ratio for delay vs frequency plots
+            if args.ft:
+                aspect_ratio = len(x_values) / len(sel_ants) * 0.5  # Better for delay plots
+                extent = [x_values.min(), x_values.max(), 0, len(sel_ants)]
+            else:
+                aspect_ratio = 6  # Original aspect for frequency plots
+                extent = None
+
+            im = ax.imshow(rdx_ant_freq, interpolation='none',
+                          norm=norm, cmap=cmap, aspect=aspect_ratio,
+                          extent=extent, origin='lower')
             ax.set_ylabel("Antenna")
         elif args.plot_style == "lines":
             for ant_idx, ant_name, line in zip(sel_ants, sel_ant_names, rdx_ant_freq):
@@ -322,17 +401,17 @@ def autoplot(args):
     # plt.tight_layout()
     output_name = args.output_name
     if args.output_name is None:
-        suffix = f"{args.plot_style}_{args.reduction}"
+        suffix = f"{args.plot_style}"
         if args.ft:
             suffix += "_ft"
         output_name = args.uvfits.replace(".uvfits", f"_autoplot_{suffix}.png")
-    print(f"output_name={output_name}")
 
     plot_title = args.plot_title
     if args.plot_title is None:
-        plot_title = output_name
+        plot_title = output_name.split('/')[-1].replace('.png', '')
     plt.suptitle(plot_title)
     plt.savefig(output_name, bbox_inches='tight', dpi=args.dpi, transparent=args.transparent)
+    print(realpath(output_name))
 
 
 def main():

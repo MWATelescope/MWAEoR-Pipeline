@@ -143,6 +143,9 @@ def birli_argstr_suffix() {
         }
         .flatten()
         .join(' ')
+    if (params.birli_args != null) {
+        argstr_cli += " ${params.birli_args}"
+    }
     [argstr_asvo, argstr_cli, suffix]
 }
 
@@ -243,7 +246,7 @@ def parseFloatOrNaN(s) {
 // }
 
 def isNaN(n) {
-    if (n == null || n == "") {
+    if (n == null || n == "" || n == 'NaN' || n == 'null' || n == 'None' || n == 'nan') {
         return true
     }
     // def cls = null
@@ -946,35 +949,35 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     // no error
 
     // 0x0X - observational
-    if (params.filter_eorfield != null && eorfield != params.filter_eorfield) {
+    if (!isNaN(params.filter_eorfield) && eorfield != params.filter_eorfield) {
         fail_reasons += [String.format("phase_radec(%+.1f,%+.1f)!=eor%d", ra_phase_center, dec_phase_center, params.filter_eorfield)]
         fail_code = fail_code == 0 ? 1 : fail_code
     }
-    if (params.filter_ra != null && (ra_phase_center - params.filter_ra).abs() > 0.1) {
+    if (!isNaN(params.filter_ra) && (ra_phase_center - params.filter_ra).abs() > 0.1) {
         fail_reasons += [String.format("phase_ra(%+.1f)!=ra(%+.1f)", ra_phase_center, params.filter_ra)]
         fail_code = fail_code == 0 ? 1 : fail_code
     }
-    if (params.filter_dec != null && (dec_phase_center - params.filter_dec).abs() > 0.1) {
+    if (!isNaN(params.filter_dec) && (dec_phase_center - params.filter_dec).abs() > 0.1) {
         fail_reasons += [String.format("phase_dec(%+.1f)!=dec(%+.1f)", dec_phase_center, params.filter_dec)]
         fail_code = fail_code == 0 ? 1 : fail_code
     }
-    if (params.filter_eorband != null && eorband != params.filter_eorband) {
+    if (!isNaN(params.filter_eorband) && eorband != params.filter_eorband) {
         fail_reasons += ["center_chan=${center_chan}"]
         fail_code = fail_code == 0 ? 2 : fail_code
     }
-    if (params.filter_sweet_pointings != null && !params.filter_sweet_pointings.contains(sweet_pointing)) {
+    if (!isNaN(params.filter_sweet_pointings) && !params.filter_sweet_pointings.contains(sweet_pointing)) {
         fail_reasons += ["sweet_pointing=${sweet_pointing}"]
         fail_code = fail_code == 0 ? 3 : fail_code
     }
-    if (params.filter_ew_pointings != null && !params.filter_ew_pointings.contains(ew_pointing)) {
+    if (!isNaN(params.filter_ew_pointings) && !params.filter_ew_pointings.contains(ew_pointing)) {
         fail_reasons += ["ew_pointing=${ew_pointing}"]
         fail_code = fail_code == 0 ? 3 : fail_code
     }
-    if (params.filter_sun_elevation != null && sun_elevation != null && sun_elevation > params.filter_sun_elevation) {
+    if (!isNaN(params.filter_sun_elevation) && !isNaN(sun_elevation) && sun_elevation > params.filter_sun_elevation) {
         fail_reasons += [String.format("sun_elevation(%+.1f)>%+.1f", Float.valueOf(sun_elevation), Float.valueOf(params.filter_sun_elevation))]
         fail_code = fail_code == 0 ? 4 : fail_code
     }
-    if (params.filter_min_sun_pointing_distance != null && sun_pointing_distance != null && sun_pointing_distance > params.filter_min_sun_pointing_distance) {
+    if (!isNaN(params.filter_min_sun_pointing_distance) && !isNaN(sun_pointing_distance) && sun_pointing_distance > params.filter_min_sun_pointing_distance) {
         fail_reasons += [String.format("sun_pointing_distance(%+.1f)>%+.1f", Float.valueOf(sun_pointing_distance), Float.valueOf(params.filter_min_sun_pointing_distance))]
         fail_code = fail_code == 0 ? 4 : fail_code
     }
@@ -991,25 +994,25 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     }
 
     // 0x1X - runtime
-    if (params.filter_bad_tile_frac != null && bad_tile_frac > params.filter_bad_tile_frac) {
+    if (!isNaN(params.filter_bad_tile_frac) && bad_tile_frac > params.filter_bad_tile_frac) {
         fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}, (bad_tile_frac=${bad_tile_frac})>${params.filter_bad_tile_frac})"]
         fail_code = fail_code == 0 ? 16 : fail_code
     }
-    else if (params.filter_min_good_tiles != null && n_good_tiles < params.filter_min_good_tiles) {
+    else if (!isNaN(params.filter_min_good_tiles) && n_good_tiles < params.filter_min_good_tiles) {
         fail_reasons += ["bad_tiles(${bad_tiles.size()})=${displayInts(bad_tiles)}, (n_good_tiles=${n_good_tiles})<${params.filter_min_good_tiles})"]
         fail_code = fail_code == 0 ? 16 : fail_code
     }
-    if (params.filter_dead_dipole_frac != null && dead_dipole_frac > params.filter_dead_dipole_frac) {
+    if (!isNaN(params.filter_dead_dipole_frac) && dead_dipole_frac > params.filter_dead_dipole_frac) {
         fail_reasons += ["dead_dipole_frac=${dead_dipole_frac}"]
         fail_code = fail_code == 0 ? 17 : fail_code
     }
 
     // 0x2X - quality
-    if (params.filter_quality != null && dataquality > params.filter_quality) {
+    if (!isNaN(params.filter_quality) && dataquality > params.filter_quality) {
         fail_reasons += ["dataquality=${dataquality} (${dataqualitycomment})"]
         fail_code = fail_code == 0 ? 32 : fail_code
     }
-    if (params.filter_ionoqa && quality.iono_qa != null && quality.iono_qa > params.filter_ionoqa) {
+    if (params.filter_ionoqa && !isNaN(quality.iono_qa) && quality.iono_qa > params.filter_ionoqa) {
         fail_reasons += [String.format("rts_iono_qa(%.1f)>%.1f", Float.valueOf(quality.iono_qa), Float.valueOf(params.filter_ionoqa))]
         fail_code = fail_code == 0 ? 33 : fail_code
     }

@@ -339,7 +339,7 @@ process birliPrepUV {
     input:
     tuple val(obsid), val(meta_), path(metafits), path(raw)
     output:
-    tuple val(obsid), val(meta), path(uvfits)
+    tuple val(obsid), val(meta), path(uvfits), path(metrics)
         // , path("${obsid}${spw}*.mwaf"), path("birli_prep.log")
 
     when: !params.noprep
@@ -368,13 +368,15 @@ process birliPrepUV {
     meta['channel_glob'] = channel_glob
     meta['birli_suffix'] = suffix
     uvfits = ''+"${prefix}${obsid}${suffix}${channel_glob}.uvfits"
+    metrics = ''+"${prefix}${obsid}${suffix}${channel_glob}_metrics.fits"
     """
     set -eux
     ${params.birli} \
         ${argstr_cli} \
         -u "${prefix}${obsid}${suffix}.uvfits" \
         -m "${metafits}" \
-        ${raw}
+        --metrics-out "${prefix}${obsid}${suffix}_metrics.fits" \
+        -- ${raw}
     """
 }
 
@@ -600,7 +602,7 @@ workflow extRaw {
         }
         | birliPrepUV
 
-    birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_, _metrics ->
             def uvfits = coerceList(uvfits_)
             if (uvfits.size > 1) {
                 uvfits.collect { f ->
@@ -778,7 +780,7 @@ workflow asvoRawFlow {
         }
         .tap { obsMetaMetafitsRawSsins }
 
-    birliPrepUV.out.flatMap { obsid, meta, uvfits_ ->
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_, _metrics ->
             def uvfits = coerceList(uvfits_)
             if (uvfits.size > 1) {
                 uvfits.collect { f ->
@@ -994,7 +996,7 @@ process asvoRaw {
     # submit a job to ASVO, suppress failure if a job already exists.
     ${params.giant_squid} submit-vis --delivery "acacia" $obsid || true
     # extract id and state from pending download vis jobs
-    ${params.giant_squid} list -j --types download_visibilities --states queued,processing,error -- $obsid \
+    ${params.giant_squid} list -j --types download_visibilities --states queued,error -- $obsid \
         | ${params.jq} -r '.[]|[.jobId,.jobState]|@tsv' \
         | tee pending.tsv
     # extract id url size hash from any ready download vis jobs for this obsid
@@ -1168,7 +1170,7 @@ process flagQA {
     memory {
         // max 30G Virtual for 60ts, 144T, 768chans
         [
-            (30.GB * Math.pow(2,task.attempt) * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768) \
+            (50.GB * Math.pow(2,task.attempt) * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768) \
                 / (60 * 144 * 768)),
             360.GB
         ].min()
@@ -1427,15 +1429,16 @@ process hypCalSol {
 
     // label jobs that need a bigger gpu allocation
     label "hyperdrive"
-    label "mem_quarter" // TODO: set from uvfits size
+    memory { MemoryUnit.of(2 * uvfits.size()) }
     label "cpu_quarter"
     label "gpu_nvme"
     label "rate_limit_20"
-    time { params.scratchFactor * 1.hour * Math.pow(task.attempt, 4) }
+    time { params.scratchFactor * 2.5.hour * Math.pow(task.attempt, 4) }
     errorStrategy {
         task.exitStatus in 137..140 ? 'retry' : 'ignore'
     }
     maxRetries 2
+    stageInMode "copy"
 
     input:
     tuple val(obsid), val(meta), path(metafits), path(uvfits), val(dical_args)
@@ -1625,7 +1628,7 @@ process hypApplyUV {
     label "hyperdrive_cpu"
     label "cpu_half"
     label "nvme"
-    label "mem_half"
+    memory { MemoryUnit.of(2 * vis.size()) }
 
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(soln)
@@ -1813,8 +1816,9 @@ process hypIonoSubUV {
     label "mem_full" // need a full node otherwise gpu runs out of memory
     label "gpu"
     label "rate_limit_50"
-    // 2.5h per 10GB file
-    time { params.scratchFactor * (coerceList(vis).collect { it.size() }.sum() / 10.GB.toBytes()) * 2.5.hour }
+    // 8h per 10GB file
+    stageInMode "copy"
+    time { params.scratchFactor * (coerceList(vis).collect { it.size() }.sum() / 10.GB.toBytes()) * 24.hour }
 
     input:
     tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist)
@@ -1955,14 +1959,7 @@ process prepVisQA {
     tag "${base}"
     label "python"
     label "nvme"
-    memory {
-        // max 50G Virtual for 60ts, 144T, 768chans
-        [
-            (50.GB * (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768)
-                / (60 * 144 * 768)),
-            360.GB
-        ].min()
-    }
+    memory { MemoryUnit.of(uvfits.size() * 3) }
     time {params.scratchFactor * 20.minute * task.attempt}
     errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
     maxRetries 2
@@ -2009,8 +2006,8 @@ process uvMeta {
     tag "${base}"
     label "python"
     label "nvme"
-    // max 20min, 60GB for 60ts, 144T, 768chans
-    memory = { task.attempt * volume * 60.GB }
+    // needs 20min, 60GB of memory per 20GB of uvfits (at least 60GB)
+    memory = { (task.attempt * volume * 60).GB }
     time {
         [
             (
@@ -2031,8 +2028,11 @@ process uvMeta {
         // tuple val(obsid), val(meta), path(vis), path(uvmeta), emit: obsMetaVisJson
 
     script:
-    volume = (meta.ntimes?:60) * (meta.num_ants?:144) * (meta.num_chans?:768) / (60 * 128 * 768)
-    base = vis.baseName
+    vis_=coerceList(vis)
+    totalSizeGiga = vis_.collect { MemoryUnit.of((it.size())) }.sum()
+    totalSizeGigaFloat = (float)(totalSizeGiga.toGiga())
+    volume = (float)([totalSizeGigaFloat/20.0f,1.0f].max())
+    base = vis_[0].baseName
     uvmeta = ''+"uvmeta_${base}.json"
     template "uvmeta.py"
 }
@@ -2499,7 +2499,7 @@ process chipsGrid {
     label "nvme"
     maxRetries 3
     errorStrategy { return task.exitStatus > 1 ? "retry" : "ignore" }
-    time { 40.minute * obsids.size() * params.scratchFactor }
+    time { 50.minute * obsids.size() * params.scratchFactor }
 
     input:
     tuple val(group), val(meta), val(obsids), path(viss)

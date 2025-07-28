@@ -49,10 +49,14 @@ def read_h5(h5file):
     h5data['gps_array'] = jd_to_gps(jd_array)
     return h5data
 
-# 0.25s is smallest time interval in MWA
-max_second_denom = 4  # (smallest time interval in fractions of a second)
+
+def snap_to_grid(s):
+    # 0.25s is smallest time interval in MWA
+    max_second_denom = 4  # (smallest time interval in fractions of a second)
+    return np.round(max_second_denom * s).astype(np.int64).astype(np.float64)/max_second_denom
+
 def jd_to_gps(jd):
-    return np.round(max_second_denom * Time(jd, format='jd').gps).astype(np.int64).astype(np.float64)/max_second_denom
+    return snap_to_grid(Time(jd, format='jd').gps)
 
 
 def read_uvfits(uvfile):
@@ -139,7 +143,7 @@ def align_time(src_data, dst_data):
     dst_int_time = np.median(np.diff(dst_gpss))
     dst_phase = np.median(np.mod(dst_gpss, dst_int_time) / dst_int_time)
     assert src_int_time == dst_int_time, f"src and dst int times: {src_int_time} != {dst_int_time}"
-    assert np.all(dst_gpss.round() == dst_gpss), f"dst_gpss not integer: {dst_gpss}"
+    # assert np.all(dst_gpss.round() == dst_gpss), f"dst_gpss not integer: {dst_gpss}"
 
     print(
         f"aligning src_gpss {len(src_gpss), src_phase}) and dst_gpss {len(dst_gpss), dst_phase}{chr(10)}"
@@ -148,26 +152,27 @@ def align_time(src_data, dst_data):
     )
 
     if np.median(np.abs(src_phase - dst_phase) * 2).round() == 1:
-        # print("alignment out of phase by 1/2")
+        print("alignment out of phase by 1/2")
         assert src_gpss[0] > dst_gpss[0], f"{src_gpss[0]} <= {dst_gpss[0]}"
         assert src_gpss[-1] < dst_gpss[-1], f"{src_gpss[0]} >= {dst_gpss[0]}"
-        start_extra = int(((src_gpss[0] - dst_gpss[0] + src_int_time/2)/src_int_time).round())
-        end_extra = int(((dst_gpss[-1] - src_gpss[-1] + src_int_time/2)/src_int_time).round())
+        # how many extra time steps are needed at the start and end.
+        start_extra = int(((src_gpss[0] - dst_gpss[0] + src_int_time/4)/src_int_time).round())
+        end_extra = int(((dst_gpss[-1] - src_gpss[-1] + src_int_time/4)/src_int_time).round())
         src_shape = src_data['weights'].shape
-        ext_shape = (int(start_extra + end_extra + src_shape[0]), *src_shape[1:])
-        # print(f"{start_extra=} {end_extra=} {ext_shape=}")
         # extend src to fit new shape
+        ext_shape = (int((start_extra + end_extra + src_shape[0])), *src_shape[1:])
+        print(f"{start_extra=} {end_extra=} {ext_shape=}")
         ext_weights = np.zeros(ext_shape)
         ext_weights[start_extra:start_extra+src_shape[0], :, :] = src_data['weights']
         ext_gpss = np.arange(
             src_gpss[0] - start_extra * src_int_time,
             dst_gpss[-1] + src_int_time,
             src_int_time
-        ).astype(np.int64)
+        )
         print(f"ext={ext_gpss[:2]}..{ext_gpss[-2:]}")
         # pairwise mean of new weights and gpss
         new_weights = np.mean(np.stack([ext_weights[:-1], ext_weights[1:]]), axis=0)
-        new_gpss = np.mean(np.stack([ext_gpss[:-1], ext_gpss[1:]]), axis=0).astype(np.int64)
+        new_gpss = np.mean(np.stack([ext_gpss[:-1], ext_gpss[1:]]), axis=0)
         print(f"new={new_gpss[:2]}..{new_gpss[-2:]}")
         src_data['weights'] = new_weights
         src_data['gps_array'] = new_gpss
