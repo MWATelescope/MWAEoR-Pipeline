@@ -2391,7 +2391,7 @@ process wscleanDConv {
             // convert any uvfits to ms
             [vis, vis_ms].transpose().collect { uv, ms ->
                 (uv.extension == 'uvfits' ? \
-                """${params.casa} -c "importuvfits('${uv}', '${ms}')" """ : "")
+                """${params.casa} --nogui --agg -c "importuvfits('${uv}', '${ms}')" """ : "")
             }.join("\n")
     ) + """
     """ + (
