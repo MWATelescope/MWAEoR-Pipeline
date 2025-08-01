@@ -1433,7 +1433,7 @@ process hypCalSol {
     label "cpu_quarter"
     label "gpu_nvme"
     label "rate_limit_20"
-    time { params.scratchFactor * 2.5.hour * Math.pow(task.attempt, 4) }
+    time { params.scratchFactor * 4.hour * Math.pow(task.attempt, 4) }
     errorStrategy {
         task.exitStatus in 137..140 ? 'retry' : 'ignore'
     }
@@ -1746,7 +1746,7 @@ process hypSubUV {
         --data "${metafits}" "${vis}" \
         --beam-file "${params.beam_path}" \
         --source-list "${srclist}" \
-        --invert --num-sources ${meta.sub_nsrcs} \
+        --num-sources ${meta.sub_nsrcs} \
         --outputs "${sub_vis}" \
         | tee "${logs}"
     ps=("\${PIPESTATUS[@]}")
@@ -2499,7 +2499,7 @@ process chipsGrid {
     label "nvme"
     maxRetries 3
     errorStrategy { return task.exitStatus > 1 ? "retry" : "ignore" }
-    time { 50.minute * obsids.size() * params.scratchFactor }
+    time { 90.minute * obsids.size() * params.scratchFactor }
 
     input:
     tuple val(group), val(meta), val(obsids), path(viss)
