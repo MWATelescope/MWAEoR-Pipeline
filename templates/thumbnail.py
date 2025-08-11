@@ -22,7 +22,7 @@ import shlex
 import os
 import json
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-
+from os.path import realpath
 """
 example:
 
@@ -44,6 +44,12 @@ singularity exec --cleanenv -B \$PWD --home /astro/mwaeor/dev/mplhome /pawsey/mw
     --thumb="/astro/mwaeor/dev/MWAEoR-Pipeline/\${obsid}_thumbtest.thumb" \
     --title="\${obsid}" \
     --transparent
+
+singularity exec --cleanenv -B/data -W\$PWD /data/curtin_mwaeor/singularity/mwa_qa.sif python \
+    /data/curtin_mwaeor/src/MWAEoR-Pipeline/templates/thumbnail.py \
+    --fits=/data/curtin_mwaeor/nfdata/1099487728/img-wb0.5-8000x13as/wsclean_hyp_1099487728_sub_ssins_30l_src8k_300it_160kHz-t0020-MFS-image.fits \
+    --thumb=/data/curtin_mwaeor/nfdata/1099487728/img-wb0.5-8000x13as/wsclean_hyp_1099487728_sub_ssins_30l_src8k_300it_160kHz-t0020-MFS-image.png \
+    --symmetric
 ```
 """
 
@@ -234,13 +240,14 @@ def main():
             ax.set_xticks([])
             ax.set_yticks([])
         im = ax.imshow(data, **imshow_kw)
-        ax.grid()
+        ax.grid(False)
         cbaxes = inset_axes(ax, width="30%", height="3%", loc='upper right')
         img_fig.colorbar(im, cax=cbaxes, orientation="horizontal")
         fits_base, _ = os.path.splitext(os.path.basename(args.fits))
         thumb = args.thumb or f"{fits_base}.thumb"
         plt.savefig(thumb, bbox_inches='tight',
                     dpi=args.dpi, transparent=args.transparent)
+        print(realpath(thumb))
 
 
 if __name__ == '__main__':

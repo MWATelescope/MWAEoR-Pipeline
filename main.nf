@@ -669,11 +669,13 @@ workflow extRaw {
 
     qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
 
-    ws.out.frame.mix(flag.out.frame)
-        .mix(ssinsQA.out.frame)
-        .mix(qaPrep.out.frame)
-        .map { n, l -> [n, l as ArrayList] }
-        | makeVideos
+    if (!params.novideo) {
+        ws.out.frame.mix(flag.out.frame)
+            .mix(ssinsQA.out.frame)
+            .mix(qaPrep.out.frame)
+            .map { n, l -> [n, l as ArrayList] }
+            | makeVideos
+    }
 }
 
 workflow asvoRawFlow {
@@ -1904,7 +1906,7 @@ process hypIonoSubMS {
 process cthulhuPlot {
     storeDir "${params.outdir}/${obsid}/iono_qa${params.cal_suffix}"
     tag "${obsid}${meta.subobs?:''}.${meta.name}"
-    label "python"
+    label "cthulhu"
     label "mem_half"
     time 1.hour
 
@@ -3043,11 +3045,20 @@ process thumbnail {
         title: meta.title?:"${obsid}${meta.subobs?:''} ${meta.name} ${meta.suffix}",
         thumb: thumb,
     ] + meta
+    // if vmin or vmax are set, these should replace vmin_quantile and vmax_quantile
+    if (!isNaN(params.thumbnail_vmin)) {
+        args.vmin_quantile = null
+        args.vmin = params.thumbnail_vmin
+    }
+    if (!isNaN(params.thumbnail_vmax)) {
+        args.vmax_quantile = null
+        args.vmax = params.thumbnail_vmax
+    }
     // argstr = "${params.thumbnail_args}"
     argtokens = args.findAll { k, v ->
             v != null && [
                 'fits', 'thumb', 'title', 'dpi', 'limit', 'vmin', 'vmax', 'vmin_quantile',
-                'vmax_quantile', 'cmap', 'norm_args'
+                'vmax_quantile', 'cmap', 'norm_args',
             ].contains(k)
         }
         .collect { k, v -> ["--${k}"] + coerceList(v) }
@@ -3057,7 +3068,7 @@ process thumbnail {
         }
         .collect { k, _v -> "--${k}" }
 
-    argstr = argtokens
+    argstr = "${params.thumbnail_args} " + argtokens
         .collect { token -> "\"${token}\"" }
         .join(' ')
 
@@ -5392,15 +5403,15 @@ workflow img {
                     } else {
                         newMeta.vmin_quantile = (1-params.thumbnail_quantile)
                     }
-                    if (['Q', 'V', 'U', 'XY', 'YX'].contains(meta.pol)) {
+                    if (['Q', 'V', 'U', 'XY', 'YX'].contains(meta.pol) || params.thumbnail_symmetric) {
                         newMeta.symmetric = true
-                        newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"asinh\\\\",\\\\"asinh_a\\\\":0.8}'
+                        // newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"asinh\\\\",\\\\"asinh_a\\\\":0.8}'
                     } else {
                         def ratio = 0.1
                         if (newMeta.vmin as Float < 0 && newMeta.vmax as Float > 0) {
                             ratio = (-newMeta.vmin) / (newMeta.vmax - newMeta.vmin)
                         }
-                        // newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"asinh\\\\",\\\\"asinh_a\\\\":'+ "${ratio}" + '}'
+                        // i dunno about this
                         newMeta.norm_args = '{\\\\"stretch\\\\":\\\\"power\\\\",\\\\"power\\\\":2,\\\\"clip\\\\":true}'
                     }
                     [obsid, mapMerge(meta, newMeta), img]
@@ -5666,7 +5677,7 @@ workflow img {
             .mix(thumbnail.out.flatMap { obsid, meta, png ->
                 def frames_ = []
                 if (meta.chan?:-1 == -1) {
-                    frames_.push(["imgqa_${meta.name}_${meta.inter_suffix}", png])
+                    frames_.push(["imgqa_${meta.name}", png])
                 } else {
                     // scan through channels for each obsid, pol
                     if (params.frame_chan_scan) {
@@ -5674,7 +5685,7 @@ workflow img {
                     }
                     // scan through obsids for each channel, pol, prod
                     if (params.frame_obs_scan) {
-                        frames_.push(["imgqa_${meta.name}_${meta.inter_suffix}", png])
+                        frames_.push(["imgqa_${meta.name}", png])
                     }
                 }
                 frames_
@@ -6804,7 +6815,7 @@ workflow qaPrep {
         frame = cal.out.frame
             .mix(uvfits.out.frame)
             .mix(img.out.frame)
-            .mix(chips.out.frame)
+            .mix((params.nopowerspec || params.nochips) ? channel.empty() : chips.out.frame)
             .mix(cthulhuPlot.out.flatMap {
                 def (_o, meta, pngs, _csv, _json, tecs) = it;
                 pngs.collect { png ->
@@ -6835,8 +6846,14 @@ workflow qaPrep {
 workflow makeVideos {
     take:
         frame
+    main:
+        def clean_frame = (params.novideo) ? channel.empty() : (
+            frame.filter { name, frames ->
+                coerceList(frames).flatten().size() > 0
+            }
+        )
     emit:
-        videos = frame.map { name, frames_ ->
+        videos = clean_frame.map { name, frames_ ->
                 def frames = coerceList(frames_).flatten()
                 def latest = frames.collect { it.lastModified() }.max()
                 def cachebust = "${latest}_x" + String.format("%04d", frames.size())
@@ -6925,10 +6942,12 @@ workflow extPrep {
             storeDir: "${results_dir()}${params.img_suffix}${params.cal_suffix}"
         )
 
-    ws.out.frame
-        .mix(flag.out.frame)
-        .mix(qaPrep.out.frame)
-        | makeVideos
+    if (!params.novideo) {
+        ws.out.frame
+            .mix(flag.out.frame)
+            .mix(qaPrep.out.frame)
+            | makeVideos
+    }
     // make zips
     if (params.tarchive) {
         qaPrep.out.zip | makeTarchives
