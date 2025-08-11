@@ -4661,11 +4661,11 @@ workflow cal {
                     def (fail_code, reason) = calqa_pass(newMeta)
                     newMeta.fail_code = fail_code
                     newMeta.reason = reason
-                    if (meta.calqa_bad_ants) {
+                    if (newMeta.calqa_bad_ants) {
                         def prepFlags = (meta.prepFlags?:[]) as Set
                         def calFlags = ([]) as Set
                         if (!params.noCalFlags) {
-                            calFlags.addAll(meta.calqa_bad_ants?:[])
+                            calFlags.addAll(newMeta.calqa_bad_ants?:[])
                         }
                         def newflags = (calFlags - prepFlags) as ArrayList
                         if (newflags) {
