@@ -233,6 +233,9 @@ def parseFloatOrNaN(s) {
     else if (s instanceof java.math.BigDecimal) {
         return s.floatValue()
     }
+    else if (s instanceof java.lang.Integer) {
+        return s.floatValue()
+    }
     try {
         return Float.parseFloat(s)
     }
