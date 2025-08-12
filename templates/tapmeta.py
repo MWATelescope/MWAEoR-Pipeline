@@ -2,7 +2,7 @@
 from pyvo.dal import TAPService
 import json
 
-tap = TAPService("http://vo.mwatelescope.org/mwa_asvo/tap")
+tap = TAPService("https://vo.mwatelescope.org/mwa_asvo/tap")
 table = tap.search("SELECT * FROM mwa.observation WHERE obs_id = ${obsid}").table
 row = table[0]
 
