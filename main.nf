@@ -2009,16 +2009,16 @@ process uvMeta {
     label "python"
     label "nvme"
     // needs 20min, 60GB of memory per 20GB of uvfits (at least 60GB)
-    memory = { (task.attempt * volume * 60).GB }
+    memory = { (task.attempt * volume * 80).GB }
     time {
         [
             (
-                params.scratchFactor * task.attempt * 20.minute * volume
+                params.scratchFactor * task.attempt * 40.minute * volume
             ),
             task.attempt * 4.hour
         ].min()
     }
-    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    errorStrategy { task.exitStatus in 135..140 ? 'retry' : 'ignore' }
     maxRetries 2
     // stageInMode "symlink" // can't symlink any more, scratch too slow
     stageInMode "copy"
@@ -2064,12 +2064,14 @@ process calQA {
 process phaseFits {
     storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
     tag "${obsid}.${meta.name}"
-    label "mwax_mover"
+    label "mwa_demo"
+    label "mem_half"
+    time { 6.hour } // no way to tell how many timesteps are in this, could be 600+
 
     input:
     tuple val(obsid), val(meta), path(metafits), path(soln)
     output:
-    tuple val(obsid), val(meta), path("${obsid}* ${name} phase_fits.tsv"), path("${obsid}*${name}*.png")
+    tuple val(obsid), val(meta), path("${obsid}*${name}*phase_fits.tsv"), path("${obsid}*${name}*.png")
 
     when: !params.nophasefits
 
@@ -2077,11 +2079,10 @@ process phaseFits {
     name = ''+"${meta.cal_prog}_${meta.name}"
     """
     #!/bin/bash -eux
-    python /app/scripts/cal_analysis.py \
+    /demo/82_calfit.py \
         --name "${name}" \
-        --metafits "${metafits}" --solns ${soln} \
-        --phase-diff-path=/app/phase_diff.txt \
-        --plot-residual --residual-vmax=0.5
+        --metafits "${metafits}" \
+        --solns ${soln}
     """
 }
 
@@ -2339,8 +2340,7 @@ process wscleanDConv {
     input:
     tuple val(obsid), val(meta), path(vis), val(img_params), path(dirtyImgs)
     output:
-    tuple val(obsid), val(meta), path(img_glob)
-        // path("wsclean_${img_name}-sources.txt") <- only works for stokes I
+    tuple val(obsid), val(meta), path(img_glob), path("wsclean_${img_name}-sources.txt", optional: true) // <- only works for stokes I
 
     when: !params.noimg
 
@@ -2418,7 +2418,9 @@ process wscleanDConv {
         -circular-beam \
         """ + ((meta.interval) ? "-interval ${meta.interval[0]} ${meta.interval[1]}" : "") + """ \
         """ + ((meta.chan) ? "-channel-range ${meta.chan[0]} ${meta.chan[1]}" : "") + """ \
-    """ + vis_ms.join(' ')
+    """ + vis_ms.join(' ') + """
+    touch wsclean_${img_name}-sources.txt
+    """
 }
 
 process imgQuantiles {
@@ -4614,8 +4616,9 @@ workflow cal {
         // pols = channel.of("xx", "yy")
         // keys.combine(pols)
         [
-            "intercept_xx", "intercept_yy",
             "length_xx", "length_yy",
+            "iono_alpha_xx", "iono_alpha_yy",
+            "intercept_xx", "intercept_yy",
             "chi2dof_xx", "chi2dof_yy",
             "sigma_resid_xx", "sigma_resid_yy",
         ].collect { key ->
@@ -4852,7 +4855,7 @@ workflow uvfits {
         // write bands and fields to a file
         obsMetaUV.map { obsid, meta, vis ->
             [
-                obsid, meta.name, meta.config?:'', meta.eorband?:'', meta.eorfield?:'',
+                obsid, meta.name, meta.config?:'', isNaN(meta.eorband)?:'', isNaN(meta.eorfield)?:'',
                 meta.nchans?:'', meta.lowfreq?:'', meta.freq_res_khz?:'', vis
             ].join('\t') }
             .collectFile(
@@ -5170,8 +5173,13 @@ workflow img {
                 | wscleanDConv
         }
 
-        obsMetaImg = wscleanDirty.out.mix(wscleanDConv.out)
+        obsMetaImg = wscleanDirty.out.mix(wscleanDConv.out.map { it ->
+                def (group, meta, imgs) = it;
+                [group, meta, imgs]
+            })
             .flatMap { obsid, meta, imgs ->
+                def metaStr = "${meta}"
+                // println("obsid: ${obsid}, meta: ${metaStr[0..50]} ..., imgs: ${imgs}")
                 coerceList(imgs).collect { img ->
                     [obsid, mapMerge(meta, decomposeImg(img)), img] }}
             .branch { _o, meta, _img ->
@@ -5825,7 +5833,12 @@ workflow imgCombine {
         // make thumbnails
         // - only MFS images unless thumbnail_all_chans
         // - exclude dirty if deconv is enabled
-        wscleanDConv.out.mix(wscleanDirty.out)
+        wscleanDConv.out.map { it ->
+                // get rid of sourcelist.txt
+                def (group, meta, imgs) = it;
+                [group, meta, imgs]
+            }
+            .mix(wscleanDirty.out)
             .flatMap { group, meta, imgs ->
                 imgs.collect { img ->
                     [group, mapMerge(meta, decomposeImg(img)), img] }
@@ -5862,7 +5875,7 @@ workflow extChips {
     def baseMeta = [
         name: params.visName ?: "ionosub_30l_src4k_300it_8s_80kHz_i1000",
         cal_prog: params.cal_prog ?: "hyp",
-        eorfield: params.eorfield ?: 0,
+        eorfield: isNaN(params.eorfield) ?: 0,
     ]
 
     channel.of(obsids_file())

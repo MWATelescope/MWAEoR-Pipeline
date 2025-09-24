@@ -609,11 +609,13 @@ def decomposeImg(img) {
     // suffix without interval
     meta.inter_suffix = [meta.chan_tok, meta.pol, meta.prod].join('-')
     meta.suffix = meta.inter_suffix
-    def inter_tok = tokens.removeLast()
-    if (is_multiinterval() && inter_tok =~ 't[0-9]{4}') {
-        meta.inter_tok = inter_tok
-        meta.inter = inter_tok[1..-1] as int
-        meta.suffix = "${inter_tok}-${meta.inter_suffix}"
+    if (tokens.size() > 0) {
+        def inter_tok = tokens.removeLast()
+        if (is_multiinterval() && inter_tok =~ 't[0-9]{4}') {
+            meta.inter_tok = inter_tok
+            meta.inter = inter_tok[1..-1] as int
+            meta.suffix = "${inter_tok}-${meta.inter_suffix}"
+        }
     }
     meta
 }
@@ -654,7 +656,10 @@ def groupMeta(meta) {
         // if groupSuffix starts with $first_token then remove it from the start
         def group_suffix = params.groupSuffix
         if (group_suffix.startsWith(first_token)) {
-            group_suffix = group_suffix.substring(first_token.size()+1)
+            group_suffix = group_suffix.substring(first_token.size())
+        }
+        if (group_suffix.startsWith("_") || group_suffix.startsWith("-")) {
+            group_suffix = group_suffix.substring(1)
         }
         group_tokens << group_suffix
     }
