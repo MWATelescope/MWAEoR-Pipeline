@@ -1640,7 +1640,11 @@ process hypApplyUV {
     when: !params.nouv && !params.noapply
 
     script:
-    meta = mapMerge(meta_, [name: ''+"${meta_.name}_${meta_.apply_name}"])
+    newMeta = [name: ''+"${meta_.name}_${meta_.apply_name}"]
+    if (params.apply_time_res) {
+        newMeta += [int_time: params.apply_time_res]
+    }
+    meta = mapMerge(meta_, newMeta)
     cal_vis = ''+"hyp_${obsid}${meta.subobs?:''}_${meta.name}.uvfits"
     logs = ''+"hyp_apply_${meta.name}.log"
     args = meta.apply_args?:""
@@ -5950,7 +5954,7 @@ workflow extChips {
         .flatMap { group, sorts, obss, gmetas, _viss ->
             [sorts, obss, gmetas].transpose()
                 .sort { it -> it[0] }
-                .collate(params.chunkSize, params.chunkRemainder)
+                .collate(params.chunkSize, params.chunkRemainder as Boolean)
                 .take(params.chunkCount)
                 .collect { chunk ->
                     def (chunkSorts_, chunkObss, chunkMetas) = chunk.transpose()
@@ -5963,7 +5967,12 @@ workflow extChips {
                         hash: obsids.join(' ').md5()[0..7],
                         sort_bounds: [chunkSorts[0], chunkSorts[-1]],
                     ])
-                    ["${group}_${newMeta.hash}", newMeta, obsids]
+                    def newGroup = "${group}"
+                    if (isNaN(params.groupSuffix)) {
+                        newGroup = "${newGroup}_${newMeta.hash}"
+                    }
+                    println("newGroup: ${newGroup}, newMeta: ${newMeta}, obsids: ${obsids}")
+                    ["${newGroup}", newMeta, obsids]
                 }
         }
         // .view { it -> "\n -> chunked by obsid: ${it}"}
@@ -6682,7 +6691,7 @@ workflow qaPrep {
 
                 [all_sorts, all_obsids, all_metas].transpose()
                     .sort { it -> it[0] }
-                    .collate(params.chunkSize, params.chunkRemainder)
+                    .collate(params.chunkSize, params.chunkRemainder as Boolean)
                     .take(params.chunkCount)
                     .collect { chunk ->
                         def (sorts, obsids, metas) = chunk.transpose()
