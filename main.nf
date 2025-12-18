@@ -566,6 +566,27 @@ process demo11_allsky {
     """
 }
 
+process demo81_metrics {
+    storeDir "${params.outdir}/${date}"
+    label "mwa_demo"
+    tag "${date}"
+    memory { MemoryUnit.of(2 * metrics_bytes) }
+    time 1.hour
+
+    input:
+    tuple val(date), path(metrics_)
+    output:
+    tuple val(date), path("{auto_pol,metrics}*.png")
+
+    script:
+    metrics = coerceList(metrics_)
+    metrics_bytes = metrics.collect { it.size() }.sum()
+    """
+    ${params.demo_prelude?:''}
+    /demo/81_metrics.py --name ${date} ${metrics}
+    """
+}
+
 
 workflow extRaw {
     channel.of(obsids_file())
@@ -875,6 +896,48 @@ workflow asvoRawFlow {
             [obsid, meta, uvfits]
         }
         | ssinsQA
+
+    ws.out.obsMeta.cross(birliPrepUV.out) { it[0] }
+        .map { obsMeta_, birliPrepUV_ ->
+            def (obsid, wsMeta) = obsMeta_
+            def (_o, meta_, _uvfits, metrics) = birliPrepUV_
+            def meta = mapMerge(meta_, wsMeta);
+            def starttime_utc = meta.starttime_utc?:'';
+            def startdate_utc = starttime_utc.substring(0, 10).split("-").join("");
+            def newMeta = [startdate_utc:startdate_utc];
+            [obsid, mapMerge(meta, newMeta), metrics]
+        }
+        .tap { obsMetaMetrics }
+        .map { obsid, meta, metrics ->
+            def starttime_utc = meta.starttime_utc?:'';
+            def startdate_utc = meta.startdate_utc?:'';
+            [
+                obsid,
+                startdate_utc,
+                metrics
+            ].join("\t")
+        }
+        .collectFile(
+            name: "obs_metrics.tsv", newLine: true, sort: true,
+            seed: [
+                "OBS", "START_DATE_UTC", "METRICS"
+            ].join("\t"),
+            storeDir: "${results_dir()}",
+        )
+
+    obsMetaMetrics.map { _obsid, meta, metrics ->
+            def startdate_utc = meta.startdate_utc?:'';
+            [startdate_utc, metrics]
+        }
+        .groupTuple(by: 0)
+        | demo81_metrics
+
+    if (params.archive) {
+        obsMetaMetrics.map { _obsid, _meta, metrics ->
+            ["metrics", metrics]
+        }
+        | archive
+    }
 
     qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
 
@@ -3618,8 +3681,8 @@ workflow ws {
         obsMeta = wsSummary.map { obsid, summary ->
             def meta = [:]
             [
-                // "groupid", "starttime_utc", "starttime_mjd", "obs_name"
-                "ew_pointing", "centre_freq",
+                // "groupid", "starttime_mjd", "obs_name"
+                "ew_pointing", "centre_freq", "starttime_utc",
                 "n_tiles", "bad_ants", "manual_ants", "tile_nums",
                 "eorband", "eorfield", "lst", "int_time",
                 "ra_phase_center", "dec_phase_center",
