@@ -570,13 +570,14 @@ process demo81_metrics {
     storeDir "${params.outdir}/${date}"
     label "mwa_demo"
     tag "${date}"
-    memory { MemoryUnit.of(2 * metrics_bytes) }
-    time 1.hour
+    // memory { MemoryUnit.of(2 * metrics_bytes) }
+    label "mem_super"
+    time 2.hour
 
     input:
     tuple val(date), path(metrics_)
     output:
-    tuple val(date), path("{auto_pol,metrics}*.png")
+    tuple val(date), path("{auto_pol,metrics}*.{png,csv}")
 
     script:
     metrics = coerceList(metrics_)
