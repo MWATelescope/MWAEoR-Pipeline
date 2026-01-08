@@ -577,7 +577,7 @@ process demo81_metrics {
     input:
     tuple val(date), path(metrics_)
     output:
-    tuple val(date), path("{auto_pol,metrics}*.{png,csv}")
+    tuple val(date), path("{auto,metrics}*.{png,csv}")
 
     script:
     metrics = coerceList(metrics_)
