@@ -2671,7 +2671,7 @@ process chipsCombine {
     time {
         def t = 3.hour
         if (exts.size() < 1000) {
-            t = [2.hour, 6.hour * (exts.size() - 0.5) / 200].max()
+            t = [3.hour, 6.hour * (exts.size() - 0.5) / 200].max()
         } else {
             t = [32.hour, 16.hour * (exts.size() - 0.5) / 1000].min()
         }
@@ -2780,6 +2780,9 @@ process chipsLssa {
     } else if (bias_mode==10) {
         nchan_out = Math.round(nchan / 2)
         start_chan = Math.round(nchan / 2)
+    } else if (bias_mode==11) {
+        nchan_out = Math.round(nchan / 2)
+        start_chan = 0
     } else if (bias_mode==12) {
         nchan_out = Math.round(nchan / 2)
         start_chan = Math.round(nchan / 4)
@@ -2812,9 +2815,9 @@ process chipsLssa {
     eorband = meta.eorband
     details = "details_${group}.${meta.name}.${pol}.${params.lssa_bin}_b${bias_mode}.txt"
 
-    if (eorband!=1) {
-        throw new Exception("eorband=${eorband} currently hardcoded as 1 (high) in fft")
-    }
+    // if (eorband!=1) {
+    //     throw new Exception("eorband=${eorband} currently hardcoded as 1 (high) in fft")
+    // }
 
     // echo "meta=${meta}"
     """
@@ -3366,8 +3369,9 @@ process ffmpeg {
 process archive {
     tag "$x"
     storeDir "${params.outdir}/.fakebuckets/${bucket}"
-    // label "rclone"
+    label "rclone_only"
     label "datamover"
+    container = null
 
     // TODO: use size of File x to determine memory
     // memory = (x.size() * 1.5)

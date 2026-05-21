@@ -645,6 +645,10 @@ def groupMeta(meta) {
     if (meta.config != null) {
         group_tokens << meta.config
     }
+    if (params.groupByDate && meta.starttime_utc != null) {
+        def starttime_utc = meta.starttime_utc?:'';
+        group_tokens << starttime_utc.substring(0, 10).split("-").join("");
+    }
     if (params.groupByPointing && meta.ew_pointing != null) {
         group_tokens << String.format("ewp%+1d", meta.ew_pointing)
     }
@@ -902,11 +906,13 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     if (center_chan == 142) {
         eorband = 1
     }
-    else if (center_chan == 120) {
+    else if (center_chan >= 120 && center_chan <= 121) {
         eorband = 0
     }
     else if (center_chan == 70) {
         eorband = 2
+    }
+    else {
         print("unknown eor band for ${center_chan}")
     }
 
