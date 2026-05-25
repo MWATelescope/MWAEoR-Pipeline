@@ -173,6 +173,7 @@ def main():
     #     json.dump(events_obj, events_file, indent=4)
 
     ins_cross.write(f'{args.output_prefix}', output_type='mask', clobber=True)
+    ins_cross.write(f'{args.output_prefix}', output_type='match_events', clobber=True)
 
     # flags = ins_cross.mask_to_flags()
     # uvd = UVData()

@@ -40,6 +40,29 @@ include {
     getFreqReskHz;
 } from './modules/utils.nf'
 
+def ssinsMetricTsvHeader = ['OBS', 'SUBOBS', 'VARIANT', 'POL', 'SL', 'TV', 'narrow', 'streak'].join('\t')
+
+def ssinsMetricTsvByPol(rows, metric) {
+    def polOrder = ['xx', 'xy', 'yx', 'yy']
+    def typeOrder = ['SL', 'TV', 'narrow', 'streak']
+    rows.groupBy { [it.obs, it.subobs, it.variant] }.values().collectMany { group ->
+        def mergedPols = [:]
+        group.each { row ->
+            row.pols?.each { pol, typeMap ->
+                mergedPols[pol] = mergedPols[pol] ?: [:]
+                typeMap.each { t, vals -> mergedPols[pol][t] = vals }
+            }
+        }
+        def row0 = group[0]
+        polOrder.collect { pol ->
+            ([row0.obs, row0.subobs, row0.variant, pol] + typeOrder.collect { t ->
+                def v = mergedPols[pol]?[t]?[metric]
+                v != null ? v : ''
+            }).join('\t')
+        }
+    }
+}
+
 
 // default entrypoint: get preprocessed vis from asvo and run qa
 workflow {
@@ -488,7 +511,9 @@ process demo04_ssins {
     input:
     tuple val(obsid), val(meta), path(metafits), path(vis_)
     output:
-    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"), path("${base}${meta.mask_base?:''}*_SSINS_mask.h5", optional: true)
+    tuple val(obsid), val(meta), path("${base}${meta.plot_base?:''}.png"),
+        path("${base}${meta.mask_base?:''}*_SSINS_mask.h5", optional: true),
+        path("${base}${meta.mask_base?:''}*_SSINS_metrics_by_pol.yml", optional: true)
 
     when: !params.nodemo
 
@@ -784,16 +809,22 @@ workflow asvoRawFlow {
 
     obsMetafitsRawByCh.flatMap { obsid, meta, metafits, vis ->
             [
-                ['--autos',                        '.diff.auto',  '.spectrum'],
-                ['--no-diff --autos',              '.auto',       '.spectrum'],
-                ['--crosses',                      '.diff.cross', '.spectrum'],
-                ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                // ['--autos',                        '.diff.auto',  '.spectrum'],
+                // ['--no-diff --autos',              '.auto',       '.spectrum'],
+                // ['--crosses',                      '.diff.cross', '.spectrum'],
+                // ['--crosses --no-diff',            '.cross',      '.spectrum'],
                 // ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
                 // ['--sigchain --no-diff --autos',   '.auto',       '.sigchain'],
                 // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
                 // ['--sigchain --no-diff --crosses', '.cross',      '.sigchain'],
             ].collect { argstr, plot_prefix, plot_suffix ->
-                def newMeta = [argstr:argstr, plot_base:"${plot_prefix}${plot_suffix}"]
+                def newMeta = [
+                    argstr: argstr,
+                    plot_prefix: plot_prefix,
+                    plot_suffix: plot_suffix,
+                    plot_base: "${plot_prefix}${plot_suffix}",
+                    mask_base: plot_prefix,
+                ]
                 if (meta.subobs != null) {
                     newMeta.argstr += " --suffix=${meta.subobs}"
                     newMeta.mask_base = "${plot_prefix}${meta.subobs}"
@@ -829,15 +860,23 @@ workflow asvoRawFlow {
                 // ['--autos',                        '.diff.auto',  '.spectrum'],
                 // ['--autos --no-diff',              '.auto',       '.spectrum'],
                 ['--crosses',                      '.diff.cross', '.spectrum'],
-                // ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                ['--crosses --no-diff',            '.cross',      '.spectrum'],
+                // sigchain is really expensive!
                 // ['--sigchain --autos',             '.diff.auto',  '.sigchain'],
                 // ['--sigchain --autos --no-diff',   '.auto',       '.sigchain'],
                 // ['--sigchain --crosses',           '.diff.cross', '.sigchain'],
                 // ['--sigchain --crosses --no-diff', '.cross',      '.sigchain'],
+                // flags aren't useful withuot aoflagger.
                 // ['--flags --autos --no-diff',      '.auto',       '.flags'],
                 // ['--flags --crosses --no-diff',    '.cross',      '.flags'],
             ].collect { argstr, plot_prefix, plot_suffix ->
-                def newMeta = [argstr:argstr, plot_base:"${plot_prefix}${plot_suffix}"]
+                def newMeta = [
+                    argstr: argstr,
+                    plot_prefix: plot_prefix,
+                    plot_suffix: plot_suffix,
+                    plot_base: "${plot_prefix}${plot_suffix}",
+                    mask_base: plot_prefix,
+                ]
                 if (meta.subobs != null) {
                     newMeta.argstr += " --suffix=${meta.subobs}"
                     newMeta.mask_base = "${plot_prefix}${meta.subobs}"
@@ -850,6 +889,67 @@ workflow asvoRawFlow {
 
     obsMetaMetafitsRawSsins.mix(obsMetaMetafitsPrepSsins)
         | demo04_ssins
+
+    demo04_ssins.out
+        .filter { _obsid, meta, _png, _mask, metrics ->
+            !params.nodemo && metrics && (meta.plot_suffix ?: '') == '.spectrum'
+        }
+        .flatMap { obsid, meta, _png, _mask, metrics ->
+            def variant = (meta.plot_prefix ?: '').replaceFirst(/^\./, '')
+            def yaml = new org.yaml.snakeyaml.Yaml()
+            def metricsSuffix = ".${variant}_SSINS_metrics_by_pol.yml"
+            coerceList(metrics).findAll { p -> p.name.endsWith(metricsSuffix) }.collect { p ->
+                def doc = yaml.load(p.text)
+                def pols = [:]
+                doc?.each { pol, types ->
+                    if (types instanceof Map) {
+                        pols[pol] = pols[pol] ?: [:]
+                        types.each { rfi_type, block ->
+                            if (block instanceof Map) {
+                                pols[pol][rfi_type] = [
+                                    mean_sig: block.mean_sig,
+                                    max_sig: block.max_sig,
+                                    total_sig: block.total_sig,
+                                ]
+                            }
+                        }
+                    }
+                }
+                [obs: obsid, subobs: meta.subobs ?: '', variant: variant, pols: pols]
+            }
+        }
+        .collect()
+        .filter { rows -> rows.size() > 0 }
+        .multiMap { rows ->
+            mean_sig: ssinsMetricTsvByPol(rows, 'mean_sig')
+            max_sig: ssinsMetricTsvByPol(rows, 'max_sig')
+            total_sig: ssinsMetricTsvByPol(rows, 'total_sig')
+        }
+        .set { ssinsMetricsByPolBranches }
+
+    ssinsMetricsByPolBranches.mean_sig
+        .flatMap { it }
+        .collectFile(
+            name: "ssins_mean_sig_by_pol.tsv", newLine: true, sort: true,
+            seed: ssinsMetricTsvHeader, storeDir: "${results_dir()}"
+        )
+        | view { [it, it.readLines().size()] }
+
+    ssinsMetricsByPolBranches.max_sig
+        .flatMap { it }
+        .collectFile(
+            name: "ssins_max_sig_by_pol.tsv", newLine: true, sort: true,
+            seed: ssinsMetricTsvHeader, storeDir: "${results_dir()}"
+        )
+        | view { [it, it.readLines().size()] }
+
+    ssinsMetricsByPolBranches.total_sig
+        .flatMap { it }
+        .collectFile(
+            name: "ssins_total_sig_by_pol.tsv", newLine: true, sort: true,
+            seed: ssinsMetricTsvHeader, storeDir: "${results_dir()}"
+        )
+        | view { [it, it.readLines().size()] }
 
     ws.out.obsMeta.cross(uvMeta.out) { it[0] }
         .map { obsMeta_, uvMeta_ ->
@@ -1280,7 +1380,8 @@ process ssins {
     tuple val(obsid), val(meta),
         path("${output_prefix}_SSINS_mask.h5"),
         path("${output_prefix}{autos,cross,flagged}_SSINS*.png"),
-        path("${output_prefix}ssins_occ.json")
+        path("${output_prefix}ssins_occ.json"),
+        path("${output_prefix}_SSINS_match_events.yml")
         // path(ssins_uvfits)
         // todo: path("ssins_VDH.png"),
         // todo: path("match_events.json"),
@@ -2510,7 +2611,7 @@ process imgQuantiles {
 // power spectrum metrics via chips
 process psMetrics {
     storeDir "${params.outdir}/${obsid}/ps_metrics${params.cal_suffix}"
-    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}.${pol}"
     label "chips"
     label "cpu_half"
     time 40.minute
@@ -2522,9 +2623,10 @@ process psMetrics {
 
     script:
     uvbase = ''+"${meta.cal_prog}_${obsid}${meta.subobs?:''}_${meta.name}"
+    pol = ''+meta.pol?:"xx"
     nchans = ''+meta.nchans
     eorband = ''+meta.eorband
-    out_metrics = ''+"output_metrics_${uvbase}.dat"
+    out_metrics = ''+"output_metrics_${uvbase}.${pol}.dat"
     // echo \$'${meta}'
     """
     #!/bin/bash -eux
@@ -2532,7 +2634,7 @@ process psMetrics {
     export OUTPUTDIR="\$PWD/"
     export OMP_NUM_THREADS=${task.cpus}
     which ${params.ps_metrics}
-    ${params.ps_metrics} "${uvbase}" "${eorband}" "${nchans}" "${uvbase}" 2>&1 \
+    ${params.ps_metrics} "${uvbase}" "${eorband}" "${nchans}" "${uvbase}" "${pol}" 2>&1 \
         | tee "${uvbase}.log"
     ps=("\${PIPESTATUS[@]}")
     if [ \${ps[0]} -ne 0 ]; then
@@ -2570,7 +2672,7 @@ process chipsGrid {
     label "mem_full"
     label "nvme"
     maxRetries 3
-    errorStrategy { return task.exitStatus > 1 ? "retry" : "ignore" }
+    errorStrategy { return task.exitStatus > 3 ? "retry" : "ignore" }
     time { 90.minute * obsids.size() * params.scratchFactor }
 
     input:
@@ -3747,7 +3849,7 @@ workflow ssinsQA {
             | ssins
 
         // analyse ssins occupancy
-        ssinsOcc = ssins.out.map { def (obsid, meta, _mask, _plots, occ_json) = it;
+        ssinsOcc = ssins.out.map { def (obsid, meta, _mask, _plots, occ_json, _events) = it;
                 // def stats = [:]
                 // parseJson(occ_json).each { item ->
                 //     stats[item.key] = item.value
@@ -3984,7 +4086,7 @@ workflow ssinsQA {
         if (params.ssins_apply) {
             // TODO: dubious join might need cross
             subobsMetaVisSSINs = subobsMetaVisPass.join(
-                    ssins.out.map { obsid, meta, mask, _plots, _json ->
+                    ssins.out.map { obsid, meta, mask, _plots, _json, _events_yml ->
                             [obsid, meta, mask]
                         }
                         .filter { _o, meta, _mask ->
@@ -4007,7 +4109,7 @@ workflow ssinsQA {
             }
             .map { obsid, meta, _v, flagMeta -> [obsid, meta, flagMeta.reasons]}
         fail_codes
-        frame = ssins.out.flatMap { _o, _m, _mask, imgs, _j ->
+        frame = ssins.out.flatMap { _o, _m, _mask, imgs, _j, _e ->
                 imgs.collect { img ->
                     def tokens = coerceList(img.baseName.split('_') as ArrayList)
                     def suffix = tokens[-1]
@@ -4034,7 +4136,7 @@ workflow ssinsQA {
                 }
             }
             .groupTuple()
-        archive = ssins.out.map { _o, _m, mask, _imgs, _j -> ["ssins", mask]}
+        archive = ssins.out.map { _o, _m, mask, _imgs, _j, _e -> ["ssins", mask]}
 }
 
 // ensure preprocessed uvfits are downloaded
@@ -4954,18 +5056,26 @@ workflow uvfits {
             subobsMetaUVPass_ = obsMetaUVEoR
             fail_codes = channel.empty()
         } else {
-            obsMetaUVEoR | psMetrics
+            obsMetaUVEoR.flatMap { obsid, meta, vis ->
+                [
+                    'xx', 'yy', 'xy',
+                    // 'yx'
+                ].collect { pol ->
+                    def newMeta = [pol: pol]
+                    [obsid, mapMerge(meta, newMeta), vis]
+                }
+            } | psMetrics
 
             // collect psMetrics as a .dat
-            psMetrics.out
-                // read the content of each ps_metrics file including the trailing newline
-                .map { _o, _meta, dat -> dat.getText() }
-                .collectFile(
-                    name: "ps_metrics.dat",
-                    storeDir: "${results_dir()}${params.cal_suffix}"
-                )
-                // display output path and number of lines
-                | view { [it, it.readLines().size()] }
+            // psMetrics.out
+            //     // read the content of each ps_metrics file including the trailing newline
+            //     .map { _o, _meta, dat -> dat.getText() }
+            //     .collectFile(
+            //         name: "ps_metrics.dat",
+            //         storeDir: "${results_dir()}${params.cal_suffix}"
+            //     )
+            //     // display output path and number of lines
+            //     | view { [it, it.readLines().size()] }
 
             // collect psMetrics as a .tsv
             psMetrics.out
@@ -4974,6 +5084,7 @@ workflow uvfits {
                     def dat_values = dat.getText().split('\n')[0].split(' ')[1..-1]
                     ([
                         obsid,
+                        meta.pol?:'',
                         isNaN(meta.lst)?'':meta.lst,
                         isNaN(meta.ew_pointing)?'':meta.ew_pointing,
                         meta.longconfig?:'',
@@ -4983,7 +5094,7 @@ workflow uvfits {
                 .collectFile(
                     name: "ps_metrics.tsv", newLine: true, sort: true,
                     seed: [
-                        "OBS", "LST", "EWP", "CONF", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
+                        "OBS", "POL", "LST", "EWP", "CONF", "CAL NAME", "P_WEDGE", "NUM_CELLS", "P_WINDOW", "NUM_CELLS",
                         "P_ALL", "D3"
                     ].join("\t"),
                     storeDir: "${results_dir()}${params.cal_suffix}"
@@ -4992,6 +5103,8 @@ workflow uvfits {
                 | view { [it, it.readLines().size()] }
 
             psMeta = psMetrics.out
+                // filter out pol != xx
+                .filter { _o, meta, _dat -> meta.pol == 'xx' }
                 // add ps_metrics values to vis meta
                 .map { obsid, meta, dat ->
                     def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
