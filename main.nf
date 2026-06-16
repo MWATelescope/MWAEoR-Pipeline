@@ -530,6 +530,7 @@ process demo04_ssins {
     }
     """
     ${params.demo_prelude?:''}
+    touch ${base}${meta.mask_base?:''}_SSINS_metrics_by_pol.yml
     /demo/04_ssins.py ${meta.argstr?:''} ${metafits} ${vis.join(' ')}
     """
 }
