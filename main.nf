@@ -6187,6 +6187,10 @@ workflow chips {
             }
             | chipsGrid
 
+        if (params.archive && params.archive_grids) {
+            chipsGrid.out.map { _group, _meta, grid -> ["grids", grid] } | archive
+        }
+
         chipsGrid.out
             .map { obsid, meta, grid ->
                 [obsid, meta.name?:'', meta, [grid]]
