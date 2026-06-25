@@ -5755,10 +5755,10 @@ workflow img {
                     def v = stats.V?:[:]
                     def v_pks = v.PKS0023_026?:[:]
                     def newMeta = [
-                        xx_pks_int: xx_pks.INT_FLUX,
-                        yy_pks_int: yy_pks.INT_FLUX,
-                        v_pks_int: v_pks.INT_FLUX,
-                        v_rms_box: v.RMS_BOX,
+                        xx_pks_int: parseFloatOrNaN(xx_pks.INT_FLUX),
+                        yy_pks_int: parseFloatOrNaN(yy_pks.INT_FLUX),
+                        v_pks_int: parseFloatOrNaN(v_pks.INT_FLUX),
+                        v_rms_box: parseFloatOrNaN(v.RMS_BOX),
                     ]
                     [obsid, mapMerge(meta, newMeta)]
                 }
