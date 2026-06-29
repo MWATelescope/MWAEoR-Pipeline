@@ -860,8 +860,7 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     }
     def lst = wrap_angle((wsStats.metadata ?: [:]).local_sidereal_time_deg.floatValue())
 
-    def eorfield = null
-    def eorband = null
+    def eorfield = params.fallback_eorfield
     // eor fields
     // | field | ra h | ra d | dec |
     // | ----- | ---- | ---- | --- |
@@ -883,10 +882,11 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     else if (nearest_ra == 15 && nearest_dec == -27) {
         eorfield = 3
     }
-    else {
-        println("unknown eor field for ${nearest_ra} ${nearest_dec}")
+    if (eorfield == null) {
+        println("unknown eor field for ${nearest_ra} ${nearest_dec}, set fallback with --fallback_eorfield")
     }
 
+    def eorband = params.fallback_eorband
     // eor bands
     // |   band | cent          | range                |
     // | ------ | ------------- | -------------------- |
@@ -912,8 +912,8 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     else if (center_chan == 70) {
         eorband = 2
     }
-    else {
-        print("unknown eor band for ${center_chan}")
+    if (eorband == null) {
+        print("unknown eor band for ${center_chan}, set fallback with --fallback_eorband")
     }
 
     def nscans = ((wsStats.stoptime ?: 0) - (wsStats.starttime ?: 0)) / (wsStats.int_time ?: 1)
