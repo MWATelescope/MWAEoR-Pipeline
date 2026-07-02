@@ -2706,7 +2706,7 @@ process chipsGrid {
     // echo "meta=${meta}"
     """
     #!/bin/bash -ux
-    """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res_hz || freq_idx_start == null || period == null ? "exit 2" : "" ) + """
+    """ + (eorfield == null || eorband == null || !nchans || !ext || lowfreq == null || !freq_res_hz || freq_idx_start == null || period == null ? "echo missing params; exit 2" : "" ) + """
     export DATADIR="\$PWD" INPUTDIR="\$PWD/" OUTPUTDIR="\$PWD/" OBSDIR="\$PWD/" OMP_NUM_THREADS=${task.cpus}
 
     echo eorfield=${eorfield} | tee -a ${details}
@@ -4295,6 +4295,8 @@ workflow flag {
             // form row of tsv from json fields we care about
             .map { obsid, meta, json ->
                 def stats = parseJson(json);
+                // todo: filter bad_ants by filter_max_cal_amp_rms
+
                 def bad_ants = stats.BAD_ANTS?:[]
                 [
                     obsid,
@@ -4785,6 +4787,14 @@ workflow cal {
             .toSortedList()
             .map{it -> [it]}
             // .view { it -> "allTiles ${it}" }
+
+        // phaseFits.out.flatMap { obsid, meta, tsvs, _pngs ->
+        //         coerceList(tsvs).collect { tsv ->
+        //             [int(meta['first_jd']), tsv]
+        //     }
+        //     .groupTuple(by: 0)
+        //     | clockPlot
+
 
         // can't collectFile in a channel, so this is not possible?
         // keys = channel.of("intercept", "length", "chi2dof", "sigma_resid")
@@ -7241,3 +7251,25 @@ workflow bootstrap {
         }
         | unArchive
 }
+
+// process clockPlot {
+//     storeDir "${results_dir()}${params.img_suffix}${params.cal_suffix}"
+//     tag "${name}"
+//     label "mwa_demo"
+//     label "mem_half"
+//     time { 6.hour } // no way to tell how many timesteps are in this, could be 600+
+
+//     input:
+//     tuple val(name), path(tsvs)
+//     output:
+//     tuple path(clock), val(meta), path("${obsid}*${name}*phase_fits.tsv"), path("${obsid}*${name}*.png")
+
+//     when: !params.nophasefits
+
+//     script:
+//     name = ''+"${meta.cal_prog}_${meta.name}"
+//     """
+//     #!/bin/bash -eux
+//     /demo/83_clock.py
+//     """
+// }
