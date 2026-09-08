@@ -2139,17 +2139,36 @@ process prepVisQA {
     input:
     tuple val(obsid), val(meta), path(metafits), path(uvfits)
     output:
-    tuple val(obsid), val(meta), path(metrics)
-
+    tuple val(obsid), val(meta), path(metrics), path(plots_glob, optional: true)
 
     when: !(params.noprepqa || params.noqa)
 
     script:
     base = uvfits.baseName
     metrics = ''+"${base}_prepvis_metrics.json"
+    plot_base = ''+"prepvis_metrics_${base}_prepvis_metrics"
+    plots_glob = ''+"${plot_base}_{rms,modz,xxyy,spectra}.png"
+    // the per-channel spectra are only ever a plot input, so they stay in the
+    // work directory rather than being published and passed to another process
+    spectra = ''+"${base}_prepvis_metrics_spectra.npz"
+    args = ""
+    if (params.prepqa_group_by) {
+        args += " --group_by ${params.prepqa_group_by}"
+    }
+    if (params.prepqa_min_group_size != null) {
+        args += " --min_group_size ${params.prepqa_min_group_size}"
+    }
+    if (params.prepqa_dead_rms_threshold != null) {
+        args += " --dead_rms_threshold ${params.prepqa_dead_rms_threshold}"
+    }
+    plot = params.noplotprepqa ? "" : """
+    plot_prepvisqa.py "${metrics}" --out "${plot_base}.png" --save
+    plot_prepvis_groups.py "${metrics}" --spectra "${spectra}" --out "${plot_base}.png" --save
+    """
     """
     #!/bin/bash -eux
-    run_prepvisqa.py ${uvfits} "${metafits}" --out "${metrics}"
+    run_prepvisqa.py ${uvfits} "${metafits}" --out "${metrics}" --save_spectra${args}
+    ${plot}
     """
 }
 
@@ -2270,27 +2289,6 @@ process solJson {
     script:
     metrics = ''+"${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}_${meta.name}.fits.json"
     template "soljson.py"
-}
-
-process plotPrepVisQA {
-    storeDir "${params.outdir}/${obsid}/prep_qa"
-    tag "${obsid}${meta.subobs?:''}"
-    label "python"
-    time {15.minute * task.attempt}
-
-    input:
-    tuple val(obsid), val(meta), path(metrics)
-    output:
-    tuple val(obsid), val(meta), path("${base}_{rms,modz}.png")
-
-    when: !params.noplotprepqa
-
-    script:
-    base = ''+"prepvis_metrics_${metrics.baseName}"
-    """
-    #!/bin/bash -eux
-    plot_prepvisqa.py "${metrics}" --out "${base}.png" --save
-    """
 }
 
 process plotSols {
@@ -4293,7 +4291,7 @@ workflow flag {
         // collect prepVisQA results as .tsv
         prepVisQA.out
             // form row of tsv from json fields we care about
-            .map { obsid, meta, json ->
+            .map { obsid, meta, json, _plots ->
                 def stats = parseJson(json);
                 // todo: filter bad_ants by filter_max_cal_amp_rms
 
@@ -4340,7 +4338,7 @@ workflow flag {
         ].each { metric, getMetric ->
             prepVisQA.out
                 // form row of tsv from json fields we care about
-                .map { obsid, meta, json ->
+                .map { obsid, meta, json, _plots ->
                     def stats = parseJson(json);
                     ([ obsid, meta.subobs?:'' ] + getMetric(stats)).join("\t")
                 }
@@ -4358,7 +4356,6 @@ workflow flag {
         }
 
         // plot prepvisQA
-        prepVisQA.out | plotPrepVisQA
 
         if (params.noprepqa || params.noqa) {
             channel.empty().tap { subobsMetaFlags }
@@ -4372,7 +4369,7 @@ workflow flag {
         } else {
             (subobsMetaMetafitsPrep.map { obsid, meta, _mf, _prep -> [[obsid, meta.subobs?:''], meta] })
                 .join(flagQA.out.map { obsid, meta, flagJson -> [[obsid, meta.subobs?:''], parseJson(flagJson)]})
-                .join(prepVisQA.out.map { obsid, meta, prepJson -> [[obsid, meta.subobs?:''], parseJson(prepJson)]})
+                .join(prepVisQA.out.map { obsid, meta, prepJson, _plots -> [[obsid, meta.subobs?:''], parseJson(prepJson)]})
                 .map { obsidSubobs, meta, flagStats, prepStats ->
                     def (obsid, _subobs) = obsidSubobs
                     def manualAnts = (meta.manual_ants?:[]) as Set
@@ -4601,7 +4598,7 @@ workflow flag {
             // [76/f2946e] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1322653896)` terminated with an error exit status (1) -- Error is ignored
             // [59/5eb9f4] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321791968)` terminated with an error exit status (1) -- Error is ignored
             // [4c/ee5983] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321792688)` terminated with an error exit status (1) -- Error is ignored
-            // plotPrepVisQA.out.flatMap { _, __, imgs ->
+            // prepVisQA.out.flatMap { _o, _m, _json, imgs ->
             //     imgs.collect { img ->
             //         def suffix = img.baseName.split('_')[-1]
             //         [''+"prepvisqa_${suffix}", img]
@@ -4610,7 +4607,7 @@ workflow flag {
             .mix(autoplot.out.map {_o, meta, img -> [''+"prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
         archive = channel.empty() // TODO: archive flag jsons
-        zip = prepVisQA.out.map { _o, _m, json -> ["prepvisqa", json]}
+        zip = prepVisQA.out.map { _o, _m, json, _plots -> ["prepvisqa", json]}
             .mix(flagQA.out.map { _o, _m, json -> ["flagqa", json]})
             .groupTuple()
         fail_codes
