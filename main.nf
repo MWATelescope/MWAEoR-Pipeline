@@ -2139,13 +2139,16 @@ process prepVisQA {
     input:
     tuple val(obsid), val(meta), path(metafits), path(uvfits)
     output:
-    tuple val(obsid), val(meta), path(metrics), path(plots_glob, optional: true)
+    tuple val(obsid), val(meta), path(metrics), path(flags), path(plots_glob, optional: true)
 
     when: !(params.noprepqa || params.noqa)
 
     script:
     base = uvfits.baseName
     metrics = ''+"${base}_prepvis_metrics.json"
+    // per-tile record of what tripped each flag, long form so rows from many
+    // observations concatenate
+    flags = ''+"${base}_prepvis_metrics_flags.tsv"
     plot_base = ''+"prepvis_metrics_${base}_prepvis_metrics"
     plots_glob = ''+"${plot_base}_{rms,modz,xxyy,spectra}.png"
     // the per-channel spectra are only ever a plot input, so they stay in the
@@ -2167,7 +2170,7 @@ process prepVisQA {
     """
     """
     #!/bin/bash -eux
-    run_prepvisqa.py ${uvfits} "${metafits}" --out "${metrics}" --save_spectra${args}
+    run_prepvisqa.py ${uvfits} "${metafits}" --out "${metrics}" --save_spectra --save_flags${args}
     ${plot}
     """
 }
@@ -4291,7 +4294,7 @@ workflow flag {
         // collect prepVisQA results as .tsv
         prepVisQA.out
             // form row of tsv from json fields we care about
-            .map { obsid, meta, json, _plots ->
+            .map { obsid, meta, json, _flags, _plots ->
                 def stats = parseJson(json);
                 // todo: filter bad_ants by filter_max_cal_amp_rms
 
@@ -4338,7 +4341,7 @@ workflow flag {
         ].each { metric, getMetric ->
             prepVisQA.out
                 // form row of tsv from json fields we care about
-                .map { obsid, meta, json, _plots ->
+                .map { obsid, meta, json, _flags, _plots ->
                     def stats = parseJson(json);
                     ([ obsid, meta.subobs?:'' ] + getMetric(stats)).join("\t")
                 }
@@ -4355,8 +4358,6 @@ workflow flag {
                 | view { [it, it.readLines().size()] }
         }
 
-        // plot prepvisQA
-
         if (params.noprepqa || params.noqa) {
             channel.empty().tap { subobsMetaFlags }
             subobsFlagmetaPass = subobsMetaVis.map { obsid, meta, _uvfits -> [obsid, meta, [:]] }
@@ -4369,7 +4370,7 @@ workflow flag {
         } else {
             (subobsMetaMetafitsPrep.map { obsid, meta, _mf, _prep -> [[obsid, meta.subobs?:''], meta] })
                 .join(flagQA.out.map { obsid, meta, flagJson -> [[obsid, meta.subobs?:''], parseJson(flagJson)]})
-                .join(prepVisQA.out.map { obsid, meta, prepJson, _plots -> [[obsid, meta.subobs?:''], parseJson(prepJson)]})
+                .join(prepVisQA.out.map { obsid, meta, prepJson, _flags, _plots -> [[obsid, meta.subobs?:''], parseJson(prepJson)]})
                 .map { obsidSubobs, meta, flagStats, prepStats ->
                     def (obsid, _subobs) = obsidSubobs
                     def manualAnts = (meta.manual_ants?:[]) as Set
@@ -4585,29 +4586,38 @@ workflow flag {
         // channel.empty() | autoplot
         autoplotByRx | autoplot
 
+        // one row per tile per pol, saying what tripped each flag. the header is
+        // dropped from each file so the rows concatenate into a single table
+        prepVisQA.out
+            .map { _o, _m, _json, flags, _plots ->
+                flags.readLines().drop(1).join("\n")
+            }
+            .collectFile(
+                name: "prepqa_flag_reasons.tsv", newLine: true, sort: true,
+                seed: ([
+                    "OBSID", "ANT", "TILE", "POL", "GROUP", "FLAVOUR", "FAMILY",
+                    "RX", "RMS", "MODZ", "FLAGGED", "REASON", "DETAIL"
+                ]).join("\t"),
+                storeDir: "${results_dir()}"
+            )
+            | view { [it, it.readLines().size()] }
+
     emit:
         // channel of good subobs with their metafits: tuple(obsid, meta, uvfits)
         subobsMetaPass
         subobsFlagmetaPass
-        // channel of video name and frames to convert
-        frame = channel.empty()
-            // TODO: fix
-            // [f4/db1b29] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1322653536)` terminated with an error exit status (1) -- Error is ignored
-            // [3b/4e3aa8] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321964256)` terminated with an error exit status (1) -- Error is ignored
-            // [5b/b0f82a] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321447264)` terminated with an error exit status (1) -- Error is ignored
-            // [76/f2946e] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1322653896)` terminated with an error exit status (1) -- Error is ignored
-            // [59/5eb9f4] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321791968)` terminated with an error exit status (1) -- Error is ignored
-            // [4c/ee5983] NOTE: Process `extPrep:makeVideos:ffmpeg (prepvisqa_1321792688)` terminated with an error exit status (1) -- Error is ignored
-            // prepVisQA.out.flatMap { _o, _m, _json, imgs ->
-            //     imgs.collect { img ->
-            //         def suffix = img.baseName.split('_')[-1]
-            //         [''+"prepvisqa_${suffix}", img]
-            //     }
-            // }
+        // channel of video name and frames to convert: one video per plot kind
+        // (rms, modz, xxyy, spectra) with one frame per observation
+        frame = prepVisQA.out.flatMap { _o, _m, _json, _flags, imgs_ ->
+                coerceList(imgs_).flatten().collect { img ->
+                    def suffix = img.baseName.split('_')[-1]
+                    [''+"prepvisqa_${suffix}", img]
+                }
+            }
             .mix(autoplot.out.map {_o, meta, img -> [''+"prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
         archive = channel.empty() // TODO: archive flag jsons
-        zip = prepVisQA.out.map { _o, _m, json, _plots -> ["prepvisqa", json]}
+        zip = prepVisQA.out.map { _o, _m, json, _flags, _plots -> ["prepvisqa", json]}
             .mix(flagQA.out.map { _o, _m, json -> ["flagqa", json]})
             .groupTuple()
         fail_codes
