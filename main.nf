@@ -3039,7 +3039,7 @@ process chipsPlot {
         chips_tag_two_label: (meta.labels?:[])[1],
         chips_tag_three_label: (meta.labels?:[])[2],
         // chips group
-        lowerfreq: meta.lowfreq,
+        lowerfreq_orig: meta.lowfreq,
         chan_width: freq_res_hz,
         umax: meta.maxu,
         // density_correction: meta.density_correction,
@@ -3114,7 +3114,7 @@ process chips1d_tsv {
         kparra_max: (meta.kparra_max ?: params.kparra_max),
 
         // chips group
-        lowerfreq: lowerfreq,
+        lowerfreq_orig: lowerfreq,
         chan_width: freq_res_hz,
         umax: meta.maxu,
         bias_mode: bias_mode,
