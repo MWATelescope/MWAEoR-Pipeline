@@ -109,6 +109,9 @@ workflow {
         | view { [it, it.readLines().size()] }
 
     qaPrep( prep.out.subobsMetaVisPass, ws.out.obsMetafits )
+    if (params.archive) {
+        prep.out.archive | archive
+    }
     if (!params.novideo) {
         ws.out.frame
             .mix(prep.out.frame)
@@ -1038,7 +1041,9 @@ workflow asvoRawFlow {
         obsMetaMetrics.map { _obsid, _meta, metrics ->
             ["metrics", metrics]
         }
-        | archive
+            .mix(flag.out.archive)
+            .mix(ssinsQA.out.archive)
+            | archive
     }
 
     qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
@@ -4138,7 +4143,7 @@ workflow ssinsQA {
                 }
             }
             .groupTuple()
-        archive = ssins.out.map { _o, _m, mask, _imgs, _j, _e -> ["ssins", mask]}
+        archive = ssins.out.flatMap { _o, _m, mask, _imgs, json, _e -> [["ssins", mask], ["ssins", json]]}
 }
 
 // ensure preprocessed uvfits are downloaded
@@ -4616,7 +4621,8 @@ workflow flag {
             }
             .mix(autoplot.out.map {_o, meta, img -> [''+"prepvisqa_autoplot${meta.suffix?:''}", img]})
             .groupTuple()
-        archive = channel.empty() // TODO: archive flag jsons
+        archive = prepVisQA.out.map { _o, _m, json, _flags, _plots -> ["prepvisqa", json]}
+            .mix(flagQA.out.map { _o, _m, json -> ["flagqa", json]})
         zip = prepVisQA.out.map { _o, _m, json, _flags, _plots -> ["prepvisqa", json]}
             .mix(flagQA.out.map { _o, _m, json -> ["flagqa", json]})
             .groupTuple()
@@ -7030,6 +7036,8 @@ workflow qaPrep {
             prep_archive.mix(vis_archive)
                 .mix(cal.out.obsMetaCalPass.map { _o, _m, soln -> ["soln", soln] })
                 .mix(cal.out.archive)
+                .mix(hypIonoSubUV.out.map { _o, _m, _vis, json, _logs -> ["peel", json] })
+                .mix(hypIonoSubMS.out.map { _o, _m, _vis, json, _log -> ["peel", json] })
                 .mix(uvfits.out.archive)
                 .mix(img.out.archive)
                 | archive
