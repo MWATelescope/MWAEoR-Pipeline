@@ -1126,7 +1126,7 @@ workflow asvoRawFlow {
 process asvoRaw {
     storeDir "${params.outdir}/${obsid}/raw"
     tag "${obsid}"
-    time { 1.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
+    time { 2.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
     disk { 100.GB * Math.pow(task.attempt, 4) }
     memory { 60.GB * Math.pow(task.attempt, 4) }
     label "giant_squid"
@@ -1226,7 +1226,7 @@ process asvoPrep {
     label "giant_squid"
     label "rate_limit"
     label "nvme"
-    time { 1.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
+    time { 2.hour * Math.pow(task.attempt, 4) * params.scratchFactor }
     disk { 50.GB * Math.pow(task.attempt, 4) }
     memory { 50.GB * Math.pow(task.attempt, 4) }
     maxRetries 2
@@ -3496,7 +3496,7 @@ process archive {
     #!/bin/bash -eux
     touch "${x}.shadow"
     ${params.proxy_prelude} # ensure proxy is set if needed
-    ${params.rclone} mkdir "${bucket}"
+    ${params.rclone} mkdir "${bucket}" || true
     ${params.rclone} copy --copy-links "$x" "${bucket}"
     """
 }
