@@ -1255,8 +1255,6 @@ process asvoPrep {
     prefix = "birli_"
     def (argstr, _argstr_cli, suffix) = birli_argstr_suffix();
     uvfits = ''+"${prefix}${obsid}*${suffix}.uvfits"
-    print("workDir=${workflow.workDir}");
-    // echo \$'meta=${meta}'
     """
     #!/bin/bash -eux
     export MWA_ASVO_API_KEY="${params.asvo_api_key}"
