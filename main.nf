@@ -1642,6 +1642,12 @@ process hypCalSol {
     if (fineChanFlags.size() > 0) {
         flag_args += " --fine-chan-flags-per-coarse-chan ${fineChanFlags.join(' ')}"
     }
+    // solution interval: one timeblock per params.dical_solint (e.g. "40s" or a number of
+    // timesteps). null leaves hyperdrive's default of a single timeblock per obs.
+    solint_args = ""
+    if (params.dical_solint != null) {
+        solint_args = ''+"--timesteps-per-timeblock ${params.dical_solint}"
+    }
 
     // echo \$'meta=${meta}'
     """
@@ -1681,6 +1687,7 @@ process hypCalSol {
             ${params.hyperdrive} di-calibrate \${args} \
                 ${params.hyp_srclist_args} \
                 ${params.hyp_dical_args} \
+                ${solint_args} \
                 --data "${metafits}" ${uvfits} \
                 --beam-file "${params.beam_path}" \
                 --source-list "${params.sourcelist}" \
@@ -4722,23 +4729,27 @@ workflow cal {
         // collect solJson results as .tsv
         solJson.out
             // form row of tsv from json fields we care about
-            .map { obsid, meta, json ->
+            // one row per timeblock (RESULTS is [timeblock][chanblock])
+            .flatMap { obsid, meta, json ->
                 def stats = parseJson(json)
-                def results = (stats.RESULTS?:[])[0]?:[]
-                def (nans, _convergences) = results.split { it == "NaN" }
-                [
-                    obsid,
-                    meta.subobs?:'',
-                    meta.lst,
-                    meta.name,
-                    (results.size() > 0 ? (nans.size() / results.size()) : ''),
-                    results.join('\t')
-                ].join("\t")
+                def timeblocks = stats.RESULTS?:[]
+                timeblocks.withIndex().collect { results, timeblock ->
+                    def (nans, _convergences) = results.split { it == "NaN" }
+                    [
+                        obsid,
+                        meta.subobs?:'',
+                        meta.lst,
+                        meta.name,
+                        timeblock,
+                        (results.size() > 0 ? (nans.size() / results.size()) : ''),
+                        results.join('\t')
+                    ].join("\t")
+                }
             }
             .collectFile(
                 name: "cal_results${params.cal_suffix}.tsv", newLine: true, sort: true,
                 seed: [
-                    "OBS", "SUBOBS", "LST", "CAL NAME", "NAN FRAC", "RESULTS BY CH"
+                    "OBS", "SUBOBS", "LST", "CAL NAME", "TIMEBLOCK", "NAN FRAC", "RESULTS BY CH"
                 ].join("\t"),
                 storeDir: "${results_dir()}${params.cal_suffix}"
             )

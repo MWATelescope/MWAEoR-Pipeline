@@ -5,7 +5,7 @@ them into quality metrics, calibrated visibilities, images and CHIPS power spect
 in a gate that stops an observation going further when a problem is found, so the power spectra at
 the end only integrate the observations that pass every check.
 
-Operational notes for the machine this runs on (DUG) are in [AGENTS.md](AGENTS.md).
+Operational notes for running and debugging it on a cluster are in [AGENTS.md](AGENTS.md).
 
 ## Flow
 
@@ -281,7 +281,7 @@ Everything is written through Nextflow `storeDir`, so a product that already exi
 and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix`, `peel_suffix`,
 `dical_name`) are what keep different configurations apart on disk.
 
-- `${params.outdir}/` (`/data/curtin_mwaeor/nfdata/` on DUG)
+- `${params.outdir}/`
   - `${obsid}/`
     - `raw/` - metafits (and gpubox fits for `asvoRawFlow`)
     - `raw_qa/` - antenna and channel tables
@@ -301,7 +301,7 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `ps_metrics${cal_suffix}/${name}/` - gridded and combined CHIPS data
     - `lssa_fg_general${cal_suffix}_b${bias}/${name}/` - power spectra dat, 1D tsv, 1D and 2D png
 - `${params.resultsdir}/results${obsids_suffix}${result_suffix}${img_suffix}${cal_suffix}/`
-  (`/data/curtin_mwaeor/nfresults/` on DUG) - aggregate tsvs and plots for the run:
+  - aggregate tsvs and plots for the run:
   `ws_obs_pass.csv`, `prep_subobs_name_pass.csv`, `fail_counts_all.tsv`, `lst_counts_all.tsv`,
   `reasons_*.tsv`, `cal_metrics_*.tsv`, `cal_results*.tsv`, `calqa_*.tsv`, `phase_fits_*.tsv`,
   `ps_metrics*.tsv`, `chips1d_*.tsv` and scatter plots of each, plus `logs/` for the run.
@@ -383,13 +383,12 @@ and `pullPrep` / `pullCalSol` fetch existing products instead of recomputing the
 
 ## Usage
 
-On DUG, from the checkout, inside `tmux`:
+From the checkout, inside `tmux`, with a profile for your cluster (see `profiles` in `nextflow.config`):
 
 ```bash
 export MWA_ASVO_API_KEY=...   # only needed when new obsids must be downloaded
-nextflow -log /data/curtin_mwaeor/nfresults/<results-dir>/logs/nextflow/<name>.nextflow.log \
-  run main.nf -profile dug -with-tower -c eor0low-ph3.conf \
-  --obsids_suffix=-eor0low20260903 --nothumbnail --nopolcomp --novideo -name <name>
+nextflow run main.nf -profile <profile> -c eor0low-ph3.conf \
+  --obsids_suffix=-eor0low20260903 --nothumbnail --nopolcomp --novideo -name <run name>
 ```
 
 Entry points: the default workflow starts from the obsid list and does everything; `-entry
