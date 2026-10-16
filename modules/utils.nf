@@ -126,7 +126,7 @@ def birli_argstr_suffix() {
         // <dec formatted as: +00.0 deg> ICRS (J2000.0).
         args_asvo.phase_centre_dec = String.format("%+f", params.prep_pc[1])
     }
-    if (params.prep_edge_width != null && params.prep_edge_width > 0) {
+    if (params.prep_edge_width != null && params.prep_edge_width >= 0) {
         args_cli['flag-edge-width'] = params.prep_edge_width
         args_asvo.flag_edge_width = params.prep_edge_width
         suffix += "_edg${params.prep_edge_width}"
