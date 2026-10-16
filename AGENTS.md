@@ -40,7 +40,7 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
 | (default) | obsid list | web-service metadata, ASVO preprocessed download, flag/SSINS QA, then `qaPrep` (cal, vis, img, chips) |
 | `asvoRawFlow` | obsid list | downloads raw gpubox files and runs Birli locally (`birli_args`); used for Phase III nights |
 | `extRaw` | raw files already in `nfdata/<obsid>/raw/` | |
-| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia |
+| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia; flagQA then measures occupancy on the SSINS-flagged file |
 | `extChips` | existing calibrated/peeled uvfits | `visName` names the vis |
 | `extPSMetrics` | `external.csv` of obsid,vis | |
 | `archivePrep` | obsid list | preprocess and push prep to Acacia only |
@@ -124,6 +124,26 @@ the data, so their RMS convergence sits above the 1e-5 `filter_max_rms_convg` of
   later stage usually failed a gate, not a task: check `reasons_*.tsv` first.
 - `storeDir` outputs are copied after the task; a task can be `COMPLETED` while the copy is still
   in flight on a slow filesystem. Wait for the file size to settle before reading it.
+- `maxForks` (and the `rate_limit_*` labels) cap concurrency **per process**, not per run: a run
+  with peel, di-cal and gridding all capped at 2 can still hold 6 GPU/CPU jobs. Nor do they add up
+  across runs or users (curtin_ericj writes to the same `nfdata`; `sacct -a` only shows your own jobs,
+  so count concurrency from the hyperdrive logs in `nfdata` instead).
+- Hyperdrive cost is set by the beam file, not by I/O: di-cal with the 2 GB
+  `MWA_embedded_element_pattern_rev2_interp_167_197MHz.h5` spends 35-55 min in "reading input data
+  and sky modelling" against ~9 min with `mwa_full_embedded_element_pattern.h5` (same 8000 sources,
+  60 timesteps, 768 channels); the peel loop is ~85-97 vs ~27 min. Reading the input uvfits from /data
+  takes under a minute. Only the interpolated beam slows with concurrency (above ~24 hyperdrive jobs),
+  hence `maxForks = 12` for `hypCalSol` and `hypIonoSubUV` in the dug profile (2026-10-16).
+- `prepVisQA` crashes (plotting) on data whose autocorrelations are zero, e.g. simulation-only
+  visibilities; use `--noprepqa` for those.
+- `-entry extChips` passes the wrong field to `gridvisdiff` for EoR1 data.
+- Group imaging (`imgCombine`, label `nvme_full`) converts every obs in the group to MS in scratch;
+  on DUG the default RAM-disk scratch fills ("Error writing to temporary data file"). Run it with a
+  conf that sets `process { withLabel: 'nvme_full' { scratch = false } }`.
+- With `--noimg=false`, CHIPS and image combining only receive obs that pass imgQA, and the imgQA
+  filter only passes EoR0 (`meta.eorfield == 0`). On EoR1 add `--noimgqa` or both stages get nothing.
+- hyperdrive applies a solution file as V_cal = J·V·Jᴴ; DP3 DDECal gains G calibrate as G⁻¹VG⁻ᴴ, so
+  converting DDECal solutions to hyperdrive format means writing J = G⁻¹.
 
 ## 3. Data flow in and out
 
