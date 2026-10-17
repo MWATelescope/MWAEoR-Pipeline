@@ -1151,3 +1151,16 @@ def getFreqReskHz(meta) {
     freq_res_hz = getFreqResHz(meta)
     return freq_res_hz / 1e6
 }
+
+// parse a frequency with an optional unit ('2MHz', '400kHz', '2e6') to Hz, as hyperdrive does
+def freq_to_hz(f) {
+    if (f == null) return null
+    def m = ("${f}".trim() =~ /(?i)^([0-9.eE+-]+)\s*(MHz|kHz|Hz)?$/)
+    if (!m) throw new Exception("can't parse frequency ${f}")
+    def value = m[0][1] as Double
+    switch ((m[0][2] ?: 'Hz').toLowerCase()) {
+        case 'mhz': return value * 1e6
+        case 'khz': return value * 1e3
+        default: return value
+    }
+}

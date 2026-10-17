@@ -144,6 +144,13 @@ the data, so their RMS convergence sits above the 1e-5 `filter_max_rms_convg` of
   filter only passes EoR0 (`meta.eorfield == 0`). On EoR1 add `--noimgqa` or both stages get nothing.
 - hyperdrive applies a solution file as V_cal = J·V·Jᴴ; DP3 DDECal gains G calibrate as G⁻¹VG⁻ᴴ, so
   converting DDECal solutions to hyperdrive format means writing J = G⁻¹.
+- DD self-cal (`--noddcal=false`, README "direction-dependent self-calibration") needs a hyperdrive
+  with `di-calibrate --solve-mode`/`--smoothness-constraint` (mwa_hyperdrive PR 105, stacked on
+  `bmetrics`); older images fail in `hypDDCalSol` with "unexpected argument '--solve-mode'". The
+  `hyp` path's `vis-subtract --named-sources ... --invert` keeps only the directions, so with
+  `ddcal_sub_nsrcs` larger than the reduced list it subtracts the whole list. `hypDDDirections`
+  and `ddSkymodel` outputs are keyed by `ddcal_name`/`ddcal_suffix`/`ddcal_nsrcs`, not by
+  `ddcal_mode`: change `ddcal_suffix` when changing the mode or the smoothing.
 
 ## 3. Data flow in and out
 

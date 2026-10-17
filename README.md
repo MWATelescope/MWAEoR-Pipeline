@@ -318,6 +318,33 @@ command line (`--param=value`). The first comment line of each conf is its launc
 comment). `--obsids_suffix=-foo` reads `obsids-foo.csv` instead, and the suffix also names the
 results directory.
 
+### direction-dependent self-calibration
+
+`--noddcal=false` adds a DD self-cal pass after the DI calibration has been applied. The
+directions are the `ddcal_nsrcs` brightest sources (through the beam) of the reduced source list
+(`hypDDDirections`); `ddcal_prog` picks the implementation:
+
+- `hyp` (uvfits, `hypDDCalSol`): everything but the directions is subtracted with the DI model
+  (`ddcal_sub_nsrcs` sources), then each direction is isolated by subtracting the other directions
+  and solved on its own with a constrained `hyperdrive di-calibrate`
+  ([mwa_hyperdrive#105](https://github.com/MWATelescope/mwa_hyperdrive/pull/105)): one solution file
+  per direction, `cal/hyp_soln_<obsid>_dd<i>_<ddcal_name>_<vis name>.fits`, plotted into `cal_qa/`,
+  with the per-direction convergence collected in `ddcal.tsv`.
+- `dp3` (measurement set, `dp3DDCal`): the reduced source list is converted to a DP3 sky model with
+  one patch per direction (`ddSkymodel`), the field is subtracted with `predict`, and all directions
+  are solved together by `DDECal`, writing the H5Parm solutions and the DD-subtracted MS. Needs
+  `dp3` on the PATH or `dp3_sif`.
+- `both` runs both.
+
+`ddcal_mode` and `ddcal_smoothness*` use DP3's names and units for both implementations
+(`mode`, `smoothnessconstraint`, ...): `tec+phase+delay` (the default) fits a phase per tile that is
+`a/ν + b + cν` across the band, `diagonal` with `ddcal_smoothness = '2MHz'` solves smoothed complex
+gains. hyperdrive additionally accepts `delay` and `phase+delay` (phase linear in frequency).
+`ddcal_solint`, `ddcal_uvw_min` and `ddcal_max_iterations` map onto `solint`, `uvlambdamin` and
+`maxiter`. Note hyperdrive solutions apply as `J·V·Jᴴ` while DP3's gains are `G⁻¹·V·G⁻ᴴ`, i.e.
+`J = G⁻¹`; the constraints are applied to `G` in both. The hyperdrive path does not yet produce a
+DD-subtracted uvfits (hyperdrive has no inverse `solutions-apply`); the DP3 path does.
+
 ### filters and gates
 
 `filter_*` params control the metadata gate (field, band, phase centre, pointings, sun elevation,
