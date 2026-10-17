@@ -42,6 +42,15 @@ include {
 
 def ssinsMetricTsvHeader = ['OBS', 'SUBOBS', 'VARIANT', 'POL', 'SL', 'TV', 'narrow', 'streak'].join('\t')
 
+// bash that sets $beam_file for hyperdrive: params.beam_path, or with params.stage_beam a copy in the
+// task directory (RAM-disk scratch on dug), so concurrent peels don't all read the beam from /data.
+def stageBeam() {
+    if (!params.stage_beam) return "beam_file=\"${params.beam_path}\""
+    """beam_file="\$(basename "${params.beam_path}")"
+    cp "${params.beam_path}" "\${beam_file}"
+    trap 'rm -f "\${beam_file}"' EXIT"""
+}
+
 def ssinsMetricTsvByPol(rows, metric) {
     def polOrder = ['xx', 'xy', 'yx', 'yy']
     def typeOrder = ['SL', 'TV', 'narrow', 'streak']
@@ -2017,11 +2026,12 @@ process hypIonoSubUV {
     """
     #!/bin/bash -eux
     export RUST_BACKTRACE=1
+    ${stageBeam()}
     ${params.hyperdrive} peel ${params.hyp_peel_args} \
         ${params.hyp_srclist_args} \
         -n ${params.sub_nsrcs} \
         --data "${metafits}" "${vis}" \
-        --beam-file "${params.beam_path}" \
+        --beam-file "\${beam_file}" \
         --source-list "${srclist}" \
         --iono-sub ${meta.ionosub_nsrcs} \
         --outputs "${sub_vis}" "${json}" \
@@ -2065,10 +2075,11 @@ process hypIonoSubMS {
     """
     #!/bin/bash -eux
     export RUST_BACKTRACE=1
+    ${stageBeam()}
     ${params.hyperdrive}peel ${params.hyp_peel_args} \
         ${params.hyp_srclist_args} \
         --data "${metafits}" "${vis}" \
-        --beam-file "${params.beam_path}" \
+        --beam-file "\${beam_file}" \
         --source-list "${srclist}" \
         --iono-sub ${meta.ionosub_nsrcs} \
         --sub ${meta.sub_nsrcs} \
