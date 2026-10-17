@@ -21,6 +21,7 @@ include {
     groovy2bashAssocArray;
     groupMeta;
     hyp_apply_name;
+    freq_to_hz;
     is_multichannel;
     is_multiinterval;
     isNaN;
@@ -1724,6 +1725,287 @@ process hypCalSol {
     fi
 
     exit \$result
+    """
+}
+
+
+// ////////////////////////////////////////// //
+// direction-dependent self-calibration (dd) //
+// ////////////////////////////////////////// //
+
+// pick the directions for DD self-cal: the brightest `ddcal_nsrcs` sources of the reduced
+// source list (apparent flux through the beam), plus a JSON copy of the reduced list for
+// the DP3 sky model converter.
+// out: tuple(obsid, directions.yaml, directions.tsv (idx, name, ra, dec), reduced.json, reduced.yaml)
+process hypDDDirections {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}"
+    label "hyperdrive_cpu"
+    label "cpu_half"
+    time 15.minute
+
+    input:
+    tuple val(obsid), path(metafits), path(srclist)
+    output:
+    tuple val(obsid), path(directions_yaml), path(directions_tsv), path(reduced_json), path(srclist)
+
+    when: !params.noddcal
+
+    script:
+    directions_yaml = ''+"${obsid}_${params.ddcal_name}${params.ddcal_suffix}_directions_n${params.ddcal_nsrcs}.yaml"
+    directions_tsv = ''+"${obsid}_${params.ddcal_name}${params.ddcal_suffix}_directions_n${params.ddcal_nsrcs}.tsv"
+    reduced_json = ''+"${srclist.baseName}.json"
+    """
+    #!/bin/bash -eux
+    ${params.hyperdrive_cpu} srclist-by-beam ${params.hyp_srclist_args} \
+        --metafits "${metafits}" \
+        --number ${params.ddcal_nsrcs} \
+        --beam-file "${params.beam_path}" \
+        -o hyperdrive \
+        "${srclist}" "${directions_yaml}"
+    ${params.hyperdrive_cpu} srclist-convert -o hyperdrive "${srclist}" "${reduced_json}"
+    # idx, name, ra, dec (first component) of each direction, in source-list order
+    awk 'BEGIN { OFS="\\t"; i=0; print "IDX","NAME","RA","DEC" }
+        /^[^ #-][^:]*:[[:space:]]*\$/ { name=\$1; sub(/:[[:space:]]*\$/, "", name); ra=""; dec="" }
+        /^- ra:/ { if (name != "" && ra == "") ra=\$3 }
+        /^  dec:/ { if (name != "" && dec == "") { dec=\$2; print i, name, ra, dec; i++; name="" } }
+        ' "${directions_yaml}" > "${directions_tsv}"
+    """
+}
+
+// convert the reduced hyperdrive source list to a DP3 "makesourcedb" sky model: one patch per
+// DD direction, every other source in the patch "field".
+// out: tuple(obsid, skymodel)
+process ddSkymodel {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}"
+    label "python"
+    time 10.minute
+
+    input:
+    tuple val(obsid), path(reduced_json), path(directions_tsv)
+    output:
+    tuple val(obsid), path(skymodel)
+
+    when: !params.noddcal && params.ddcal_prog in ['dp3', 'both']
+
+    script:
+    skymodel = ''+"${obsid}_${params.ddcal_name}${params.ddcal_suffix}_n${params.ddcal_nsrcs}.skymodel"
+    template "srclist_to_skymodel.py"
+}
+
+// hyperdrive DD self-cal of a calibrated uvfits: subtract every source but the directions,
+// then for each direction subtract the other directions and run a constrained di-calibrate
+// (`--solve-mode`, `--smoothness-constraint`: hyperdrive PR 105) against that source alone.
+// meta is the calibrated vis meta (name: ${dical_name}_${apply_name}); in output:
+// - name: "${ddcal_name}${ddcal_suffix}_${name}"
+// - cal_prog: hyp
+// out: tuple(obsid, meta, solutions (one per direction), summary tsv, logs)
+process hypDDCalSol {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    label "hyperdrive"
+    label "cpu_half"
+    label "gpu"
+    label "rate_limit_20"
+    memory { MemoryUnit.of(3 * vis.size()) }
+    time { params.scratchFactor * 2.hour * (1 + params.ddcal_nsrcs) * Math.pow(task.attempt, 2) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
+    stageInMode "copy"
+
+    input:
+    tuple val(obsid), val(meta_), path(metafits), path(vis), path(srclist), path(directions_tsv)
+    output:
+    tuple val(obsid), val(meta),
+        path("hyp_soln_${obsid}${meta.subobs?:''}_dd*_${meta.name}.fits"),
+        path(summary),
+        path("hyp_di-cal_${obsid}${meta.subobs?:''}_dd*_${meta.name}.log", optional: true)
+
+    when: !params.noddcal && params.ddcal_prog in ['hyp', 'both']
+
+    script:
+    meta = mapMerge(meta_, [
+        name: ''+"${params.ddcal_name}${params.ddcal_suffix}_${meta_.name}",
+        cal_prog: "hyp",
+        ddcal_mode: params.ddcal_mode,
+    ])
+    summary = ''+"hyp_ddcal_${obsid}${meta.subobs?:''}_${meta.name}.tsv"
+    cal_args = ''+"--solve-mode ${params.ddcal_mode} --max-iterations ${params.ddcal_max_iterations}"
+    if (params.ddcal_uvw_min != null) {
+        cal_args += " --uvw-min ${params.ddcal_uvw_min}"
+    }
+    if (params.ddcal_smoothness != null) {
+        cal_args += " --smoothness-constraint ${params.ddcal_smoothness}"
+        if (params.ddcal_smoothness_ref_frequency != null) {
+            cal_args += " --smoothness-ref-frequency ${params.ddcal_smoothness_ref_frequency}"
+        }
+        if (params.ddcal_smoothness_ref_distance != null) {
+            cal_args += " --smoothness-ref-distance ${params.ddcal_smoothness_ref_distance}"
+        }
+    }
+    if (params.ddcal_solint != null) {
+        cal_args += " --timesteps-per-timeblock ${params.ddcal_solint}"
+    }
+    cal_args += " ${params.hyp_ddcal_args?:''}"
+    """
+    #!/bin/bash -eux
+    export RUST_BACKTRACE=1
+    ${stageBeam()}
+
+    mapfile -t directions < <(tail -n +2 "${directions_tsv}" | cut -f2)
+    if [ \${#directions[@]} -eq 0 ]; then
+        echo "no directions in ${directions_tsv}"
+        exit 1
+    fi
+
+    # the DD field: everything but the directions subtracted with the DI model
+    ${params.hyperdrive} vis-subtract ${params.hyp_srclist_args} \
+        --data "${metafits}" "${vis}" \
+        --beam-file "\${beam_file}" \
+        --source-list "${srclist}" \
+        --num-sources ${params.ddcal_sub_nsrcs} \
+        --named-sources "\${directions[@]}" --invert \
+        --outputs field.uvfits \
+        | tee "hyp_vis-sub_field_${meta.name}.log"
+
+    printf 'IDX\\tNAME\\tRA\\tDEC\\tCONVERGED\\tCHANBLOCKS\\n' > "${summary}"
+    for i in "\${!directions[@]}"; do
+        d="\${directions[\$i]}"
+        soln="hyp_soln_${obsid}${meta.subobs?:''}_dd\${i}_${meta.name}.fits"
+        log="hyp_di-cal_${obsid}${meta.subobs?:''}_dd\${i}_${meta.name}.log"
+        others=()
+        for j in "\${!directions[@]}"; do
+            if [ "\$j" != "\$i" ]; then others+=("\${directions[\$j]}"); fi
+        done
+        # isolate the direction: subtract the other directions with the DI model
+        if [ \${#others[@]} -gt 0 ]; then
+            ${params.hyperdrive} vis-subtract \
+                --data "${metafits}" field.uvfits \
+                --beam-file "\${beam_file}" \
+                --source-list "${srclist}" \
+                --named-sources "\${others[@]}" \
+                --outputs "dir\${i}.uvfits"
+        else
+            ln -sf field.uvfits "dir\${i}.uvfits"
+        fi
+        # constrained DI solve against this direction only
+        ${params.hyperdrive} di-calibrate ${cal_args} \
+            --data "${metafits}" "dir\${i}.uvfits" \
+            --beam-file "\${beam_file}" \
+            --source-list "${srclist}" \
+            --named-sources "\$d" \
+            --outputs "\$soln" \
+            | tee "\$log"
+        ps=("\${PIPESTATUS[@]}")
+        if [ \${ps[0]} -ne 0 ]; then
+            echo "hyperdrive di-calibrate failed for direction \$i (\$d). status=\${ps[0]}"
+            exit \${ps[0]}
+        fi
+        rm -f "dir\${i}.uvfits"
+        # "All timesteps: X/Y (Z%) chanblocks converged" (or the last timeblock line)
+        conv=\$(grep -oE '[0-9]+/[0-9]+ \\([0-9]+%\\) chanblocks converged' "\$log" | tail -1 | cut -d' ' -f1)
+        row=\$(awk -v i="\$i" -F'\\t' 'NR > 1 && \$1 == i { print \$0 }' "${directions_tsv}")
+        printf '%s\\t%s\\t%s\\n' "\$row" "\${conv%%/*}" "\${conv##*/}" >> "${summary}"
+    done
+    rm -f field.uvfits
+    """
+}
+
+// DP3 DDECal of a calibrated measurement set against the same directions: subtract the field
+// with the DI model (predict), solve all directions together with the DP3 constraints, and
+// write the DD-subtracted MS plus the H5Parm solutions. Only the hyperdrive-compatible
+// settings are passed: mode, smoothnessconstraint, solint, maxiter, uvlambdamin.
+// out: tuple(obsid, meta, h5parm, dd-subtracted ms, log)
+process dp3DDCal {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    label "dp3"
+    label "cpu_half"
+    label "mem_half"
+    time { params.scratchFactor * 4.hour * Math.pow(task.attempt, 2) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
+    stageInMode "copy"
+
+    input:
+    tuple val(obsid), val(meta_), path(vis), path(skymodel), path(directions_tsv)
+    output:
+    tuple val(obsid), val(meta), path(h5parm), path(sub_vis), path(logs, optional: true)
+
+    when: !params.noddcal && params.ddcal_prog in ['dp3', 'both']
+
+    script:
+    meta = mapMerge(meta_, [
+        name: ''+"${params.ddcal_name}${params.ddcal_suffix}_${meta_.name}",
+        cal_prog: "dp3",
+        ddcal_mode: params.ddcal_mode,
+    ])
+    h5parm = ''+"dp3_soln_${obsid}${meta.subobs?:''}_${meta.name}.h5"
+    sub_vis = ''+"dp3_${obsid}${meta.subobs?:''}_${meta.name}.ms"
+    logs = ''+"dp3_ddcal_${obsid}${meta.subobs?:''}_${meta.name}.log"
+    ddecal_args = ''+"ddecal.mode=${params.ddcal_mode} ddecal.maxiter=${params.ddcal_max_iterations}"
+    if (params.ddcal_uvw_min != null) {
+        def uvw = "${params.ddcal_uvw_min}"
+        if (uvw.endsWith('l')) {
+            ddecal_args += " ddecal.uvlambdamin=${uvw[0..-2]}"
+        } else {
+            ddecal_args += " ddecal.uvmmin=${uvw.replaceAll(/m$/, '')}"
+        }
+    }
+    if (params.ddcal_smoothness != null) {
+        ddecal_args += " ddecal.smoothnessconstraint=${freq_to_hz(params.ddcal_smoothness)}"
+        if (params.ddcal_smoothness_ref_frequency != null) {
+            ddecal_args += " ddecal.smoothnessreffrequency=${freq_to_hz(params.ddcal_smoothness_ref_frequency)}"
+        }
+        if (params.ddcal_smoothness_ref_distance != null) {
+            ddecal_args += " ddecal.smoothnessrefdistance=${params.ddcal_smoothness_ref_distance}"
+        }
+    }
+    // DP3 solint is a number of timesteps (0 = whole observation)
+    ddecal_args += " ddecal.solint=${params.ddcal_solint ?: 0}"
+    ddecal_args += " ${params.dp3_ddcal_args?:''}"
+    """
+    #!/bin/bash -eux
+    mapfile -t directions < <(tail -n +2 "${directions_tsv}" | cut -f2)
+    if [ \${#directions[@]} -eq 0 ]; then
+        echo "no directions in ${directions_tsv}"
+        exit 1
+    fi
+    dirs=""
+    for d in "\${directions[@]}"; do dirs="\${dirs:+\$dirs,}[\$d]"; done
+
+    ${params.dp3} \
+        msin="${vis}" msout="${sub_vis}" msout.overwrite=true \
+        steps=[sub,ddecal] \
+        sub.type=predict sub.sourcedb="${skymodel}" sub.sources=[field] sub.operation=subtract \
+        ddecal.type=ddecal ddecal.sourcedb="${skymodel}" "ddecal.directions=[\${dirs}]" \
+        ddecal.h5parm="${h5parm}" ddecal.subtract=true \
+        ${ddecal_args} \
+        | tee "${logs}"
+    ps=("\${PIPESTATUS[@]}")
+    if [ \${ps[0]} -ne 0 ]; then
+        echo "DP3 failed. status=\${ps[0]}"
+        exit \${ps[0]}
+    fi
+    """
+}
+
+// plot the per-direction hyperdrive DD solutions
+process plotDDSols {
+    storeDir "${params.outdir}/${obsid}/cal_qa${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    label "hyperdrive_cpu"
+
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(solns)
+    output:
+    tuple val(obsid), val(meta), path(plots_glob)
+
+    script:
+    plots_glob = ''+"${meta.cal_prog}_soln_${obsid}${meta.subobs?:''}_dd*_${meta.name}_{phases,amps}*.png"
+    """
+    ${params.hyperdrive_cpu} solutions-plot ${params.hyp_sols_plot_args} -m "${metafits}" ${solns}
     """
 }
 
@@ -6729,6 +7011,60 @@ workflow qaPrep {
             def newMeta = [ionosub_nsrcs: params.ionosub_nsrcs]
             [obsid, mapMerge(meta, newMeta), metafits, vis, srclist]}
             | hypIonoSubMS
+
+        // direction-dependent self-cal of the calibrated vis (--noddcal=false)
+        // - directions and DP3 sky model from the reduced source list
+        obsMetafits.cross(hypSrclistYaml.out) { it[0] }
+            .map { obsMetafits_, hypSrclistYaml_ ->
+                def (obsid, metafits) = obsMetafits_
+                def (_o, srclist) = hypSrclistYaml_
+                [obsid, metafits, srclist]
+            }
+            | hypDDDirections
+        hypDDDirections.out
+            .map { obsid, _yaml, tsv, json, _srclist -> [obsid, json, tsv] }
+            | ddSkymodel
+        // - hyperdrive: per-direction constrained di-calibrate on the calibrated uvfits
+        subArgsUV.cross(hypDDDirections.out) { it[0] }
+            .map { subArgsUV_, hypDDDirections_ ->
+                def (obsid, meta, metafits, vis, _fullSrclist) = subArgsUV_
+                def (_o, _yaml, tsv, _json, srclist) = hypDDDirections_
+                [obsid, meta, metafits, vis, srclist, tsv]
+            }
+            | hypDDCalSol
+        obsMetafits.cross(hypDDCalSol.out) { it[0] }
+            .map { obsMetafits_, hypDDCalSol_ ->
+                def (obsid, metafits) = obsMetafits_
+                def (_o, meta, solns, _tsv, _logs) = hypDDCalSol_
+                [obsid, meta, metafits, solns]
+            }
+            | plotDDSols
+        // - DP3: DDECal of the calibrated ms against the same directions
+        hypApplyMS.out.map { obsid, meta, vis, _log -> [obsid, meta, vis] }
+            .cross(hypDDDirections.out.cross(ddSkymodel.out) { it[0] }
+                .map { hypDDDirections_, ddSkymodel_ ->
+                    def (obsid, _yaml, tsv, _json, _srclist) = hypDDDirections_
+                    def (_o, skymodel) = ddSkymodel_
+                    [obsid, skymodel, tsv]
+                }
+            ) { it[0] }
+            .map { obsMetaMS_, skymodelTsv_ ->
+                def (obsid, meta, vis) = obsMetaMS_
+                def (_o, skymodel, tsv) = skymodelTsv_
+                [obsid, meta, vis, skymodel, tsv]
+            }
+            | dp3DDCal
+        // - per-direction convergence summary
+        hypDDCalSol.out
+            .flatMap { obsid, meta, _solns, tsv, _logs ->
+                tsv.readLines().drop(1).collect { line -> ([obsid, meta.name] + line.split('\t')).join('\t') }
+            }
+            .collectFile(
+                name: "ddcal.tsv", newLine: true, sort: true,
+                seed: (["OBS", "NAME", "IDX", "DIRECTION", "RA", "DEC", "CONVERGED", "CHANBLOCKS"]).join("\t"),
+                storeDir: "${results_dir()}${params.cal_suffix}"
+            )
+            | view { [it, it.readLines().size()] }
 
         // make cthulhu plots
         hypIonoSubUV.out.cross(hypSrclistYaml.out) {it[0]}
