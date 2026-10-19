@@ -5160,10 +5160,13 @@ workflow uvfits {
                     [obsid, mapMerge(meta, newMeta)]
                 }
 
-            passReasons = psMeta.map { obsid, meta -> [obsid, meta.subobs?:'', meta]}
+            // group by calibration too: with several calibrations per obs (several dical_args entries,
+            // or a second calibration step) each unsubtracted product must be paired with its own
+            // subtracted products
+            passReasons = psMeta.map { obsid, meta -> [obsid, meta.subobs?:'', meta.dical_name?:'', meta]}
                 // get cmt reduced metrics failures
-                .groupTuple(by: 0..1)
-                .flatMap { obsid, _subobs, metas ->
+                .groupTuple(by: 0..2)
+                .flatMap { obsid, _subobs, _dical_name, metas ->
                     def nosubMeta = metas.find { it.sub == null} ?: [:]
                     def (nosub_fail_code, nosubReason) = cmt_ps_metrics_pass(nosubMeta)
                     def subMetas = metas.findAll { it.sub != null } ?: []
