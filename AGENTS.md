@@ -118,8 +118,10 @@ is made from the prep uvfits at its own resolution, so the fit sees native 2 s s
 2 s and 8 s samples for an 8 s prep (as with `extPrep` on pre-averaged files); timesteps are flagged
 in whole `brfi_step_s` steps. `brfiFit` runs once per night and coarse channel (`brfi_coarse_chans`,
 4 chains of 1000 + 1000 by default, about a minute each) and needs numpyro, jax and
-`/opt/bayesian-rfi` (`brfi_src`) in the python container. Pointing blocks come from `ew_pointing`,
-nights from the utc date of `starttime_utc`.
+`/opt/bayesian-rfi` (`brfi_src`) in the python container. A fit is split by pointing: each run of
+observations at one pointing (`az_pointing`, `el_pointing`) is a block with its own Legendre
+background, and the blocks of a night share the RFI component, as in the published night fits
+(`fit.py --pool-pointings`). Nights come from the utc date of `starttime_utc`.
 
 ### Command line gotchas
 

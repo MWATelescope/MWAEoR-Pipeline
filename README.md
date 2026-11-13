@@ -105,7 +105,8 @@ from `tile-updates.csv` and the prepVisQA outliers are carried forward as calibr
 With `brfi_apply` (off by default), whole timesteps are also flagged from a night-level
 [bayesian-rfi](https://github.com/d3v-null/bayesian-rfi) fit (workflow `brfiFlag`):
 `hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation, `brfiFit`
-fits the mixture model to each coarse channel over all of a night's observations, `brfiMask` flags
+fits the mixture model to each coarse channel over all of a night's observations (each run of
+observations at one pointing is a block with its own background), `brfiMask` flags
 the timesteps where any coarse channel has P(RFI) >= `brfi_thresh` in both XX and YY, and the mask
 is applied to the whole band as a `.brfi.uvfits` copy that the later stages use. Observations that
 would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:

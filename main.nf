@@ -1493,8 +1493,9 @@ process hypIns {
     """
 }
 
-// bayesian-rfi mixture model of one coarse channel over all the observations of a night:
-// P(RFI) of every time-differenced sample, for XX and YY.
+// bayesian-rfi mixture model of one coarse channel over all the observations of a night, split
+// into one block per run of observations at the same pointing: P(RFI) of every time-differenced
+// sample, for XX and YY.
 // needs numpyro, jax and bayesian-rfi's mixture_model in the python container.
 process brfiFit {
     storeDir "${results_dir()}/brfi"
@@ -4283,7 +4284,9 @@ workflow ssinsQA {
 // ensure preprocessed uvfits are downloaded
 // Flag whole timesteps with bayesian-rfi (https://github.com/d3v-null/bayesian-rfi), without witnesses.
 // - an incoherent noise spectrum for each observation (hypIns)
-// - for each night and coarse channel, a mixture model fit over all of the night's observations (brfiFit)
+// - for each night and coarse channel, a mixture model fit over all of the night's observations
+//   (brfiFit). Within a fit, each run of observations at one pointing is a block with its own
+//   background; the RFI component is shared by the blocks of the night.
 // - for each observation, the timesteps where any coarse channel is RFI in XX and YY (brfiMask)
 // - the mask is applied to the whole band (absolve), named `brfi`
 // The fit of a night depends on which observations are given, so the fits and masks carry a hash
@@ -4310,10 +4313,18 @@ workflow brfiFlag {
             .map { obsid, meta, uvfits, metafits -> [obsid, meta, metafits, uvfits] }
             | hypIns
 
+        // the pointing of an observation: the fit gives each run of observations at one pointing
+        // its own block, with its own background
+        def pointingOf = { meta ->
+            if (meta.az_pointing != null && meta.el_pointing != null) {
+                return ''+"az${meta.az_pointing}el${meta.el_pointing}"
+            }
+            (meta.ew_pointing == null || isNaN(meta.ew_pointing)) ? "0" : ''+"ewp${meta.ew_pointing}"
+        }
+
         // [night, fitset, labels, pointings, inss], an observation's label is the name of its vis
         nightObs = hypIns.out.map { obsid, meta, ins ->
-                def pointing = (meta.ew_pointing == null || isNaN(meta.ew_pointing)) ? 0 : meta.ew_pointing
-                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointing, ins]]
+                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointingOf(meta), ins]]
             }
             .groupTuple(by: 0)
             .map { night, obs ->
