@@ -119,9 +119,15 @@ is made from the prep uvfits at its own resolution, so the fit sees native 2 s s
 in whole `brfi_step_s` steps. `brfiFit` runs once per night and coarse channel (`brfi_coarse_chans`,
 4 chains of 1000 + 1000 by default, about a minute each) and needs numpyro, jax and
 `/opt/bayesian-rfi` (`brfi_src`) in the python container. A fit is split by pointing: each run of
-observations at one pointing (`az_pointing`, `el_pointing`) is a block with its own Legendre
-background, and the blocks of a night share the RFI component, as in the published night fits
-(`fit.py --pool-pointings`). Nights come from the utc date of `starttime_utc`.
+observations at one pointing is a block with its own Legendre background, and the blocks of a
+night share the RFI component, as in the published night fits (`fit.py --pool-pointings`). The
+pointing is the web-service azimuth and elevation (`az_pointing`, `el_pointing` in the obs meta,
+copied there in workflow `ws`); `ew_pointing` is null off the east-west track, so it cannot be the
+key, and the run stops if an observation has no az/el instead of merging pointings. Nights come
+from the utc date of `starttime_utc`. The fit set name hashes the vis names and pointings, so
+changing either gives new fit files. Check `brfi_fits.tsv` in the results dir (blocks, max rhat,
+divergences per fit and pol) before trusting a mask: a wrong block split shows up as rhat far above
+1.01 and tens of percent of samples flagged.
 
 ### Command line gotchas
 

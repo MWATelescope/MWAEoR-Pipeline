@@ -43,6 +43,7 @@ def parse_args(argv=None):
     parser.add_argument('--chan-idx', type=int, required=True,
                         help='which coarse channel of the band to fit, counted from 0 in frequency order')
     parser.add_argument('--out', required=True, help='output npz')
+    parser.add_argument('--json', help='output json of the fit diagnostics (rhat, divergences, blocks)')
     parser.add_argument('--terms', type=int, default=12, help='Legendre terms of the background per block')
     parser.add_argument('--warmup', type=int, default=1000)
     parser.add_argument('--samples', type=int, default=1000)
@@ -106,10 +107,11 @@ def night_series(obs, chan_idx):
     chans = sorted(set(r["chan"] for r in rows))
     if len(chans) != 1:
         raise UserWarning(f"observations disagree on the coarse channel at index {chan_idx}: {chans}")
-    blocks, start, n = [], 0, 0
+    blocks, block_pointings, start, n = [], [rows[0]["pointing"]], 0, 0
     for i, r in enumerate(rows):
         if i > 0 and r["pointing"] != rows[i - 1]["pointing"]:
             blocks.append((start, n))
+            block_pointings.append(r["pointing"])
             start = n
         n += len(r["times"])
     blocks.append((start, n))
@@ -117,7 +119,7 @@ def night_series(obs, chan_idx):
         label=np.concatenate([np.full(len(r["times"]), r["label"]) for r in rows]),
         time_jd=np.concatenate([r["times"] for r in rows]),
         series={pol: np.concatenate([r["series"][pol] for r in rows]) for pol in POLS},
-        blocks=blocks, chan=chans[0],
+        blocks=blocks, block_pointings=block_pointings, chan=chans[0],
         nbls=int(np.median([r["nbls"] for r in rows])), nchan=int(np.median([r["nchan"] for r in rows])),
     )
 
@@ -241,7 +243,8 @@ def main():
     night = night_series(args.obs, args.chan_idx)
     t = night["time_jd"]
     result = dict(label=night["label"], time_jd=t, coarse_chan=night["chan"])
-    info = dict(coarse_chan=night["chan"], chan_idx=args.chan_idx, nobs=len(args.obs), nsamples=len(t))
+    info = dict(coarse_chan=night["chan"], chan_idx=args.chan_idx, nobs=len(args.obs), nsamples=len(t),
+                block_pointings=night["block_pointings"])
     for pol in POLS:
         out, pol_info = fit_series(t, night["series"][pol], night["blocks"], night["nbls"], night["nchan"], args)
         for k, v in out.items():
@@ -250,6 +253,9 @@ def main():
         info[pol] = pol_info
     result["info"] = json.dumps(info)
     np.savez(args.out, **result)
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(info, f, indent=1)
     print(json.dumps(info))
 
 

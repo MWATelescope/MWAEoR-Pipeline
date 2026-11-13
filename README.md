@@ -110,7 +110,9 @@ observations at one pointing is a block with its own background), `brfiMask` fla
 the timesteps where any coarse channel has P(RFI) >= `brfi_thresh` in both XX and YY, and the mask
 is applied to the whole band as a `.brfi.uvfits` copy that the later stages use. Observations that
 would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
-the fit of a night depends on which of its observations are in the run.
+the fit of a night depends on which of its observations are in the run. `brfi_fits.tsv` and
+`brfi_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction
+of every observation.
 
 ### Direction independent calibration
 

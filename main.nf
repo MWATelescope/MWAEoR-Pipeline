@@ -1509,16 +1509,18 @@ process brfiFit {
     input:
     tuple val(night), val(fitset), val(labels), val(pointings), path(inss), val(chan_idx)
     output:
-    tuple val(night), val(fitset), path(fit)
+    tuple val(night), val(fitset), path(fit), path(fit_json)
 
     script:
     fit = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.npz"
+    fit_json = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.json"
     obs = [labels, pointings, coerceList(inss)].transpose()
         .collect { label, pointing, ins -> ''+"${label}:${pointing}:${ins}" }
         .join(' ')
     args = [ //noqa
         "chan-idx": chan_idx,
         out: fit,
+        json: fit_json,
         terms: params.brfi_terms,
         warmup: params.brfi_warmup,
         samples: params.brfi_samples,
@@ -3931,7 +3933,8 @@ workflow ws {
             def meta = [:]
             [
                 // "groupid", "starttime_mjd", "obs_name"
-                "ew_pointing", "centre_freq", "starttime_utc",
+                "ew_pointing", "az_pointing", "el_pointing", "sweet_pointing",
+                "centre_freq", "starttime_utc",
                 "n_tiles", "bad_ants", "manual_ants", "tile_nums",
                 "eorband", "eorfield", "lst", "int_time",
                 "ra_phase_center", "dec_phase_center",
@@ -4314,32 +4317,62 @@ workflow brfiFlag {
             | hypIns
 
         // the pointing of an observation: the fit gives each run of observations at one pointing
-        // its own block, with its own background
-        def pointingOf = { meta ->
-            if (meta.az_pointing != null && meta.el_pointing != null) {
-                return ''+"az${meta.az_pointing}el${meta.el_pointing}"
+        // its own block, with its own background. There is no fallback: observations at different
+        // pointings must never share a block.
+        def pointingOf = { obsid, meta ->
+            def az = meta.az_pointing
+            def el = meta.el_pointing
+            if (az == null || el == null || isNaN(az) || isNaN(el)) {
+                throw new IllegalStateException(
+                    ''+"brfi_apply: no az_pointing, el_pointing in the metadata of ${obsid}, cannot split the night by pointing"
+                )
             }
-            (meta.ew_pointing == null || isNaN(meta.ew_pointing)) ? "0" : ''+"ewp${meta.ew_pointing}"
+            String.format("az%.1fel%.1f", az as double, el as double)
         }
 
         // [night, fitset, labels, pointings, inss], an observation's label is the name of its vis
         nightObs = hypIns.out.map { obsid, meta, ins ->
-                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointingOf(meta), ins]]
+                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointingOf(obsid, meta), ins]]
             }
             .groupTuple(by: 0)
             .map { night, obs ->
                 def sorted = obs.sort(false) { it[0] }
                 def labels = sorted.collect { it[0] }
-                def fitset = ''+"${night}_n${labels.size()}_${labels.join(',').md5().substring(0, 8)}"
-                [night, fitset, labels, sorted.collect { it[1] }, sorted.collect { it[2] }]
+                def pointings = sorted.collect { it[1] }
+                // the fits depend on which observations are in the night and on their pointings
+                def hash = [labels, pointings].transpose().collect { it.join(':') }.join(',').md5().substring(0, 8)
+                def fitset = ''+"${night}_n${labels.size()}_${hash}"
+                [night, fitset, labels, pointings, sorted.collect { it[2] }]
             }
 
         nightObs.combine(channel.fromList((0..<(params.brfi_coarse_chans as int)).toList()))
             | brfiFit
 
+        // convergence of the fits: one line per fit and pol
+        brfiFit.out.flatMap { _night, fitset, _fit, fit_json ->
+                def info = parseJson(fit_json)
+                ["xx", "yy"].collect { pol ->
+                    def i = info[pol]
+                    [
+                        fitset, info.coarse_chan, pol, info.nobs, info.nsamples, i.blocks,
+                        String.format("%.3f", i.rhat.values().max() as double), i.divergences,
+                        String.format("%.4f", i.frac_rfi as double), String.format("%.0f", i.wall_s as double),
+                    ].join("\t")
+                }
+            }
+            .collectFile(
+                name: "brfi_fits.tsv", newLine: true, sort: true,
+                seed: ([ "FITSET", "COARSE CHAN", "POL", "N OBS", "N SAMPLES", "N BLOCKS", "MAX RHAT", "DIVERGENCES", "FRAC RFI", "WALL S" ]).join("\t"),
+                storeDir: "${results_dir()}"
+            )
+            | view { [it, it.readLines().size()] }
+
         // every observation with all of its night's fits
         hypIns.out.map { obsid, meta, ins -> [nightOf(obsid, meta), obsid, meta, ins] }
-            .combine(brfiFit.out.groupTuple(by: [0, 1]), by: 0)
+            .combine(
+                brfiFit.out.map { night, fitset, fit, _json -> [night, fitset, fit] }.groupTuple(by: [0, 1]),
+                by: 0
+            )
             .map { _night, obsid, meta, ins, fitset, fits -> [obsid, meta, ins, fitset, fits] }
             | brfiMask
 
