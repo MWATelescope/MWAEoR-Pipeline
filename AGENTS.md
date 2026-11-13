@@ -84,6 +84,11 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   for 139-170 MHz); fixing `beam_path` alone would have reused them.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
+  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_brfi-<fitset>_mask.h5` and
+    `_occ.json`, `prep/<vis>.brfi.uvfits`, night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and
+    `results*/brfi_occupancy.tsv`. `<fitset>` is `<utc date>_n<obs>_<hash of the vis names>`, so a
+    different set of observations refits; the `.brfi.uvfits` name has no hash, delete those if the
+    set of a night changes. Later product names gain `.brfi` (e.g. `noflag.brfi`).
   - solution: `cal<cal_suffix>/hyp_soln_<obsid>_ssins_<dical_name>.fits` (+ `hyp_di-cal_*.log`)
   - calibrated vis: `cal<cal_suffix>/hyp_<obsid>_ssins_<dical_name>_<apply_time>s_<apply_freq>kHz.uvfits`
   - iono-subtracted vis: `..._ionosub_ssins_<dical_name>_8s_80kHz<peel_suffix>_i<ionosub_nsrcs>.uvfits` + `hyp_peel_..._uv.json`
@@ -105,6 +110,16 @@ bucket_prefix = "mwaeor:low0-<variant>"
 Put the launch command and the list of intended differences in the conf header. Past examples:
 `eor0low-solint40s.conf` (di-cal solution interval), the removed `eor0low-ionosel-*.conf` at
 commit `e6d8af0` (peel args), the Fornax A model test (`dical_name` + `result_suffix`).
+
+### Night-level bayesian-rfi time mask (`--brfi_apply`)
+
+Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS
+is made from the prep uvfits at its own resolution, so the fit sees native 2 s samples when prep is
+2 s and 8 s samples for an 8 s prep (as with `extPrep` on pre-averaged files); timesteps are flagged
+in whole `brfi_step_s` steps. `brfiFit` runs once per night and coarse channel (`brfi_coarse_chans`,
+4 chains of 1000 + 1000 by default, about a minute each) and needs numpyro, jax and
+`/opt/bayesian-rfi` (`brfi_src`) in the python container. Pointing blocks come from `ew_pointing`,
+nights from the utc date of `starttime_utc`.
 
 ### Command line gotchas
 

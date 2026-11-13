@@ -102,6 +102,15 @@ every later stage uses. `flagGate` rejects observations whose total, RFI or SSIN
 streak, narrow-band or DAB fractions, or bad-tile fraction exceed the conf thresholds. Manual flags
 from `tile-updates.csv` and the prepVisQA outliers are carried forward as calibration tile flags.
 
+With `brfi_apply` (off by default), whole timesteps are also flagged from a night-level
+[bayesian-rfi](https://github.com/d3v-null/bayesian-rfi) fit (workflow `brfiFlag`):
+`hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation, `brfiFit`
+fits the mixture model to each coarse channel over all of a night's observations, `brfiMask` flags
+the timesteps where any coarse channel has P(RFI) >= `brfi_thresh` in both XX and YY, and the mask
+is applied to the whole band as a `.brfi.uvfits` copy that the later stages use. Observations that
+would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
+the fit of a night depends on which of its observations are in the run.
+
 ### Direction independent calibration
 
 ```mermaid
@@ -287,7 +296,8 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `raw_qa/` - antenna and channel tables
     - `meta/` - `${obsid}_meta.json` from web services and TAP, inputs tsv, sky map png
     - `prep/` - `birli_${obsid}${prep_suffix}.uvfits` and the SSINS-flagged `.ssins.uvfits`
-    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv
+    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv,
+      `*_SSINS_data.h5` and `*_brfi-<night>_n<obs>_<hash>_{mask.h5,occ.json}` with `brfi_apply`
     - `cal${cal_suffix}/` - `hyp_soln_*.fits`, di-cal, apply and peel logs, calibrated and
       ionosub uvfits, `hyp_peel_*_uv.json` ionospheric constants
     - `cal_qa${cal_suffix}/` - calQA metrics json, solution amp/phase plots (one per timeblock),

@@ -117,7 +117,14 @@ workflow {
         )
         | view { [it, it.readLines().size()] }
 
-    qaPrep( prep.out.subobsMetaVisPass, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(prep.out.subobsMetaVisPass, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = prep.out.subobsMetaVisPass
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
     if (params.archive) {
         prep.out.archive | archive
     }
@@ -727,7 +734,14 @@ workflow extRaw {
         }
         | ssinsQA
 
-    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = ssinsQA.out.subobsMetaVisSSINs
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
 
     if (!params.novideo) {
         ws.out.frame.mix(flag.out.frame)
@@ -1055,7 +1069,14 @@ workflow asvoRawFlow {
             | archive
     }
 
-    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = ssinsQA.out.subobsMetaVisSSINs
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
 
     ws.out.frame.mix(flag.out.frame)
         .mix(ssinsQA.out.frame)
@@ -1429,19 +1450,116 @@ process absolve {
     output:
     tuple val(obsid), val(meta), path(flagged)
 
-    when: params.ssins_apply
+    when: params.ssins_apply || params.brfi_apply
 
     script:
     base = uvfits.baseName
+    // which flags are being applied: ssins, or brfi (see workflow brfiFlag)
+    flag_name = meta_.flag_name ?: "ssins"
     meta = deepcopy(meta_)
     if (meta_.name?:'' != '') {
-        meta['name'] = ''+"${meta_.name}.ssins"
+        meta['name'] = ''+"${meta_.name}.${flag_name}"
     } else {
-        meta['name'] = "ssins"
+        meta['name'] = flag_name
     }
-    flagged = "${base}.ssins.uvfits"
-    args = "--src ${mask} --dst ${uvfits}"
+    flagged = "${base}.${flag_name}.uvfits"
+    args = "--src ${mask} --dst ${uvfits} --out ${flagged}"
     template "ssins_apply.py"
+}
+
+// SSINS incoherent noise spectrum of the cross-correlations, at the resolution of the visibilities
+process hypIns {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "hyperdrive_cpu"
+    label "cpu_half"
+    label "nvme"
+    memory { MemoryUnit.of(2 * uvfits.size()) }
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(ins)
+
+    when: params.brfi_apply
+
+    script:
+    base = uvfits.baseName
+    ins = "${base}_SSINS_data.h5"
+    """
+    #!/bin/bash -eux
+    ${params.hyperdrive_cpu} bmetrics --data "${uvfits}" --metafits "${metafits}" --ins "${ins}"
+    """
+}
+
+// bayesian-rfi mixture model of one coarse channel over all the observations of a night:
+// P(RFI) of every time-differenced sample, for XX and YY.
+// needs numpyro, jax and bayesian-rfi's mixture_model in the python container.
+process brfiFit {
+    storeDir "${results_dir()}/brfi"
+    tag "${fitset}.ch${chan_idx}"
+    label "python"
+    label "brfi"
+    cpus { params.brfi_chains }
+    memory 8.GB
+    time { params.scratchFactor * 2.hour }
+
+    input:
+    tuple val(night), val(fitset), val(labels), val(pointings), path(inss), val(chan_idx)
+    output:
+    tuple val(night), val(fitset), path(fit)
+
+    script:
+    fit = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.npz"
+    obs = [labels, pointings, coerceList(inss)].transpose()
+        .collect { label, pointing, ins -> ''+"${label}:${pointing}:${ins}" }
+        .join(' ')
+    args = [ //noqa
+        "chan-idx": chan_idx,
+        out: fit,
+        terms: params.brfi_terms,
+        warmup: params.brfi_warmup,
+        samples: params.brfi_samples,
+        chains: params.brfi_chains,
+        "brfi-src": params.brfi_src,
+        obs: obs,
+    ].findAll { _k, v -> v != null }
+        .collect { k, v -> ''+"""--${k} ${v} """ }
+        .join(" ")
+    template "brfi_fit.py"
+}
+
+// whole-band time mask of one observation from the night's fits, in the layout of an SSINS mask
+process brfiMask {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "brfi"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(ins), val(fitset), path(fits)
+    output:
+    tuple val(obsid), val(meta), path(mask), path(occ)
+
+    script:
+    base = ins.baseName - '_SSINS_data'
+    mask = ''+"${base}_brfi-${fitset}_mask.h5"
+    occ = ''+"${base}_brfi-${fitset}_occ.json"
+    args = [ //noqa
+        label: base,
+        ins: ins,
+        out: mask,
+        json: occ,
+        thresh: params.brfi_thresh,
+        "step-s": params.brfi_step_s,
+        "step-frac": params.brfi_step_frac,
+        fits: coerceList(fits).join(' '),
+    ].findAll { _k, v -> v != null }
+        .collect { k, v -> ''+"""--${k} ${v} """ }
+        .join(" ")
+    template "brfi_mask.py"
 }
 
 process autoplot {
@@ -4163,6 +4281,88 @@ workflow ssinsQA {
 }
 
 // ensure preprocessed uvfits are downloaded
+// Flag whole timesteps with bayesian-rfi (https://github.com/d3v-null/bayesian-rfi), without witnesses.
+// - an incoherent noise spectrum for each observation (hypIns)
+// - for each night and coarse channel, a mixture model fit over all of the night's observations (brfiFit)
+// - for each observation, the timesteps where any coarse channel is RFI in XX and YY (brfiMask)
+// - the mask is applied to the whole band (absolve), named `brfi`
+// The fit of a night depends on which observations are given, so the fits and masks carry a hash
+// of that set in their names. The flagged visibilities do not: delete them from `prep/` if the
+// set changes.
+workflow brfiFlag {
+    take:
+        subobsMetaVis
+        obsMetafits
+
+    main:
+        // the night of an observation: its utc date (an MWA night does not cross 00:00 utc)
+        def nightOf = { obsid, meta ->
+            def start = meta.starttime_utc ?: ''
+            if (start.size() >= 10) {
+                return start.substring(0, 10)
+            }
+            def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd")
+            fmt.setTimeZone(TimeZone.getTimeZone("UTC"))
+            fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
+        }
+
+        subobsMetaVis.combine(obsMetafits, by: 0)
+            .map { obsid, meta, uvfits, metafits -> [obsid, meta, metafits, uvfits] }
+            | hypIns
+
+        // [night, fitset, labels, pointings, inss], an observation's label is the name of its vis
+        nightObs = hypIns.out.map { obsid, meta, ins ->
+                def pointing = (meta.ew_pointing == null || isNaN(meta.ew_pointing)) ? 0 : meta.ew_pointing
+                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointing, ins]]
+            }
+            .groupTuple(by: 0)
+            .map { night, obs ->
+                def sorted = obs.sort(false) { it[0] }
+                def labels = sorted.collect { it[0] }
+                def fitset = ''+"${night}_n${labels.size()}_${labels.join(',').md5().substring(0, 8)}"
+                [night, fitset, labels, sorted.collect { it[1] }, sorted.collect { it[2] }]
+            }
+
+        nightObs.combine(channel.fromList((0..<(params.brfi_coarse_chans as int)).toList()))
+            | brfiFit
+
+        // every observation with all of its night's fits
+        hypIns.out.map { obsid, meta, ins -> [nightOf(obsid, meta), obsid, meta, ins] }
+            .combine(brfiFit.out.groupTuple(by: [0, 1]), by: 0)
+            .map { _night, obsid, meta, ins, fitset, fits -> [obsid, meta, ins, fitset, fits] }
+            | brfiMask
+
+        brfiOcc = brfiMask.out.map { obsid, meta, mask, occ_json ->
+                [obsid, meta, mask, parseJson(occ_json)]
+            }
+
+        brfiOcc.map { obsid, meta, _mask, occ ->
+                [obsid, meta.subobs?:'', occ.label, occ.ntimes, occ.nflagged, occ.occupancy].join("\t")
+            }
+            .collectFile(
+                name: "brfi_occupancy.tsv", newLine: true, sort: true,
+                seed: ([ "OBS", "SUBOBS", "VIS", "N TIMES", "N FLAGGED", "OCCUPANCY" ]).join("\t"),
+                storeDir: "${results_dir()}"
+            )
+            | view { [it, it.readLines().size()] }
+
+        // apply the masks, dropping observations that would lose too many timesteps
+        subobsMetaVis.map { obsid, meta, uvfits -> [[obsid, uvfits.baseName], meta, uvfits] }
+            .join(
+                brfiOcc.filter { _o, _m, _mask, occ ->
+                        params.brfi_occupancy_threshold == null || occ.occupancy <= params.brfi_occupancy_threshold
+                    }
+                    .map { obsid, _m, mask, occ -> [[obsid, occ.label], mask] }
+            )
+            .map { key, meta, uvfits, mask ->
+                [key[0], mapMerge(meta, [flag_name: "brfi"]), uvfits, mask]
+            }
+            | absolve
+
+    emit:
+        subobsMetaVis = absolve.out
+}
+
 workflow prep {
     take:
         // channel of obsids with their metafits: tuple(obsid, metafits)
@@ -7180,7 +7380,14 @@ workflow extPrep {
                 [obsid, meta, uvfits]
             }
 
-    qaPrep(obsFlagmetaVis, ws.out.obsMetafits)
+    if (params.brfi_apply) {
+        brfiFlag(obsFlagmetaVis, ws.out.obsMetafits)
+        obsPrepMetaVis = brfiFlag.out.subobsMetaVis
+    } else {
+        obsPrepMetaVis = obsFlagmetaVis
+    }
+
+    qaPrep(obsPrepMetaVis, ws.out.obsMetafits)
 
     ws.out.fail_codes
         .join(flag.out.fail_codes, remainder: true)
