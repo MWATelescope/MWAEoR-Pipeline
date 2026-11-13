@@ -39,7 +39,7 @@ def parse_args(argv=None):
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--obs', nargs="+", required=True,
-                        help='one <label>:<pointing>:<ins h5> per observation of the night')
+                        help='one <label>:<pointing>:<ins h5>[:<weights json>] per observation of the night')
     parser.add_argument('--chan-idx', type=int, required=True,
                         help='which coarse channel of the band to fit, counted from 0 in frequency order')
     parser.add_argument('--out', required=True, help='output npz')
@@ -50,6 +50,9 @@ def parse_args(argv=None):
     parser.add_argument('--chains', type=int, default=4)
     parser.add_argument('--rescale-noise', type=float, default=0.335)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--weight-tol', type=float, default=0.01,
+                        help='leave out a difference when the weight of either of its timesteps (brfi_weights.py) '
+                             'is further than this fraction from the median of its observation')
     parser.add_argument('--brfi-src', help='a bayesian-rfi checkout, if mixture_model is not already importable')
     return parser.parse_args(argv)
 
@@ -94,12 +97,41 @@ def read_ins_series(path, chan_idx):
     return times, series, int(uniq[chan_idx]), int(np.median(nbls)), int(np.median(nchans))
 
 
-def night_series(obs, chan_idx):
+def comparable_samples(times, weights_path, tol):
+    """
+    Which differenced samples have both of their timesteps at the usual weight of the observation.
+
+    A timestep averaged from fewer native samples has more noise, so its differences are larger
+    than the others without any RFI (the first difference of an observation, typically).
+    """
+    with open(weights_path) as f:
+        tw = json.load(f)
+    step_jd, weight = np.asarray(tw["time_jd"], float), np.asarray(tw["weight"], float)
+    if len(step_jd) < 2 or not (weight > 0).any():
+        return np.zeros(len(times), bool)
+    dt = float(np.median(np.diff(step_jd)))
+    usual = float(np.median(weight[weight > 0]))
+    step_ok = np.abs(weight / usual - 1) <= tol
+    ok = np.ones(len(times), bool)
+    for side in (-0.5, 0.5):
+        nearest = np.abs(step_jd[None, :] - (times[:, None] + side * dt)).argmin(axis=1)
+        if (np.abs(step_jd[nearest] - (times + side * dt)) > dt / 4).any():
+            raise UserWarning(f"{weights_path}: the timesteps do not line up with the INS samples")
+        ok &= step_ok[nearest]
+    return ok
+
+
+def night_series(obs, chan_idx, weight_tol=0.01):
     """Stack the observations in time order; a block is a run of observations at one pointing."""
-    rows = []
+    rows, nunequal = [], 0
     for spec in obs:
         label, pointing, path = spec.split(":", 2)
+        path, _, weights_path = path.partition(":")
         times, series, chan, nbls, nchan = read_ins_series(path, chan_idx)
+        if weights_path:
+            ok = comparable_samples(times, weights_path, weight_tol)
+            nunequal += int((~ok).sum())
+            series = {k: np.where(ok, v, np.nan) for k, v in series.items()}
         order = np.argsort(times)
         rows.append(dict(label=label, pointing=pointing, times=times[order], chan=chan, nbls=nbls, nchan=nchan,
                          series={k: v[order] for k, v in series.items()}))
@@ -119,7 +151,7 @@ def night_series(obs, chan_idx):
         label=np.concatenate([np.full(len(r["times"]), r["label"]) for r in rows]),
         time_jd=np.concatenate([r["times"] for r in rows]),
         series={pol: np.concatenate([r["series"][pol] for r in rows]) for pol in POLS},
-        blocks=blocks, block_pointings=block_pointings, chan=chans[0],
+        blocks=blocks, block_pointings=block_pointings, chan=chans[0], unequal_weight_samples=nunequal,
         nbls=int(np.median([r["nbls"] for r in rows])), nchan=int(np.median([r["nchan"] for r in rows])),
     )
 
@@ -240,11 +272,12 @@ def main():
     import numpyro
     numpyro.set_host_device_count(args.chains)
 
-    night = night_series(args.obs, args.chan_idx)
+    night = night_series(args.obs, args.chan_idx, args.weight_tol)
     t = night["time_jd"]
     result = dict(label=night["label"], time_jd=t, coarse_chan=night["chan"])
     info = dict(coarse_chan=night["chan"], chan_idx=args.chan_idx, nobs=len(args.obs), nsamples=len(t),
-                block_pointings=night["block_pointings"])
+                block_pointings=night["block_pointings"],
+                unequal_weight_samples=night["unequal_weight_samples"])
     for pol in POLS:
         out, pol_info = fit_series(t, night["series"][pol], night["blocks"], night["nbls"], night["nchan"], args)
         for k, v in out.items():

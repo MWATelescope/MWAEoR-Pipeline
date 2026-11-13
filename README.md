@@ -104,7 +104,9 @@ from `tile-updates.csv` and the prepVisQA outliers are carried forward as calibr
 
 With `brfi_apply` (off by default), whole timesteps are also flagged from a night-level
 [bayesian-rfi](https://github.com/d3v-null/bayesian-rfi) fit (workflow `brfiFlag`):
-`hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation, `brfiFit`
+`hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation,
+`brfiWeights` reads the weight of each timestep so that differences involving a timestep averaged
+from fewer native samples are left out, `brfiFit`
 fits the mixture model to each coarse channel over all of a night's observations (each run of
 observations at one pointing is a block with its own background), `brfiMask` flags
 the timesteps where any coarse channel has P(RFI) >= `brfi_thresh` in both XX and YY, and the mask
@@ -300,7 +302,7 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `meta/` - `${obsid}_meta.json` from web services and TAP, inputs tsv, sky map png
     - `prep/` - `birli_${obsid}${prep_suffix}.uvfits` and the SSINS-flagged `.ssins.uvfits`
     - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv,
-      `*_SSINS_data.h5` and `*_brfi-<night>_n<obs>_<hash>_{mask.h5,occ.json}` with `brfi_apply`
+      `*_SSINS_data.h5`, `*_time_weights.json` and `*_brfi-<night>_n<obs>_<hash>_{mask.h5,occ.json}` with `brfi_apply`
     - `cal${cal_suffix}/` - `hyp_soln_*.fits`, di-cal, apply and peel logs, calibrated and
       ionosub uvfits, `hyp_peel_*_uv.json` ionospheric constants
     - `cal_qa${cal_suffix}/` - calQA metrics json, solution amp/phase plots (one per timeblock),

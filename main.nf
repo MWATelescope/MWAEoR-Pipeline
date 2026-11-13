@@ -1507,15 +1507,15 @@ process brfiFit {
     time { params.scratchFactor * 2.hour }
 
     input:
-    tuple val(night), val(fitset), val(labels), val(pointings), path(inss), val(chan_idx)
+    tuple val(night), val(fitset), val(labels), val(pointings), path(inss), path(weights), val(chan_idx)
     output:
     tuple val(night), val(fitset), path(fit), path(fit_json)
 
     script:
     fit = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.npz"
     fit_json = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.json"
-    obs = [labels, pointings, coerceList(inss)].transpose()
-        .collect { label, pointing, ins -> ''+"${label}:${pointing}:${ins}" }
+    obs = [labels, pointings, coerceList(inss), coerceList(weights)].transpose()
+        .collect { label, pointing, ins, weight -> ''+"${label}:${pointing}:${ins}:${weight}" }
         .join(' ')
     args = [ //noqa
         "chan-idx": chan_idx,
@@ -1525,12 +1525,36 @@ process brfiFit {
         warmup: params.brfi_warmup,
         samples: params.brfi_samples,
         chains: params.brfi_chains,
+        "weight-tol": params.brfi_weight_tol,
         "brfi-src": params.brfi_src,
         obs: obs,
     ].findAll { _k, v -> v != null }
         .collect { k, v -> ''+"""--${k} ${v} """ }
         .join(" ")
     template "brfi_fit.py"
+}
+
+// mean visibility weight of each timestep, so that the fit can leave out the differences that
+// involve a timestep averaged from fewer native samples
+process brfiWeights {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "nvme"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(weights)
+
+    when: params.brfi_apply
+
+    script:
+    base = uvfits.baseName
+    weights = "${base}_time_weights.json"
+    args = "--uvfits ${uvfits} --out ${weights}"
+    template "brfi_weights.py"
 }
 
 // whole-band time mask of one observation from the night's fits, in the layout of an SSINS mask
@@ -4330,19 +4354,29 @@ workflow brfiFlag {
             String.format("az%.1fel%.1f", az as double, el as double)
         }
 
-        // [night, fitset, labels, pointings, inss], an observation's label is the name of its vis
-        nightObs = hypIns.out.map { obsid, meta, ins ->
-                [nightOf(obsid, meta), [ins.baseName - '_SSINS_data', pointingOf(obsid, meta), ins]]
+        subobsMetaVis | brfiWeights
+
+        // [night, fitset, labels, pointings, inss, weights], an observation's label is the name of its vis
+        nightObs = hypIns.out.map { obsid, meta, ins -> [[obsid, ins.baseName - '_SSINS_data'], meta, ins] }
+            .join(brfiWeights.out.map { obsid, _m, weights -> [[obsid, weights.baseName - '_time_weights'], weights] })
+            .map { key, meta, ins, weights ->
+                [nightOf(key[0], meta), [key[1], pointingOf(key[0], meta), ins, weights]]
             }
             .groupTuple(by: 0)
             .map { night, obs ->
                 def sorted = obs.sort(false) { it[0] }
                 def labels = sorted.collect { it[0] }
                 def pointings = sorted.collect { it[1] }
-                // the fits depend on which observations are in the night and on their pointings
-                def hash = [labels, pointings].transpose().collect { it.join(':') }.join(',').md5().substring(0, 8)
+                // the fits depend on which observations are in the night, on their pointings and on
+                // the settings of the fit
+                def settings = [
+                    params.brfi_terms, params.brfi_warmup, params.brfi_samples, params.brfi_chains,
+                    params.brfi_weight_tol,
+                ]
+                def hash = ([labels, pointings].transpose().collect { it.join(':') } + settings)
+                    .join(',').md5().substring(0, 8)
                 def fitset = ''+"${night}_n${labels.size()}_${hash}"
-                [night, fitset, labels, pointings, sorted.collect { it[2] }]
+                [night, fitset, labels, pointings, sorted.collect { it[2] }, sorted.collect { it[3] }]
             }
 
         nightObs.combine(channel.fromList((0..<(params.brfi_coarse_chans as int)).toList()))
@@ -4354,7 +4388,7 @@ workflow brfiFlag {
                 ["xx", "yy"].collect { pol ->
                     def i = info[pol]
                     [
-                        fitset, info.coarse_chan, pol, info.nobs, info.nsamples, i.blocks,
+                        fitset, info.coarse_chan, pol, info.nobs, info.nsamples, info.unequal_weight_samples, i.blocks,
                         String.format("%.3f", i.rhat.values().max() as double), i.divergences,
                         String.format("%.4f", i.frac_rfi as double), String.format("%.0f", i.wall_s as double),
                     ].join("\t")
@@ -4362,7 +4396,7 @@ workflow brfiFlag {
             }
             .collectFile(
                 name: "brfi_fits.tsv", newLine: true, sort: true,
-                seed: ([ "FITSET", "COARSE CHAN", "POL", "N OBS", "N SAMPLES", "N BLOCKS", "MAX RHAT", "DIVERGENCES", "FRAC RFI", "WALL S" ]).join("\t"),
+                seed: ([ "FITSET", "COARSE CHAN", "POL", "N OBS", "N SAMPLES", "N LEFT OUT", "N BLOCKS", "MAX RHAT", "DIVERGENCES", "FRAC RFI", "WALL S" ]).join("\t"),
                 storeDir: "${results_dir()}"
             )
             | view { [it, it.readLines().size()] }

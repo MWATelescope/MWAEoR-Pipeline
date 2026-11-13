@@ -84,7 +84,7 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   for 139-170 MHz); fixing `beam_path` alone would have reused them.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
-  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_brfi-<fitset>_mask.h5` and
+  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_time_weights.json`, `prep_qa/<vis>_brfi-<fitset>_mask.h5` and
     `_occ.json`, `prep/<vis>.brfi.uvfits`, night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and
     `results*/brfi_occupancy.tsv`. `<fitset>` is `<utc date>_n<obs>_<hash of the vis names>`, so a
     different set of observations refits; the `.brfi.uvfits` name has no hash, delete those if the
@@ -128,6 +128,16 @@ from the utc date of `starttime_utc`. The fit set name hashes the vis names and 
 changing either gives new fit files. Check `brfi_fits.tsv` in the results dir (blocks, max rhat,
 divergences per fit and pol) before trusting a mask: a wrong block split shows up as rhat far above
 1.01 and tens of percent of samples flagged.
+
+`brfiWeights` (`templates/brfi_weights.py`) reads the mean visibility weight of every timestep from
+the uvfits, and the fit leaves out a difference when either of its timesteps is further than
+`brfi_weight_tol` from the usual weight of its observation. This matters for pre-averaged prep
+files: on 2026-09-05 the first 8 s timestep of every observation holds 3 of 4 native samples
+(weight 48 against 64), its difference is 8% high (sqrt((1/48 + 1/64) / (2/64)) = 1.08, far outside
+the noise of the series) and was flagged in 70 of 70 observations before this check. The INS file
+of `hyperdrive bmetrics` holds baseline counts, not weights, so it cannot tell. At native
+resolution the flagged first sample is simply missing. The fit set name also hashes the fit
+settings.
 
 ### Command line gotchas
 
