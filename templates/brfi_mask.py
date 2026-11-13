@@ -8,7 +8,7 @@ threshold in both XX and YY. It flags the later of the two timesteps it spans. T
 grouped into steps of `--step-s` seconds from the start of the observation (the resolution the
 visibilities are averaged to later), and a step is RFI in that channel if at least `--step-frac`
 of its timesteps are (2 of 4 for 2 s data and 8 s steps). The whole band is flagged at a step if
-any fitted coarse channel says RFI.
+at least `--min-chans` fitted coarse channels say RFI (1: any channel).
 
 The mask is written in the layout of an SSINS mask (`Header/freq_array`, `Header/time_array`,
 `Data/flag_array` [time, freq, pol]) on the time grid of the visibilities, so that ssins_apply.py
@@ -37,6 +37,7 @@ def parse_args(argv=None):
     parser.add_argument('--thresh', type=float, default=0.9, help='P(RFI) needed in both XX and YY')
     parser.add_argument('--step-s', type=float, default=8.0, help='length of the steps flagged as a whole (s)')
     parser.add_argument('--step-frac', type=float, default=0.5, help='fraction of timesteps that flags a step')
+    parser.add_argument('--min-chans', type=int, default=1, help='fitted coarse channels that must agree to flag a step')
     return parser.parse_args(argv)
 
 
@@ -71,7 +72,7 @@ def main():
     times_jd = np.concatenate([[mid_jd[0] - int_jd / 2], mid_jd + int_jd / 2])
     per_step = max(1, int(round(args.step_s / (int_jd * 86400))))
 
-    by_chan, flagged = {}, np.zeros(len(times_jd), bool)
+    by_chan, nchans = {}, np.zeros(len(times_jd), int)
     for path in sorted(args.fits):
         with np.load(path) as fit:
             sel = fit["label"] == args.label
@@ -84,7 +85,8 @@ def main():
             times, steps = step_mask(fit["p_rfi_xx"][sel][order], fit["p_rfi_yy"][sel][order],
                                      args.thresh, per_step, args.step_frac)
         by_chan[chan] = [int(i) for i in np.flatnonzero(steps)]
-        flagged |= times
+        nchans += times
+    flagged = nchans >= max(1, args.min_chans)
 
     flag_array = np.zeros((len(times_jd), len(freqs), npols), bool)
     flag_array[flagged] = True
@@ -96,8 +98,10 @@ def main():
 
     occ = dict(
         label=args.label, thresh=args.thresh, step_s=args.step_s, timesteps_per_step=per_step,
+        min_chans=args.min_chans,
         ntimes=len(times_jd), nflagged=int(flagged.sum()), occupancy=float(flagged.mean()),
         flagged_timesteps=[int(i) for i in np.flatnonzero(flagged)],
+        chans_per_timestep={str(i): int(nchans[i]) for i in np.flatnonzero(nchans)},
         flagged_steps_by_coarse_chan={str(c): s for c, s in sorted(by_chan.items()) if s},
         fitted_coarse_chans=sorted(by_chan),
     )

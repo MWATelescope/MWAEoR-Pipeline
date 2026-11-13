@@ -84,11 +84,14 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   for 139-170 MHz); fixing `beam_path` alone would have reused them.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
-  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_time_weights.json`, `prep_qa/<vis>_brfi-<fitset>_mask.h5` and
-    `_occ.json`, `prep/<vis>.brfi.uvfits`, night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and
-    `results*/brfi_occupancy.tsv`. `<fitset>` is `<utc date>_n<obs>_<hash of the vis names>`, so a
-    different set of observations refits; the `.brfi.uvfits` name has no hash, delete those if the
-    set of a night changes. Later product names gain `.brfi` (e.g. `noflag.brfi`).
+  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_time_weights.json`,
+    `prep_qa/<vis>_brfi-<fitset>-m<maskset>_mask.h5` and `_occ.json`, `prep/<vis>.<brfi>.uvfits`,
+    night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and `results*/<brfi>_occupancy.tsv`.
+    `<fitset>` is `<utc date>_n<obs>_<hash of the vis names, pointings and fit settings>`, so a
+    different set of observations refits; `<maskset>` hashes the mask settings; `<brfi>` is
+    `brfi<hash of all fit and mask settings>` (`brfiFlagName()`), the same for every night, so
+    runs with other settings share a data dir. It does not cover the set of observations: delete
+    the `.<brfi>.uvfits` of a night if its set changes. Later product names gain `.<brfi>`.
   - solution: `cal<cal_suffix>/hyp_soln_<obsid>_ssins_<dical_name>.fits` (+ `hyp_di-cal_*.log`)
   - calibrated vis: `cal<cal_suffix>/hyp_<obsid>_ssins_<dical_name>_<apply_time>s_<apply_freq>kHz.uvfits`
   - iono-subtracted vis: `..._ionosub_ssins_<dical_name>_8s_80kHz<peel_suffix>_i<ionosub_nsrcs>.uvfits` + `hyp_peel_..._uv.json`

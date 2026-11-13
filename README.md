@@ -109,11 +109,13 @@ With `brfi_apply` (off by default), whole timesteps are also flagged from a nigh
 from fewer native samples are left out, `brfiFit`
 fits the mixture model to each coarse channel over all of a night's observations (each run of
 observations at one pointing is a block with its own background), `brfiMask` flags
-the timesteps where any coarse channel has P(RFI) >= `brfi_thresh` in both XX and YY, and the mask
-is applied to the whole band as a `.brfi.uvfits` copy that the later stages use. Observations that
+the timesteps where at least `brfi_min_chans` coarse channels (default 1: any) have P(RFI) >=
+`brfi_thresh` in both XX and YY, and the mask is applied to the whole band as a
+`.brfi<settings hash>.uvfits` copy that the later stages use, so that runs with other settings can
+share a data dir. Observations that
 would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
 the fit of a night depends on which of its observations are in the run. `brfi_fits.tsv` and
-`brfi_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction
+`brfi<settings hash>_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction
 of every observation.
 
 ### Direction independent calibration
@@ -302,7 +304,7 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `meta/` - `${obsid}_meta.json` from web services and TAP, inputs tsv, sky map png
     - `prep/` - `birli_${obsid}${prep_suffix}.uvfits` and the SSINS-flagged `.ssins.uvfits`
     - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv,
-      `*_SSINS_data.h5`, `*_time_weights.json` and `*_brfi-<night>_n<obs>_<hash>_{mask.h5,occ.json}` with `brfi_apply`
+      `*_SSINS_data.h5`, `*_time_weights.json` and `*_brfi-<night>_n<obs>_<hash>-m<hash>_{mask.h5,occ.json}` with `brfi_apply`
     - `cal${cal_suffix}/` - `hyp_soln_*.fits`, di-cal, apply and peel logs, calibrated and
       ionosub uvfits, `hyp_peel_*_uv.json` ionospheric constants
     - `cal_qa${cal_suffix}/` - calQA metrics json, solution amp/phase plots (one per timeblock),

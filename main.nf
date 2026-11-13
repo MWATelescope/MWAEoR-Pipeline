@@ -1557,6 +1557,17 @@ process brfiWeights {
     template "brfi_weights.py"
 }
 
+// name of the vis flagged by workflow brfiFlag: `brfi` and a hash of every setting of the fits and
+// of the masks, the same for all nights of a run, so that vis flagged with other settings is not
+// reused. (not of the set of observations of a night: see the fitset in workflow brfiFlag)
+def brfiFlagName() {
+    'brfi' + [
+        params.brfi_coarse_chans, params.brfi_terms, params.brfi_warmup, params.brfi_samples,
+        params.brfi_chains, params.brfi_weight_tol,
+        params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans,
+    ].join(',').md5().substring(0, 6)
+}
+
 // whole-band time mask of one observation from the night's fits, in the layout of an SSINS mask
 process brfiMask {
     storeDir "${params.outdir}/${obsid}/prep_qa"
@@ -1572,8 +1583,11 @@ process brfiMask {
 
     script:
     base = ins.baseName - '_SSINS_data'
-    mask = ''+"${base}_brfi-${fitset}_mask.h5"
-    occ = ''+"${base}_brfi-${fitset}_occ.json"
+    // the mask depends on the fits and on these settings
+    maskset = [params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans]
+        .join(',').md5().substring(0, 6)
+    mask = ''+"${base}_brfi-${fitset}-m${maskset}_mask.h5"
+    occ = ''+"${base}_brfi-${fitset}-m${maskset}_occ.json"
     args = [ //noqa
         label: base,
         ins: ins,
@@ -1582,6 +1596,7 @@ process brfiMask {
         thresh: params.brfi_thresh,
         "step-s": params.brfi_step_s,
         "step-frac": params.brfi_step_frac,
+        "min-chans": params.brfi_min_chans,
         fits: coerceList(fits).join(' '),
     ].findAll { _k, v -> v != null }
         .collect { k, v -> ''+"""--${k} ${v} """ }
@@ -4418,7 +4433,7 @@ workflow brfiFlag {
                 [obsid, meta.subobs?:'', occ.label, occ.ntimes, occ.nflagged, occ.occupancy].join("\t")
             }
             .collectFile(
-                name: "brfi_occupancy.tsv", newLine: true, sort: true,
+                name: "${brfiFlagName()}_occupancy.tsv", newLine: true, sort: true,
                 seed: ([ "OBS", "SUBOBS", "VIS", "N TIMES", "N FLAGGED", "OCCUPANCY" ]).join("\t"),
                 storeDir: "${results_dir()}"
             )
@@ -4433,7 +4448,7 @@ workflow brfiFlag {
                     .map { obsid, _m, mask, occ -> [[obsid, occ.label], mask] }
             )
             .map { key, meta, uvfits, mask ->
-                [key[0], mapMerge(meta, [flag_name: "brfi"]), uvfits, mask]
+                [key[0], mapMerge(meta, [flag_name: brfiFlagName()]), uvfits, mask]
             }
             | absolve
 
