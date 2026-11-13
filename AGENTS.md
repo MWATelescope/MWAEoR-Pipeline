@@ -9,14 +9,32 @@ that stops being true.
 
 Site-specific notes (paths, network, queues, containers) live in one file per cluster. For DUG
 (`-profile dug`, this checkout) read [AGENTS-DUG.md](AGENTS-DUG.md); it is local and not committed.
-Pawsey (Setonix, Garrawarla) profiles remain in `nextflow.config` but are not maintained;
-`eor1high-ph3-setonix.conf` with `scripts/eor1high_zenith20260905_setonix.sh` is the one Setonix
-recipe that was refreshed (2026-11): `-entry extPrep --visName=noflag` on prep uvfits that the
-script converts from existing Birli measurement sets, hyperdrive and the python tools from
-containers pulled into `claude-eor/containers`, di-cal and peel on the `gpu` queue (account
-`mwaeor-gpu`, `--rocm`).
-On Setonix the containers of a profile are fixed when `nextflow.config` is read, so a `-c` conf
-that changes `*_sif` params must also set `container` in its own `process` block.
+Pawsey: the Garrawarla profile is not maintained. The Setonix profile (`-profile setonix`) was
+refreshed in 2026-11 and holds everything that is specific to Setonix: hyperdrive and the python
+tools run from ROCm containers (`hyperdrive_sif`, `mwa_demo_sif`; the GPUs are AMD, not CUDA),
+di-cal and peel take one gpu on the `gpu` queue (account `${PAWSEY_PROJECT}-gpu`), CHIPS is pinned
+and runs in the work directory. Field confs still pin DUG paths for `sourcelist` and `beam_path`,
+and a `-c` conf overrides a profile, so pass those two on the command line on Setonix.
+
+EoR1 high on Setonix from Birli measurement sets (raw files are not on Setonix and ASVO does not
+serve these nights): convert each MS once to the prep uvfits that `extPrep` reads, then run
+`extPrep` once per CHIPS band (`--lssa_bias_mode` 11, 12, 10 = channels 0-191, 96-287, 192-383):
+
+```bash
+hyperdrive vis-convert --autos --data <obsid>.metafits <obsid>.ms \
+    --outputs $MYSCRATCH/nfdata/<obsid>/prep/birli_<obsid>_8s_80kHz_norfi.noflag.uvfits
+nextflow run main.nf -profile setonix -c eor1high-ph3.conf -entry extPrep \
+    --obsids_suffix=-eor1high-zenith20260905 --visName=noflag \
+    --prep_time_res_s=8 --prep_freq_res_khz=80 \
+    --sourcelist=<FnxA-v2 source list> --beam_path=<mwa_full_embedded_element_pattern.h5> \
+    --dical_name=30l_src8k_300it_fnxav2 \
+    --dical_args='-n 8000 --uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
+    --novideo --nodemo --lssa_bias_mode=10
+```
+
+`visName` names the flagging state of the prep file (`noflag`: Birli `--no-rfi --flag-edge-chans 0
+--no-flag-dc`, no SSINS). `--freq-average 40kHz` is dropped from `dical_args` because these MS are
+already 80 kHz. hyperdrive must include mwa_hyperdrive#118 to use the full FEE beam file.
 
 ## 2. Running the pipeline
 
