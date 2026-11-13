@@ -9,7 +9,7 @@ that stops being true.
 
 Site-specific notes (paths, network, queues, containers) live in one file per cluster. For DUG
 (`-profile dug`, this checkout) read [AGENTS-DUG.md](AGENTS-DUG.md); it is local and not committed.
-Pawsey: the Garrawarla profile is not maintained. The Setonix profile (`-profile setonix`) was
+Pawsey: the Setonix profile (`-profile setonix`) was
 refreshed in 2026-11 and holds everything that is specific to Setonix: hyperdrive and the python
 tools run from ROCm containers (`hyperdrive_sif`, `mwa_demo_sif`; the GPUs are AMD, not CUDA),
 di-cal and peel take one gpu on the `gpu` queue (account `${PAWSEY_PROJECT}-gpu`), CHIPS is pinned

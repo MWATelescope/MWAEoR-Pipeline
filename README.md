@@ -408,5 +408,4 @@ grep -E '(COMPLETED; exit: [^0]|WARN|ERROR|unable to find)' <run>.nextflow.log
 squeue -u $USER --format "%.10i %.40j %.2t %.8M %R"
 ```
 
-Pawsey (Garrawarla, Setonix) profiles remain in `nextflow.config` for reference but are not
-maintained.
+The Setonix profile (`-profile setonix`) is in `nextflow.config`; see `AGENTS.md` for its notes.
