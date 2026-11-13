@@ -4019,7 +4019,8 @@ workflow ssinsQA {
             )
             .view { [it, it.readLines().size()] }
 
-        if (params.noprepqa || params.noqa) {
+        // without ssins there is no occupancy to gate on (the join below would drop every obs)
+        if (params.noprepqa || params.noqa || params.nossins) {
             subobsMetaVisPass = subobsMetaVis
             subobsMetaVisFlags = channel.empty()
             fail_codes = channel.empty()
