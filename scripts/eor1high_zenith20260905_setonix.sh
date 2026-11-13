@@ -10,7 +10,8 @@
 # Nextflow head job for the 16 zenith obs of 2026-09-05 (EoR1 high) on Setonix, with the recipe of
 # eor1high-ph3-setonix.conf, one run per CHIPS band. Submit from the checkout:
 #   sbatch -o /scratch/mwaeor/dev/claude-eor/logs/nf_head.%j.log scripts/eor1high_zenith20260905_setonix.sh
-# Finished steps are skipped (storeDir), so it is safe to submit again.
+# Finished steps are skipped (storeDir), so it is safe to submit again. One line per stage is
+# appended to /scratch/mwaeor/dev/claude-eor/STATUS.md (scripts/eor1high_status_setonix.sh).
 set -eu
 BASE=/scratch/mwaeor/dev/claude-eor
 # Birli measurement sets (ms0: no flags, 8 s / 80 kHz) and metafits of the night, read only
@@ -40,8 +41,11 @@ for o in $(grep -v '^#' obsids$SUFFIX.csv); do
 done
 
 id=${SLURM_JOB_ID:-$$}
+status() { bash scripts/eor1high_status_setonix.sh "head $id: $1" "$2" || true; }
+trap 'status "head job exited with status $?" "read logs/nf_head.$id.log; submit again to continue"' EXIT
 # lssa_bias_mode 11, 12, 10 = channels 0-191, 96-287, 192-383 of 384
 for b in 11 12 10; do
+    status "starting band b$b" "nextflow run zen20260905_b${b}_$id, log logs/nf_b$b.$id.log"
     nextflow -log $BASE/logs/nf_b$b.$id.log run main.nf -profile setonix -c eor1high-ph3-setonix.conf \
         -entry extRaw --obsids_suffix=$SUFFIX --lssa_bias_mode=$b -name zen20260905_b${b}_$id "$@"
 done
