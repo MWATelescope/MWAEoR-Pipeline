@@ -110,6 +110,8 @@ def comparable_samples(times, weights_path, tol):
     if len(step_jd) < 2 or not (weight > 0).any():
         return np.zeros(len(times), bool)
     dt = float(np.median(np.diff(step_jd)))
+    if len(times) > 1 and abs(dt / float(np.median(np.diff(np.sort(times)))) - 1) > 0.01:
+        raise UserWarning(f"{weights_path}: the timesteps are not as long as the INS samples")
     usual = float(np.median(weight[weight > 0]))
     step_ok = np.abs(weight / usual - 1) <= tol
     ok = np.ones(len(times), bool)

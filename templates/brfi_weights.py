@@ -46,14 +46,14 @@ def time_weights(path, rows=8000, chan_step=8):
     axes = [(hdr.get(f"CTYPE{n}", "").strip(), hdr[f"NAXIS{n}"]) for n in range(naxis, 1, -1)]
     nelem = int(np.prod([n for _c, n in axes]))
     groups = np.memmap(path, dtype=">f4", mode="r", offset=offset, shape=(gcount, pcount + nelem))
-    sel = groups[::max(1, gcount // max(1, rows))]
 
-    jd = np.zeros(len(sel))
-    for i in range(1, pcount + 1):
-        if hdr[f"PTYPE{i}"].strip() in ("DATE", "_DATE"):
-            jd += sel[:, i - 1].astype(float) * hdr.get(f"PSCAL{i}", 1.0) + hdr.get(f"PZERO{i}", 0.0)
+    def row_jd(sel):
+        jd = np.zeros(len(sel))
+        for i in range(1, pcount + 1):
+            if hdr[f"PTYPE{i}"].strip() in ("DATE", "_DATE"):
+                jd += sel[:, i - 1].astype(float) * hdr.get(f"PSCAL{i}", 1.0) + hdr.get(f"PZERO{i}", 0.0)
+        return jd
 
-    vis = sel[:, pcount:].reshape((len(sel),) + tuple(n for _c, n in axes))
     index = [slice(None)]
     for ctype, n in axes:
         if ctype == "COMPLEX":
@@ -64,7 +64,30 @@ def time_weights(path, rows=8000, chan_step=8):
             index.append(slice(None, None, max(1, chan_step)))
         else:
             index.append(slice(None))
-    weights = np.asarray(vis[tuple(index)], float).reshape(len(sel), -1)
+
+    def row_weights(sel):
+        vis = sel[:, pcount:].reshape((len(sel),) + tuple(n for _c, n in axes))
+        return np.asarray(vis[tuple(index)], float).reshape(len(sel), -1)
+
+    # rows of the first timestep: with the usual layout (all baselines of a timestep together,
+    # the same number in each) the same baselines are read in every timestep, so that flagged
+    # tiles weigh the same in all of them
+    nbl = gcount
+    for a in range(0, gcount, 2048):
+        jd = row_jd(groups[a:a + 2048])
+        changed = np.flatnonzero(np.abs(jd - row_jd(groups[:1])[0]) > 0.01 / 86400)
+        if len(changed):
+            nbl = a + int(changed[0])
+            break
+    step = max(1, gcount // max(1, rows))
+    if gcount % nbl == 0:
+        # at least 500 baselines of every timestep
+        step = max(1, min(step, nbl // 500))
+        parts = [groups[a:a + nbl:step] for a in range(0, gcount, nbl)]
+    else:
+        parts = [groups[::step]]
+    jd = np.concatenate([row_jd(p) for p in parts])
+    weights = np.concatenate([row_weights(p) for p in parts])
 
     # timesteps: runs of rows less than a quarter of a timestep apart
     order = np.argsort(jd, kind="stable")
