@@ -9,7 +9,32 @@ that stops being true.
 
 Site-specific notes (paths, network, queues, containers) live in one file per cluster. For DUG
 (`-profile dug`, this checkout) read [AGENTS-DUG.md](AGENTS-DUG.md); it is local and not committed.
-Pawsey (Setonix, Garrawarla) profiles remain in `nextflow.config` but are not maintained.
+Pawsey: the Setonix profile (`-profile setonix`) was
+refreshed in 2026-11 and holds everything that is specific to Setonix: hyperdrive and the python
+tools run from ROCm containers (`hyperdrive_sif`, `mwa_demo_sif`; the GPUs are AMD, not CUDA),
+di-cal and peel take one gpu on the `gpu` queue (account `${PAWSEY_PROJECT}-gpu`), CHIPS is pinned
+and runs in the work directory. Field confs still pin DUG paths for `sourcelist` and `beam_path`,
+and a `-c` conf overrides a profile, so pass those two on the command line on Setonix.
+
+EoR1 high on Setonix from Birli measurement sets (raw files are not on Setonix and ASVO does not
+serve these nights): convert each MS once to the prep uvfits that `extPrep` reads, then run
+`extPrep` once per CHIPS band (`--lssa_bias_mode` 11, 12, 10 = channels 0-191, 96-287, 192-383):
+
+```bash
+hyperdrive vis-convert --autos --data <obsid>.metafits <obsid>.ms \
+    --outputs $MYSCRATCH/nfdata/<obsid>/prep/birli_<obsid>_8s_80kHz_norfi.noflag.uvfits
+nextflow run main.nf -profile setonix -c eor1high-ph3.conf -entry extPrep \
+    --obsids_suffix=-eor1high-zenith20260905 --visName=noflag \
+    --prep_time_res_s=8 --prep_freq_res_khz=80 \
+    --sourcelist=<FnxA-v2 source list> --beam_path=<mwa_full_embedded_element_pattern.h5> \
+    --dical_name=30l_src8k_300it_fnxav2 \
+    --dical_args='-n 8000 --uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
+    --novideo --nodemo --lssa_bias_mode=10
+```
+
+`visName` names the flagging state of the prep file (`noflag`: Birli `--no-rfi --flag-edge-chans 0
+--no-flag-dc`, no SSINS). `--freq-average 40kHz` is dropped from `dical_args` because these MS are
+already 80 kHz. hyperdrive must include mwa_hyperdrive#118 to use the full FEE beam file.
 
 ## 2. Running the pipeline
 
@@ -40,7 +65,7 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
 | (default) | obsid list | web-service metadata, ASVO preprocessed download, flag/SSINS QA, then `qaPrep` (cal, vis, img, chips) |
 | `asvoRawFlow` | obsid list | downloads raw gpubox files and runs Birli locally (`birli_args`); used for Phase III nights |
 | `extRaw` | raw files already in `nfdata/<obsid>/raw/` | |
-| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia; flagQA then measures occupancy on the SSINS-flagged file |
+| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia; flagQA then measures occupancy on the SSINS-flagged file. No SSINS step runs, so any other `visName` (e.g. `noflag`) takes an unflagged file as it is; link the metafits as `raw/<obsid>.metafits` to skip the download |
 | `extChips` | existing calibrated/peeled uvfits | `visName` names the vis |
 | `extPSMetrics` | `external.csv` of obsid,vis | |
 | `archivePrep` | obsid list | preprocess and push prep to Acacia only |
