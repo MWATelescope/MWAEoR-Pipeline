@@ -6695,9 +6695,11 @@ workflow qaPrep {
                     nodut1: params.nodut1,
                     apply_args: params.apply_args?:'',
                 ]
-                def calFlags = meta.calFlags?:[]
-                if (calFlags) {
-                    newMeta.apply_args = ''+"${params.apply_args?:''} --tile-flags ${calFlags.join(' ')}"
+                // flag prep (incl. manual tile-updates) and cal qa tiles explicitly, rather than
+                // relying on NaN solutions, so they are dropped from the output and show in the log
+                def applyFlags = ((meta.prepFlags?:[]) + (meta.calFlags?:[])).unique().sort()
+                if (applyFlags) {
+                    newMeta.apply_args = ''+"${params.apply_args?:''} --tile-flags ${applyFlags.join(' ')}"
                 }
                 // calFlags = [8,9,10,11,12,13,15,27,30,39,40,42,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,79,88,89,90,91,92,93,94,95,117]
                 // newMeta.apply_args = "${newMeta.apply_args} --tile-flags ${calFlags.join(' ')}"
