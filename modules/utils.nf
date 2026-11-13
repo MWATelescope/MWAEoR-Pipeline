@@ -802,8 +802,9 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     }
     dec_phase_center = wrap_angle(dec_phase_center)
 
-    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing ?: Float.NaN
-    az_pointing = wrap_angle(az_pointing)
+    // not `?: Float.NaN`: an azimuth of 0 (zenith) is false in groovy
+    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing
+    az_pointing = az_pointing == null ? Float.NaN : wrap_angle(az_pointing)
     def el_pointing = (wsStats.metadata ?: [:]).elevation_pointing
     def ew_pointing = null
     // pointings: east-west vs EOR1 vs sweet:
