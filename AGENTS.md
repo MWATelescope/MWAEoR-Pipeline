@@ -11,8 +11,10 @@ Site-specific notes (paths, network, queues, containers) live in one file per cl
 (`-profile dug`, this checkout) read [AGENTS-DUG.md](AGENTS-DUG.md); it is local and not committed.
 Pawsey (Setonix, Garrawarla) profiles remain in `nextflow.config` but are not maintained;
 `eor1high-ph3-setonix.conf` with `scripts/eor1high_zenith20260905_setonix.sh` is the one Setonix
-recipe that was refreshed (2026-11): hyperdrive and the python tools from containers pulled into
-`claude-eor/containers`, di-cal and peel on the `gpu` queue (account `mwaeor-gpu`, `--rocm`).
+recipe that was refreshed (2026-11): `-entry extPrep --visName=noflag` on prep uvfits that the
+script converts from existing Birli measurement sets, hyperdrive and the python tools from
+containers pulled into `claude-eor/containers`, di-cal and peel on the `gpu` queue (account
+`mwaeor-gpu`, `--rocm`).
 On Setonix the containers of a profile are fixed when `nextflow.config` is read, so a `-c` conf
 that changes `*_sif` params must also set `container` in its own `process` block.
 
@@ -44,8 +46,8 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
 |---|---|---|
 | (default) | obsid list | web-service metadata, ASVO preprocessed download, flag/SSINS QA, then `qaPrep` (cal, vis, img, chips) |
 | `asvoRawFlow` | obsid list | downloads raw gpubox files and runs Birli locally (`birli_args`); used for Phase III nights |
-| `extRaw` | raw files already in `nfdata/<obsid>/raw/` | with `--prep_ms`, starts instead from a Birli measurement set `nfdata/<obsid>/prep/birli_<obsid><prep_suffix>.ms` (`msPrepUV` converts it to the prep uvfits); link the metafits as `raw/<obsid>.metafits` to skip the download |
-| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia; flagQA then measures occupancy on the SSINS-flagged file |
+| `extRaw` | raw files already in `nfdata/<obsid>/raw/` | |
+| `extPrep` | prep uvfits already in `nfdata/<obsid>/prep/` | reads `birli_<obsid><prep_suffix>.<visName>.uvfits` with `visName` defaulting to `ssins`; use after pulling prep from Acacia; flagQA then measures occupancy on the SSINS-flagged file. No SSINS step runs, so any other `visName` (e.g. `noflag`) takes an unflagged file as it is; link the metafits as `raw/<obsid>.metafits` to skip the download |
 | `extChips` | existing calibrated/peeled uvfits | `visName` names the vis |
 | `extPSMetrics` | `external.csv` of obsid,vis | |
 | `archivePrep` | obsid list | preprocess and push prep to Acacia only |

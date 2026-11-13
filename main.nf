@@ -415,41 +415,6 @@ process birliPrepUV {
     """
 }
 
-// convert a measurement set that Birli already wrote into the prep uvfits that birliPrepUV
-// would have written, for obs whose raw files are not on this cluster (params.prep_ms).
-process msPrepUV {
-    storeDir "${params.outdir}/${obsid}/prep"
-    label "hyperdrive_cpu"
-    label "cpu_quarter"
-    time { params.scratchFactor * 1.hour * task.attempt }
-    stageInMode "symlink"
-    memory { 60.GB * task.attempt }
-    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
-    maxRetries 2
-    tag "${obsid}${birli_argstr_suffix()[2]?:''}"
-
-    input:
-    tuple val(obsid), val(meta_), path(metafits), path(ms)
-    output:
-    tuple val(obsid), val(meta), path(uvfits)
-
-    when: !params.noprep
-
-    script:
-    meta = deepcopy(meta_)
-    def (_argstr_asvo, _argstr_cli, suffix) = birli_argstr_suffix()
-    meta.prep_freq_res = params.prep_freq_res_khz?:getFreqReskHz(meta_)
-    meta.prep_time_res = params.prep_time_res_s?:meta.time_res
-    meta['birli_suffix'] = suffix
-    uvfits = ''+"birli_${obsid}${suffix}.uvfits"
-    """
-    set -eux
-    ${params.hyperdrive_cpu} vis-convert --autos \
-        --data "${metafits}" "${ms}" \
-        --outputs "${uvfits}"
-    """
-}
-
 process hypPrepVisConvert {
     storeDir "${params.outdir}/${obsid}/prep"
     label "hyperdrive_cpu"
@@ -676,10 +641,6 @@ workflow extRaw {
             def meta = [obsid: obsid]
             // def raw = file("${params.outdir}/../raw/${obsid}_2?????????????_ch???_???.fits")
             def raw = file("${params.outdir}/${obsid}/raw/${obsid}_2*.fits")
-            if (params.prep_ms) {
-                // start from the measurement set Birli already wrote instead of the raw files
-                raw = file("${params.outdir}/${obsid}/prep/birli_${obsid}${birli_argstr_suffix()[2]}.ms")
-            }
             [ obsid, deepcopy(meta), raw ]
         }
         .filter { _o, _m, raw_ ->
@@ -699,17 +660,9 @@ workflow extRaw {
         .map { obsid, meta, vis, wsMeta, metafits ->
             [ obsid,  mapMerge(meta, wsMeta), metafits, vis ]
         }
-        .set { obsMetaMetafitsRaw }
+        | birliPrepUV
 
-    if (params.prep_ms) {
-        obsMetaMetafitsRaw | msPrepUV
-        prepUV = msPrepUV.out
-    } else {
-        obsMetaMetafitsRaw | birliPrepUV
-        prepUV = birliPrepUV.out.map { obsid, meta, uvfits, _metrics -> [obsid, meta, uvfits] }
-    }
-
-    prepUV.flatMap { obsid, meta, uvfits_ ->
+    birliPrepUV.out.flatMap { obsid, meta, uvfits_, _metrics ->
             def uvfits = coerceList(uvfits_)
             if (uvfits.size > 1) {
                 uvfits.collect { f ->
@@ -4019,8 +3972,7 @@ workflow ssinsQA {
             )
             .view { [it, it.readLines().size()] }
 
-        // without ssins there is no occupancy to gate on (the join below would drop every obs)
-        if (params.noprepqa || params.noqa || params.nossins) {
+        if (params.noprepqa || params.noqa) {
             subobsMetaVisPass = subobsMetaVis
             subobsMetaVisFlags = channel.empty()
             fail_codes = channel.empty()
