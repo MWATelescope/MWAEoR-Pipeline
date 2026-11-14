@@ -5652,7 +5652,7 @@ workflow uvfits {
 
             pairDiffReasons
                 .map { obsid, meta, stats, fail_code, reason ->
-                    def fmt = { x -> x == null ? 'nan' : String.format('%.3f', x as double) }
+                    def fmt = { x -> x == null ? 'nan' : String.format('%.4f', x as double) }
                     [
                         obsid, meta.name, meta.subobs?:'', stats.npairs,
                         fmt(stats.max_r), stats.max_pol?:'', stats.max_band?:'',
