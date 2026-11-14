@@ -1557,6 +1557,62 @@ process brfiWeights {
     template "brfi_weights.py"
 }
 
+// the same for the vis that calibration is applied to (see apply_pair_timesteps)
+process applyWeights {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "nvme"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(weights)
+
+    when: params.apply_pair_timesteps
+
+    script:
+    base = uvfits.baseName
+    weights = "${base}_time_weights.json"
+    args = "--uvfits ${uvfits} --out ${weights}"
+    template "brfi_weights.py"
+}
+
+// CHIPS grids the timesteps of a calibrated vis in fixed pairs (0,1), (2,3).. and only the
+// visibilities whose two weights are equal; a timestep without such a partner is lost. Returns
+// [first input timestep to apply, complete pairs it gives, complete pairs when starting at 0]: the
+// start that gives CHIPS the most complete pairs, given the mean weight of each input timestep
+// (templates/brfi_weights.py) and how many of them are averaged into one output timestep.
+// A timestep is whole when its weight is within 1% of the median of the unflagged ones.
+def pairStart(List weights, int factor) {
+    def w = weights.collect { it as double }
+    def pos = w.findAll { it > 0 }.sort()
+    if (!pos) {
+        return [0, 0, 0]
+    }
+    def med = pos[pos.size().intdiv(2)]
+    def whole = w.collect { Math.abs(it - med) <= 0.01 * med }
+    def pairsFrom = { int start ->
+        def groups = []
+        for (int a = start; a + factor <= whole.size(); a += factor) {
+            groups << whole.subList(a, a + factor).every { it }
+        }
+        def pairs = 0
+        for (int g = 0; g + 1 < groups.size(); g += 2) {
+            if (groups[g] && groups[g + 1]) { pairs++ }
+        }
+        pairs
+    }
+    def first = whole.indexOf(true)
+    def best = [0, pairsFrom(0)]
+    (first..<Math.min(first + 2 * factor, whole.size())).each { start ->
+        def pairs = pairsFrom(start)
+        if (pairs > best[1]) { best = [start, pairs] }
+    }
+    best + [pairsFrom(0)]
+}
+
 // name of the vis flagged by workflow brfiFlag: `brfi` and a hash of every setting of the fits and
 // of the masks, the same for all nights of a run, so that vis flagged with other settings is not
 // reused. (not of the set of observations of a night: see the fitset in workflow brfiFlag)
@@ -6999,7 +7055,44 @@ workflow qaPrep {
                 newMeta.apply_name = hyp_apply_name(newMeta.time_res, newMeta.freq_res_khz)
                 [obsid, mapMerge(meta, newMeta), metafits, prepUVFits, soln]
             }
-            | (hypApplyUV & hypApplyMS)
+            .set { applyArgs }
+
+        if (params.apply_pair_timesteps) {
+            // start each obs at the timestep that gives CHIPS the most complete pairs
+            applyArgs.map { obsid, meta, _metafits, vis, _soln -> [obsid, [subobs: meta.subobs], vis] }
+                .unique { [it[0], it[2].baseName] }
+                | applyWeights
+            applyArgs.map { obsid, meta, metafits, vis, soln -> [[obsid, vis.baseName], meta, metafits, vis, soln] }
+                .combine(
+                    applyWeights.out.map { obsid, _m, weights -> [[obsid, weights.baseName - '_time_weights'], parseJson(weights)] },
+                    by: 0
+                )
+                .map { key, meta, metafits, vis, soln, weights ->
+                    def times = weights.time_jd.collect { it as double }
+                    def int_s = times.size() > 1 ? (times[-1] - times[0]) * 86400 / (times.size() - 1) : 1.0
+                    def factor = meta.time_res == null ? 1 : Math.max(1, Math.round((meta.time_res as double) / int_s) as int)
+                    def (start, pairs, pairs0) = pairStart(weights.weight, factor)
+                    def timesteps = (start..<times.size()).join(' ')
+                    [key[0], mapMerge(meta, [
+                        apply_args: ''+"--timesteps ${timesteps} ${meta.apply_args?:''}",
+                        apply_start: start, apply_pairs: pairs, apply_pairs_from0: pairs0,
+                    ]), metafits, vis, soln]
+                }
+                .set { applyArgsPaired }
+
+            applyArgsPaired.map { obsid, meta, _metafits, vis, _soln ->
+                    [obsid, meta.subobs?:'', vis.baseName, meta.name, meta.apply_start, meta.apply_pairs, meta.apply_pairs_from0].join("\t")
+                }
+                .collectFile(
+                    name: "apply_pairs.tsv", newLine: true, sort: true,
+                    seed: ([ "OBS", "SUBOBS", "VIS", "CAL NAME", "FIRST TIMESTEP", "PAIRS", "PAIRS FROM 0" ]).join("\t"),
+                    storeDir: "${results_dir()}${params.cal_suffix}"
+                )
+                | view { [it, it.readLines().size()] }
+        } else {
+            applyArgsPaired = applyArgs
+        }
+        applyArgsPaired | (hypApplyUV & hypApplyMS)
         // TODO: make hyperdrive not crash if there are not num srcs
         subArgsUV = obsMetafits.cross(hypApplyUV.out)
             .map { obsMetafits_, hypApplyUV_ ->

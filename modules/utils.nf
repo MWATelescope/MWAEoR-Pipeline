@@ -160,6 +160,10 @@ def hyp_apply_name(time_res, freq_res) {
         }
         suffix += "${freq_res}kHz"
     }
+    // the timesteps differ with apply_pair_timesteps, so the name does too
+    if (params.apply_pair_timesteps) {
+        suffix += (suffix ? "_" : "") + "pairs"
+    }
     suffix
 }
 

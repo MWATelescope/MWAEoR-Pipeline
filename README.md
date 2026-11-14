@@ -384,7 +384,13 @@ band).
 
 ### apply, subtraction and chips
 
-`apply_time_res` and `apply_freq_res` (8 s, 80 kHz) set the calibrated resolution. `hyp_peel_args`,
+`apply_time_res` and `apply_freq_res` (8 s, 80 kHz) set the calibrated resolution. CHIPS grids the
+timesteps of a calibrated vis in fixed pairs (0,1), (2,3).. and only the visibilities whose two
+weights are equal, so a partial first timestep, or a flagged one, also costs its partner. With
+`apply_pair_timesteps` (off by default) `applyWeights` reads the weight of every timestep of the vis
+and each observation is applied from the timestep that leaves the most complete pairs
+(`hyperdrive solutions-apply --timesteps`); the calibrated vis is then named `..._pairs` and
+`apply_pairs.tsv` in the results dir lists the chosen start and the pairs gained. `hyp_peel_args`,
 `sub_nsrcs` and `ionosub_nsrcs` configure `hypIonoSubUV`; `peel_suffix` keeps peel variants apart;
 `nosub` and `noionosub` switch the subtractions. `lssa_bias_mode`, `lssa_bin`, `chunkSize`,
 `groupByDate`, `groupByPointing`, `groupByLst` and `groupSuffix` control CHIPS grouping; `kperp_*`
