@@ -2994,6 +2994,14 @@ process chipsGrid {
     echo "hashes" >> ${details}
     sha1sum {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${ext}.dat | tee -a ${details}
     tar -zcvf "${grid}" ${details} {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${ext}.dat
+    export ps=\$?
+    if [ \${ps} -ne 0 ]; then
+        echo "tar failed. status=\${ps}"
+        exit \${ps}
+    fi
+    # the tarball is the only output. Without node-local scratch the task directory is on a
+    # shared filesystem, where the uncompressed grids (about 90 GB per task) would stay behind.
+    find . -maxdepth 1 -type f -name '*.dat' -delete
     exit 0
     """
 }
