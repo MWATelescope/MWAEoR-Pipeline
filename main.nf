@@ -5504,8 +5504,9 @@ workflow uvfits {
                 | view { [it, it.readLines().size()] }
 
             psMeta = psMetrics.out
-                // filter out pol != xx
-                .filter { _o, meta, _dat -> meta.pol == 'xx' }
+                // the gates below read one pol (xx unless params.filter_ps_pol says otherwise)
+                // and pass or fail the visibility in both pols
+                .filter { _o, meta, _dat -> meta.pol == (params.filter_ps_pol ?: 'xx') }
                 // add ps_metrics values to vis meta
                 .map { obsid, meta, dat ->
                     def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]
