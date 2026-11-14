@@ -84,6 +84,14 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   for 139-170 MHz); fixing `beam_path` alone would have reused them.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
+  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_time_weights.json`,
+    `prep_qa/<vis>_brfi-<fitset>-m<maskset>_mask.h5` and `_occ.json`, `prep/<vis>.<brfi>.uvfits`,
+    night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and `results*/<brfi>_occupancy.tsv`.
+    `<fitset>` is `<utc date>_n<obs>_<hash of the vis names, pointings and fit settings>`, so a
+    different set of observations refits; `<maskset>` hashes the mask settings; `<brfi>` is
+    `brfi<hash of all fit and mask settings>` (`brfiFlagName()`), the same for every night, so
+    runs with other settings share a data dir. It does not cover the set of observations: delete
+    the `.<brfi>.uvfits` of a night if its set changes. Later product names gain `.<brfi>`.
   - solution: `cal<cal_suffix>/hyp_soln_<obsid>_ssins_<dical_name>.fits` (+ `hyp_di-cal_*.log`)
   - calibrated vis: `cal<cal_suffix>/hyp_<obsid>_ssins_<dical_name>_<apply_time>s_<apply_freq>kHz.uvfits`
   - iono-subtracted vis: `..._ionosub_ssins_<dical_name>_8s_80kHz<peel_suffix>_i<ionosub_nsrcs>.uvfits` + `hyp_peel_..._uv.json`
@@ -105,6 +113,72 @@ bucket_prefix = "mwaeor:low0-<variant>"
 Put the launch command and the list of intended differences in the conf header. Past examples:
 `eor0low-solint40s.conf` (di-cal solution interval), the removed `eor0low-ionosel-*.conf` at
 commit `e6d8af0` (peel args), the Fornax A model test (`dical_name` + `result_suffix`).
+
+### CHIPS grids timesteps in pairs (`--apply_pair_timesteps`)
+
+`gridvisdiff` reads a calibrated uvfits two timesteps at a time, (0,1), (2,3).., and grids a
+visibility only when the weights of the two timesteps are exactly equal and positive. A last odd
+timestep is never gridded. So a first timestep averaged from fewer native samples (weight 48
+against 64 on files pre-averaged to 8 s, where the first 2 s are flagged) loses pair (0,1), and a
+flagged timestep takes its partner with it: on the 2026-09-05 night 12 of 15 timesteps per
+observation reached the power spectrum, and the noise of masked runs followed the number of
+complete pairs, not the number of unflagged timesteps. `apply_pair_timesteps` picks the first
+timestep per observation that leaves the most complete pairs (`pairStart` in `main.nf`, from the
+`*_time_weights.json` of the vis being applied, after any brfi flags), passes it to
+`solutions-apply` as `--timesteps`, and adds `_pairs` to the apply name. `apply_pairs.tsv` lists
+the start, the pairs and the pairs when starting at 0. When judging a mask, count complete pairs.
+
+### Emission that varies within a pair (`--pair_diff`, `--filter_max_pair_diff`)
+
+The CHIPS power is the power of the sum grid minus the power of the difference grid, and the
+difference of the two timesteps of a pair is assumed to be noise. A transmitter that flickers on
+the scale of a timestep breaks that: on EoR1 high, TV channel 7 (181-188 MHz) appears for seconds
+at a time in a few observations, differs between the two 8 s steps of a pair, and
+fills the difference grid. The band whose taper is centred on it (`lssa_bias_mode=12`, 175-190 MHz)
+then has more difference than sum power from k_parallel 0.24 upward and the 1D power goes
+significantly negative; the other two bands hold it at their taper edges and look normal. One
+observation is enough: 1472671688 alone turned the middle band of the first 32 observations of
+2026-09-05 negative by up to 13 sigma. Neither the ps_metrics window power nor the SSINS
+occupancies see it (DAB occupancy of the worst observation of 2025-09-29: 0.00).
+
+`pairDiff` (`templates/pair_diff.py`) measures it on every unsubtracted calibrated vis: the power
+of the pair differences averaged over 640 kHz, over the thermal power from adjacent channels of the
+same differences, on the 20-50 wavelength baselines, per pol and 7 MHz band (aligned to 174 MHz, the
+TV channel raster). 1 is noise, quiet observations give 1.03-1.05, the flickering ones 2 to 200.
+`pair_diff.tsv` in the results dir lists every band; `--filter_max_pair_diff=1.5` rejects an
+observation (fail code 104) when any band of either pol is above it, and an observation whose
+measurement failed does not pass. It measures the pairs of the file as written, so use it together
+with `--apply_pair_timesteps`. The band below the TV channels (167-174 MHz) also varies in many
+observations; the gate reads all bands. A significantly negative band in a combine means look
+here first, then at the difference grid per coarse channel.
+
+### Night-level bayesian-rfi time mask (`--brfi_apply`)
+
+Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS
+is made from the prep uvfits at its own resolution, so the fit sees native 2 s samples when prep is
+2 s and 8 s samples for an 8 s prep (as with `extPrep` on pre-averaged files); timesteps are flagged
+in whole `brfi_step_s` steps. `brfiFit` runs once per night and coarse channel (`brfi_coarse_chans`,
+4 chains of 1000 + 1000 by default, about a minute each) and needs numpyro, jax and
+`/opt/bayesian-rfi` (`brfi_src`) in the python container. A fit is split by pointing: each run of
+observations at one pointing is a block with its own Legendre background, and the blocks of a
+night share the RFI component, as in the published night fits (`fit.py --pool-pointings`). The
+pointing is the web-service azimuth and elevation (`az_pointing`, `el_pointing` in the obs meta,
+copied there in workflow `ws`); `ew_pointing` is null off the east-west track, so it cannot be the
+key, and the run stops if an observation has no az/el instead of merging pointings. Nights come
+from the utc date of `starttime_utc`. The fit set name hashes the vis names and pointings, so
+changing either gives new fit files. Check `brfi_fits.tsv` in the results dir (blocks, max rhat,
+divergences per fit and pol) before trusting a mask: a wrong block split shows up as rhat far above
+1.01 and tens of percent of samples flagged.
+
+`brfiWeights` (`templates/brfi_weights.py`) reads the mean visibility weight of every timestep from
+the uvfits, and the fit leaves out a difference when either of its timesteps is further than
+`brfi_weight_tol` from the usual weight of its observation. This matters for pre-averaged prep
+files: on 2026-09-05 the first 8 s timestep of every observation holds 3 of 4 native samples
+(weight 48 against 64), its difference is 8% high (sqrt((1/48 + 1/64) / (2/64)) = 1.08, far outside
+the noise of the series) and was flagged in 70 of 70 observations before this check. The INS file
+of `hyperdrive bmetrics` holds baseline counts, not weights, so it cannot tell. At native
+resolution the flagged first sample is simply missing. The fit set name also hashes the fit
+settings.
 
 ### Command line gotchas
 
@@ -129,6 +203,7 @@ grouped by stage (`modules/utils.nf: getFailReason`):
 | 063 | prepVisQA bad tiles | `filter_bad_tile_frac`, `noprepqafilter` |
 | 064-079 | calQA | `filter_max_rms_convg`, `filter_max_unused_bl_frac`, `filter_max_unconvg_chs`, `filter_max_cal_amp_rms` |
 | 096-103 | ps_metrics window/wedge | `filter_{max,min}_ps_window_unsub`, `filter_{max,min}_ps_ratio_unsub`, `filter_{max,min}_ps_{win,wedge}_ratio_sub` |
+| 104 | pair differences | `filter_max_pair_diff` (`pair_diff`, `pair_diff_args`) |
 | 112-121 | imgQA | `filter_{max,min}_vrms_box_nosub`, `filter_*_pks_int_*` |
 
 A gate tuned for one configuration can block a variant: 40 s calibration timeblocks hold a third of

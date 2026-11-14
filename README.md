@@ -102,6 +102,22 @@ every later stage uses. `flagGate` rejects observations whose total, RFI or SSIN
 streak, narrow-band or DAB fractions, or bad-tile fraction exceed the conf thresholds. Manual flags
 from `tile-updates.csv` and the prepVisQA outliers are carried forward as calibration tile flags.
 
+With `brfi_apply` (off by default), whole timesteps are also flagged from a night-level
+[bayesian-rfi](https://github.com/d3v-null/bayesian-rfi) fit (workflow `brfiFlag`):
+`hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation,
+`brfiWeights` reads the weight of each timestep so that differences involving a timestep averaged
+from fewer native samples are left out, `brfiFit`
+fits the mixture model to each coarse channel over all of a night's observations (each run of
+observations at one pointing is a block with its own background), `brfiMask` flags
+the timesteps where at least `brfi_min_chans` coarse channels (default 1: any) have P(RFI) >=
+`brfi_thresh` in both XX and YY, and the mask is applied to the whole band as a
+`.brfi<settings hash>.uvfits` copy that the later stages use, so that runs with other settings can
+share a data dir. Observations that
+would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
+the fit of a night depends on which of its observations are in the run. `brfi_fits.tsv` and
+`brfi<settings hash>_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction
+of every observation.
+
 ### Direction independent calibration
 
 ```mermaid
@@ -287,7 +303,8 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `raw_qa/` - antenna and channel tables
     - `meta/` - `${obsid}_meta.json` from web services and TAP, inputs tsv, sky map png
     - `prep/` - `birli_${obsid}${prep_suffix}.uvfits` and the SSINS-flagged `.ssins.uvfits`
-    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv
+    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv,
+      `*_SSINS_data.h5`, `*_time_weights.json` and `*_brfi-<night>_n<obs>_<hash>-m<hash>_{mask.h5,occ.json}` with `brfi_apply`
     - `cal${cal_suffix}/` - `hyp_soln_*.fits`, di-cal, apply and peel logs, calibrated and
       ionosub uvfits, `hyp_peel_*_uv.json` ionospheric constants
     - `cal_qa${cal_suffix}/` - calQA metrics json, solution amp/phase plots (one per timeblock),
@@ -367,11 +384,23 @@ band).
 
 ### apply, subtraction and chips
 
-`apply_time_res` and `apply_freq_res` (8 s, 80 kHz) set the calibrated resolution. `hyp_peel_args`,
+`apply_time_res` and `apply_freq_res` (8 s, 80 kHz) set the calibrated resolution. CHIPS grids the
+timesteps of a calibrated vis in fixed pairs (0,1), (2,3).. and only the visibilities whose two
+weights are equal, so a partial first timestep, or a flagged one, also costs its partner. With
+`apply_pair_timesteps` (off by default) `applyWeights` reads the weight of every timestep of the vis
+and each observation is applied from the timestep that leaves the most complete pairs
+(`hyperdrive solutions-apply --timesteps`); the calibrated vis is then named `..._pairs` and
+`apply_pairs.tsv` in the results dir lists the chosen start and the pairs gained. `hyp_peel_args`,
 `sub_nsrcs` and `ionosub_nsrcs` configure `hypIonoSubUV`; `peel_suffix` keeps peel variants apart;
 `nosub` and `noionosub` switch the subtractions. `lssa_bias_mode`, `lssa_bin`, `chunkSize`,
 `groupByDate`, `groupByPointing`, `groupByLst` and `groupSuffix` control CHIPS grouping; `kperp_*`
 and `kparra_*` set the 1D cuts.
+
+`pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
+of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz
+band (`pair_diff.tsv` in the results dir). Emission that varies within a pair, such as a flickering
+TV channel, ends up in the CHIPS difference grid and drives the power of that band negative.
+`filter_max_pair_diff` (e.g. 1.5) rejects observations above it in any band (fail code 104).
 
 ### switches and suffixes
 

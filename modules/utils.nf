@@ -160,6 +160,10 @@ def hyp_apply_name(time_res, freq_res) {
         }
         suffix += "${freq_res}kHz"
     }
+    // the timesteps differ with apply_pair_timesteps, so the name does too
+    if (params.apply_pair_timesteps) {
+        suffix += (suffix ? "_" : "") + "pairs"
+    }
     suffix
 }
 
@@ -450,6 +454,17 @@ def cmt_ps_metrics_pass(meta) {
     return [fail_code, null]
 }
 
+// pair differences (templates/pair_diff.py): the largest value over pols and bands
+def cmt_pair_diff_pass(stats) {
+    if (params.filter_max_pair_diff != null && stats.max_r != null) {
+        if (stats.max_r > params.filter_max_pair_diff) {
+            def value = String.format('%.3f', stats.max_r as double)
+            return [104, "pair_diff(${value}, ${stats.max_pol} ${stats.max_band} MHz) > max_pair_diff(${params.filter_max_pair_diff})"]
+        }
+    }
+    return [0, null]
+}
+
 // POWER	Normal P_win/P_wg	< 0.1	Window power a small fraction of wedge power
 // POWER	P_wg_sub/P_wg	< 0.3	More than 70% wedge power subtracted
 // POWER	P_win_sub/P_win	< 1.0, >0.1	Window power not crazy after subtraction
@@ -732,6 +747,7 @@ def getFailReason(code) {
         101: "101 - small sub_p_win:p_win",
         102: "102 - large sub_p_wg:p_wg",
         103: "103 - small sub_p_wg:p_wg",
+        104: "104 - large pair difference",
         112: "112 - large unsub v_rms_box",
         113: "113 - small unsub v_rms_box",
         114: "114 - large unsub pks_int v/(xx+yy)",
@@ -802,8 +818,9 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     }
     dec_phase_center = wrap_angle(dec_phase_center)
 
-    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing ?: Float.NaN
-    az_pointing = wrap_angle(az_pointing)
+    // not `?: Float.NaN`: an azimuth of 0 (zenith) is false in groovy
+    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing
+    az_pointing = az_pointing == null ? Float.NaN : wrap_angle(az_pointing)
     def el_pointing = (wsStats.metadata ?: [:]).elevation_pointing
     def ew_pointing = null
     // pointings: east-west vs EOR1 vs sweet:
