@@ -3091,6 +3091,14 @@ EOF
     echo "hashes" >> ${details}
     sha1sum {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat | tee -a ${details}
     tar -zcvf "${grid}" ${details} {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat
+    export ps=\$?
+    if [ \${ps} -ne 0 ]; then
+        echo "tar failed. status=\${ps}"
+        exit \${ps}
+    fi
+    # as in chipsGrid: the tarball is the only grid output, so do not leave the unpacked per-obs
+    # grids and the combined grids (about 9 GB per obs) in a task directory on a shared filesystem.
+    find . -maxdepth 1 -type f -name '*.dat' -delete
     exit 0
     """
 }
