@@ -396,6 +396,12 @@ and each observation is applied from the timestep that leaves the most complete 
 `groupByDate`, `groupByPointing`, `groupByLst` and `groupSuffix` control CHIPS grouping; `kperp_*`
 and `kparra_*` set the 1D cuts.
 
+`pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
+of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz
+band (`pair_diff.tsv` in the results dir). Emission that varies within a pair, such as a flickering
+TV channel, ends up in the CHIPS difference grid and drives the power of that band negative.
+`filter_max_pair_diff` (e.g. 1.5) rejects observations above it in any band (fail code 104).
+
 ### switches and suffixes
 
 Most stages have a `no*` switch (`noprep`, `nossins`, `nocal`, `noapply`, `noimg`, `nochips`,

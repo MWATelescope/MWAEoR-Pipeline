@@ -8,6 +8,7 @@ include {
     cmt_imgqa_pass;
     cmt_ps_metrics_pass_sub;
     cmt_ps_metrics_pass;
+    cmt_pair_diff_pass;
     coerceList;
     contigRanges;
     decomposeImg;
@@ -2430,6 +2431,28 @@ process visQA {
     #!/bin/bash -eux
     run_visqa.py ${uvfits} --out "${json}"
     """
+}
+
+// power of the differences between the timesteps CHIPS pairs, over thermal noise, per pol and
+// frequency band (templates/pair_diff.py). Emission that varies within a pair fills CHIPS'
+// difference grid and drives the power negative: see filter_max_pair_diff
+process pairDiff {
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    label "python"
+    label "nvme"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(json)
+
+    script:
+    base = uvfits.baseName
+    json = ''+"${base}_pair_diff.json"
+    args = "--uvfits ${uvfits} --out ${json} ${params.pair_diff_args}"
+    template "pair_diff.py"
 }
 
 process uvMeta {
@@ -5613,6 +5636,70 @@ workflow uvfits {
                     def (obsid, _m, vis) = obsMetaUV_
                     def (_o, meta) = obsMetaPass_
                     [obsid, meta, vis]
+                }
+        }
+
+        // pair differences: emission that varies between the two timesteps of a CHIPS pair, in the
+        // unsubtracted vis. The gate rejects the observation, with all of its visibilities.
+        if (params.pair_diff || params.filter_max_pair_diff != null) {
+            obsMetaUVEoR.filter { _o, meta, _vis -> meta.sub == null } | pairDiff
+
+            pairDiffReasons = pairDiff.out.map { obsid, meta, json ->
+                def stats = parseJson(json)
+                def (fail_code, reason) = cmt_pair_diff_pass(stats)
+                [obsid, meta, stats, fail_code, reason]
+            }
+
+            pairDiffReasons
+                .map { obsid, meta, stats, fail_code, reason ->
+                    def fmt = { x -> x == null ? 'nan' : String.format('%.3f', x as double) }
+                    [
+                        obsid, meta.name, meta.subobs?:'', stats.npairs,
+                        fmt(stats.max_r), stats.max_pol?:'', stats.max_band?:'',
+                        getFailReason(fail_code), reason?:'',
+                        stats.bands.join(' '),
+                        (stats.r?.xx ?: []).collect(fmt).join(' '),
+                        (stats.r?.yy ?: []).collect(fmt).join(' '),
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "pair_diff.tsv", newLine: true, sort: true,
+                    seed: [
+                        "OBS", "VIS NAME", "SUBOBS", "PAIRS", "MAX", "MAX POL", "MAX BAND",
+                        "FAIL CODE", "REASON", "BANDS", "XX", "YY",
+                    ].join("\t"),
+                    storeDir: "${results_dir()}${params.cal_suffix}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+
+            pairDiffFail = pairDiffReasons
+                .filter { _o, _m, _stats, _fail_code, reason -> reason != null }
+                .map { obsid, _m, _stats, fail_code, _reason -> [obsid, getFailReason(fail_code)] }
+                .unique()
+
+            // with the gate on, wait for every measurement and keep the observations that passed.
+            // an observation without a measurement (failed task) does not pass
+            if (params.filter_max_pair_diff != null) {
+                pairDiffPass = pairDiffReasons
+                    .map { obsid, _m, _stats, _fail_code, reason -> [obsid, reason == null] }
+                    .groupTuple(by: 0)
+                    .filter { _o, passes -> passes.every { it } }
+                    .map { obsid, _passes -> obsid }
+                    .toList()
+                    .map { [it] }
+                subobsMetaUVPass_ = subobsMetaUVPass_
+                    .combine(pairDiffPass)
+                    .filter { obsid, _meta, _vis, passed -> obsid in passed }
+                    .map { obsid, meta, vis, _passed -> [obsid, meta, vis] }
+            }
+
+            // one fail code per obs: the ps_metrics one first
+            fail_codes = fail_codes.mix(pairDiffFail)
+                .groupTuple(by: 0)
+                .map { obsid, obs_fail_codes ->
+                    def failed = coerceList(obs_fail_codes).findAll { it != getFailReason(0x00) }.sort()
+                    [obsid, failed ? failed[0] : getFailReason(0x00)]
                 }
         }
 

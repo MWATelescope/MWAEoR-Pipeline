@@ -128,6 +128,30 @@ timestep per observation that leaves the most complete pairs (`pairStart` in `ma
 `solutions-apply` as `--timesteps`, and adds `_pairs` to the apply name. `apply_pairs.tsv` lists
 the start, the pairs and the pairs when starting at 0. When judging a mask, count complete pairs.
 
+### Emission that varies within a pair (`--pair_diff`, `--filter_max_pair_diff`)
+
+The CHIPS power is the power of the sum grid minus the power of the difference grid, and the
+difference of the two timesteps of a pair is assumed to be noise. A transmitter that flickers on
+the scale of a timestep breaks that: on EoR1 high, TV channel 7 (181-188 MHz) appears for seconds
+at a time in a few observations, differs between the two 8 s steps of a pair, and
+fills the difference grid. The band whose taper is centred on it (`lssa_bias_mode=12`, 175-190 MHz)
+then has more difference than sum power from k_parallel 0.24 upward and the 1D power goes
+significantly negative; the other two bands hold it at their taper edges and look normal. One
+observation is enough: 1472671688 alone turned the middle band of the first 32 observations of
+2026-09-05 negative by up to 13 sigma. Neither the ps_metrics window power nor the SSINS
+occupancies see it (DAB occupancy of the worst observation of 2025-09-29: 0.00).
+
+`pairDiff` (`templates/pair_diff.py`) measures it on every unsubtracted calibrated vis: the power
+of the pair differences averaged over 640 kHz, over the thermal power from adjacent channels of the
+same differences, on the 20-50 wavelength baselines, per pol and 7 MHz band (aligned to 174 MHz, the
+TV channel raster). 1 is noise, quiet observations give 1.03-1.05, the flickering ones 2 to 200.
+`pair_diff.tsv` in the results dir lists every band; `--filter_max_pair_diff=1.5` rejects an
+observation (fail code 104) when any band of either pol is above it, and an observation whose
+measurement failed does not pass. It measures the pairs of the file as written, so use it together
+with `--apply_pair_timesteps`. The band below the TV channels (167-174 MHz) also varies in many
+observations; the gate reads all bands. A significantly negative band in a combine means look
+here first, then at the difference grid per coarse channel.
+
 ### Night-level bayesian-rfi time mask (`--brfi_apply`)
 
 Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS
@@ -179,6 +203,7 @@ grouped by stage (`modules/utils.nf: getFailReason`):
 | 063 | prepVisQA bad tiles | `filter_bad_tile_frac`, `noprepqafilter` |
 | 064-079 | calQA | `filter_max_rms_convg`, `filter_max_unused_bl_frac`, `filter_max_unconvg_chs`, `filter_max_cal_amp_rms` |
 | 096-103 | ps_metrics window/wedge | `filter_{max,min}_ps_window_unsub`, `filter_{max,min}_ps_ratio_unsub`, `filter_{max,min}_ps_{win,wedge}_ratio_sub` |
+| 104 | pair differences | `filter_max_pair_diff` (`pair_diff`, `pair_diff_args`) |
 | 112-121 | imgQA | `filter_{max,min}_vrms_box_nosub`, `filter_*_pks_int_*` |
 
 A gate tuned for one configuration can block a variant: 40 s calibration timeblocks hold a third of
