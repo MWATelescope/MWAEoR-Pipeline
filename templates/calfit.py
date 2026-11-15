@@ -20,8 +20,14 @@ night's. The smooth part stays per observation, so gain drifts are kept.
 
 Only the XX and YY terms are fitted; the cross terms are copied. A phase common to all tiles in a
 channel is removed first (from the XX terms, applied to the whole Jones matrix): it cancels in
-every visibility, and di-cal leaves it undetermined per channel. Flagged (NaN) values stay NaN, and a
-tile seen in fewer than --min-obs observations of the night keeps its own solutions.
+every visibility, and di-cal leaves it undetermined per channel. The YY terms then still share a
+phase per channel, that of YY against XX, which the unpolarised sky hardly constrains. It cancels
+in the YY visibilities, so YY is fitted without it and it is put back when the solutions are
+written.
+
+Flagged (NaN) values stay NaN. A tile keeps its own solutions when it is seen in fewer than
+--min-obs observations of the night, or when its fine structure changes over the night
+(--max-variable): for such a tile the median of the night describes no single observation.
 
 example:
     python templates/calfit.py night --out calfit_night.npz --json calfit_night.json --solns hyp_soln_*.fits
@@ -47,19 +53,51 @@ def parse_args(argv=None):
     night.add_argument('--solns', nargs='+', required=True, help='hyperdrive solutions of one night')
     night.add_argument('--out', required=True, help='output npz')
     night.add_argument('--json', required=True, help='output summary')
-    night.add_argument('--min-obs', type=int, default=5, help='observations a tile needs for a median')
     apply = sub.add_parser("apply")
     apply.add_argument('--soln', required=True)
     apply.add_argument('--fit', required=True, help='npz from the night mode')
     apply.add_argument('--out', required=True, help='output solutions')
+    # the same options for both, so that one set of args serves both. apply uses the orders only
     for p in (night, apply):
+        p.add_argument('--min-obs', type=int, default=5, help='observations a tile needs for a median')
+        p.add_argument(
+            '--max-variable', type=float, default=1.5,
+            help='a tile and pol keeps its own solutions when the part of its fine structure that varies over '
+            'the night, averaged over --variable-chans channels, exceeds this many times the median over tiles '
+            '(amplitude or phase). 0 to fit every tile',
+        )
+        p.add_argument('--variable-chans', type=int, default=8, help='channels averaged for --max-variable')
         p.add_argument('--amp-order', type=int, default=3, help='order of the amplitude polynomial')
         p.add_argument('--phase-order', type=int, default=1, help='order of the phase polynomial')
     return parser.parse_args(argv)
 
 
+def common_phase(gain, x, order):
+    """Phasor [timeblock, chan] of the phase that the tiles of gain[timeblock, tile, chan] share in a channel."""
+    # first the mean phasor, when the tiles agree well enough for it to mean something, then the
+    # median over tiles of what a smooth fit per tile leaves
+    out = np.ones((gain.shape[0], gain.shape[2]), dtype=complex)
+    ref = np.nanmean(gain / np.abs(gain), axis=1)
+    if np.nanmedian(np.abs(ref)) > 0.5:
+        out = np.where(np.isfinite(ref) & (np.abs(ref) > 0), ref / np.abs(ref), 1.0)
+    gain = gain * np.conj(out)[:, None, :]
+    for b in range(gain.shape[0]):
+        resid = np.full(gain.shape[1:], np.nan)
+        for t in range(gain.shape[1]):
+            phase = unwrapped(np.angle(gain[b, t]))
+            resid[t] = phase - smooth_fit(x, phase, order)
+        common = np.nanmedian(resid, axis=0)
+        out[b] = out[b] * np.exp(1j * np.where(np.isfinite(common), common, 0.0))
+    return out
+
+
 def read_soln(path, phase_order=1):
-    """(gains[pol, timeblock, tile, chan] complex with the common phase removed, freqs, tile names, jones)."""
+    """
+    (gains[pol, timeblock, tile, chan], freqs, tile names, jones[timeblock, tile, chan, 4], yy phasor[timeblock, chan])
+
+    The phase common to the xx terms of all tiles is removed from the gains and from the jones
+    matrices. The phase common to the yy terms that is left is removed from the yy gains only.
+    """
     with fits.open(path) as hdul:
         jones = np.array(hdul["SOLUTIONS"].data, dtype=float)
         freqs = np.array(hdul["CHANBLOCKS"].data["Freq"], dtype=float)
@@ -70,24 +108,10 @@ def read_soln(path, phase_order=1):
     x = freq_axis(freqs)
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        # a phase common to all tiles in a channel: first the mean xx phasor, when the tiles agree
-        # well enough for it to mean something, then the median over tiles of what a smooth fit
-        # per tile leaves
-        unit = cplx[..., 0] / np.abs(cplx[..., 0])
-        ref = np.nanmean(unit, axis=1, keepdims=True)  # [timeblock, 1, chan]
-        if np.nanmedian(np.abs(ref)) > 0.5:
-            ref = np.where(np.isfinite(ref) & (np.abs(ref) > 0), ref / np.abs(ref), 1.0)
-            cplx = cplx * np.conj(ref)[..., None]
-        for b in range(cplx.shape[0]):
-            resid = np.full(cplx.shape[1:3], np.nan)
-            for t in range(cplx.shape[1]):
-                phase = unwrapped(np.angle(cplx[b, t, :, 0]))
-                resid[t] = phase - smooth_fit(x, phase, phase_order)
-            common = np.nanmedian(resid, axis=0)
-            common = np.where(np.isfinite(common), common, 0.0)
-            cplx[b] = cplx[b] * np.exp(-1j * common)[None, :, None]
-    gains = np.stack([cplx[..., 0], cplx[..., 3]])
-    return gains, freqs, names, cplx
+        cplx = cplx * np.conj(common_phase(cplx[..., 0], x, phase_order))[:, None, :, None]
+        common_yy = common_phase(cplx[..., 3], x, phase_order)
+    gains = np.stack([cplx[..., 0], cplx[..., 3] * np.conj(common_yy)[:, None, :]])
+    return gains, freqs, names, cplx, common_yy
 
 
 def smooth_fit(x, y, order, clip=4.0):
@@ -131,17 +155,19 @@ def freq_axis(freqs):
 
 
 def night(args):
-    obs = []
+    obs, yy_phase = [], []
     freqs = names = None
     for path in args.solns:
-        gains, f, n, _c = read_soln(path, args.phase_order)
+        gains, f, n, _c, common_yy = read_soln(path, args.phase_order)
         if freqs is None:
             freqs, names = f, n
         elif len(f) != len(freqs) or not np.allclose(f, freqs) or n != names:
             raise UserWarning(f"{path}: channels or tiles differ from {args.solns[0]}")
         # every timeblock is a sample of the night
         obs.extend(gains[:, t] for t in range(gains.shape[1]))
+        yy_phase.extend(np.angle(common_yy[t]) for t in range(gains.shape[1]))
     obs = np.array(obs)  # [sample, pol, tile, chan]
+    yy_phase = np.array(yy_phase)  # [sample, chan]
     nobs, npol, ntile, nchan = obs.shape
     x = freq_axis(freqs)
     seen = np.isfinite(obs).any(axis=3).sum(axis=0)  # [pol, tile]
@@ -172,12 +198,47 @@ def night(args):
         var_amp = res_amp / fine_amp[None] - 1
         var_phase = res_phase - fine_phase[None]
 
+        # a tile whose fine structure changes over the night: what varies is averaged over a few
+        # channels first, so that a tile which is only noisier than the others still gets the median
+        def block_rms(a):
+            n = max(1, args.variable_chans)
+            blocks = a[..., :(nchan // n) * n].reshape(a.shape[:-1] + (nchan // n, n))
+            return np.sqrt(np.nanmean(np.nanmean(blocks, axis=-1) ** 2, axis=(0, 3)))  # [pol, tile]
+
+        tile_var = np.stack([block_rms(var_amp), block_rms(var_phase)])  # [(amp, phase), pol, tile]
+        typical = np.nanmedian(tile_var, axis=2, keepdims=True)
+        unstable = np.zeros((npol, ntile), dtype=bool)
+        if args.max_variable > 0:
+            unstable = (tile_var > args.max_variable * typical).any(axis=0)
+        fine_amp[unstable] = np.nan
+        fine_phase[unstable] = np.nan
+        var_amp[:, unstable] = np.nan
+        var_phase[:, unstable] = np.nan
+        fitted = np.isfinite(fine_amp).any(axis=2)
+
         def med_rms(a, axes):
             return float(np.nanmedian(np.sqrt(np.nanmean(a ** 2, axis=axes))))
 
+        def line_free(a):
+            return np.array([row - smooth_fit(x, row, args.phase_order) for row in a])
+
         summary = dict(
             nobs=int(nobs), ntiles=int(ntile), nchans=int(nchan),
-            tiles_fitted=[int((seen[p] >= args.min_obs).sum()) for p in range(npol)],
+            tiles_fitted=[int(fitted[p].sum()) for p in range(npol)],
+            # tiles that keep their own solutions: [name, variable amplitude, variable phase in
+            # degrees] (both averaged over variable_chans channels), next to the median over tiles
+            tiles_variable=[
+                [[names[t], float(tile_var[0, p, t]), float(np.degrees(tile_var[1, p, t]))] for t in np.flatnonzero(unstable[p])]
+                for p in range(npol)
+            ],
+            typical_variable=[[float(typical[0, p, 0]), float(np.degrees(typical[1, p, 0]))] for p in range(npol)],
+            max_variable=args.max_variable, variable_chans=args.variable_chans,
+            # the phase all yy terms share against xx, after a line: rms over channels of its
+            # median over the night, and of what is left per observation
+            yy_common_phase_deg=[
+                float(np.degrees(np.nanstd(np.nanmedian(line_free(yy_phase), axis=0)))),
+                med_rms(np.degrees(line_free(yy_phase) - np.nanmedian(line_free(yy_phase), axis=0)), 1),
+            ],
             amp_order=args.amp_order, phase_order=args.phase_order, min_obs=args.min_obs,
             # rms over channels, median over tiles: the night's fine structure, and what varies
             # from one observation to the next (which `apply` removes)
@@ -197,7 +258,7 @@ def night(args):
 
 def apply(args):
     fit = np.load(args.fit)
-    gains, freqs, names, cplx = read_soln(args.soln, args.phase_order)
+    gains, freqs, names, cplx, common_yy = read_soln(args.soln, args.phase_order)
     if len(freqs) != len(fit["freqs"]) or not np.allclose(freqs, fit["freqs"]) or names != [str(n) for n in fit["tiles"]]:
         raise UserWarning(f"{args.soln}: channels or tiles differ from {args.fit}")
     x = freq_axis(freqs)
@@ -219,6 +280,8 @@ def apply(args):
                     if not np.isfinite(new[np.isfinite(gain)]).all():
                         kept += 1
                         continue
+                    if p == 1:
+                        new = new * common_yy[b]
                     # flagged values stay flagged
                     out[b, t, :, col] = np.where(np.isfinite(gain), new, np.nan)
                     fitted += 1

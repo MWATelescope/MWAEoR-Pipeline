@@ -399,8 +399,9 @@ and `kparra_*` set the 1D cuts.
 `calfit` (off by default) replaces the fine frequency structure of each di-cal solution by the
 median over its night per tile and pol (`calNightFit`, `calFitSol`), keeping a smooth polynomial
 per observation, so that sky model errors that a per-channel calibration writes into the gains do
-not reach the calibrated visibilities. Names gain `calfit_name` (`_nfit`); `calfit.tsv` in the
-results dir lists the stable and variable structure of each night.
+not reach the calibrated visibilities. Tiles seen too rarely or whose fine structure changes over
+the night keep their own solutions. Names gain `calfit_name` (`_nfit`); `calfit.tsv` in the
+results dir lists the stable and variable structure of each night and the tiles kept as solved.
 
 `pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
 of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz

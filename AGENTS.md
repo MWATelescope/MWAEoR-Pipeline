@@ -168,10 +168,16 @@ model's incompleteness written into the gains, and it multiplies the brightest f
 `calfit` replaces each observation's fine structure by the median over its night
 (`calNightFit` per night and calibration name, `calFitSol` per observation,
 `templates/calfit.py`), keeps the smooth part per observation, copies the cross terms and keeps
-flags. A tile seen in fewer than 5 observations of the night keeps its own solutions. The fitted
+flags. A tile seen in fewer than 5 observations of the night keeps its own solutions, and so does
+a tile whose fine structure really changes over the night (`--max-variable 1.5`: the variable
+part, averaged over 8 channels, against the median over tiles; on 2025-10-07 four tiles, up to
+3% against 0.8%), because the median of the night describes none of its observations. The YY
+terms of all tiles share a phase per channel against XX (15 degrees rms on 2025-10-07, half of
+it changing per observation; the unpolarised sky hardly constrains it). It cancels in the YY
+visibilities, so YY is fitted without it and it is put back on writing. The fitted
 solutions are `hyp_soln_<obsid>_<name>_nfit.fits` and every later name gains `_nfit`
 (`calfit_name`); the solutions as solved are not applied. `calfit.tsv` lists the stable and
-variable rms per night. The night file name hashes the set of solutions, but the per-observation
+variable rms per night, the tiles kept as solved and the YY common phase. The night file name hashes the set of solutions, but the per-observation
 name does not: if the set of observations of a night changes, delete that night's `_nfit`
 solutions and what was made from them, or use another `calfit_name`. One night needs enough
 observations and pointings for the median to average the sky-dependent part down; a single

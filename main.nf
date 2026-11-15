@@ -5193,6 +5193,9 @@ workflow cal {
                     ([night, name, fitset, stats.nobs, stats.ntiles]
                         + ['tiles_fitted', 'stable_amp', 'stable_phase_deg', 'variable_amp', 'variable_phase_deg']
                             .collectMany { key -> (stats[key] ?: [null, null]).collect { it instanceof Integer ? it : fmt(it) } }
+                        // tiles that keep their own solutions, and the phase of yy against xx
+                        + (stats.tiles_variable ?: [[], []]).collect { tiles -> tiles.collect { it[0] }.join(' ') }
+                        + (stats.yy_common_phase_deg ?: [null, null]).collect { fmt(it) }
                     ).join("\t")
                 }
                 .collectFile(
@@ -5202,6 +5205,7 @@ workflow cal {
                         "FITTED XX", "FITTED YY", "STABLE AMP XX", "STABLE AMP YY",
                         "STABLE PHASE XX", "STABLE PHASE YY", "VAR AMP XX", "VAR AMP YY",
                         "VAR PHASE XX", "VAR PHASE YY",
+                        "KEPT XX", "KEPT YY", "YY COMMON PHASE", "YY COMMON PHASE VAR",
                     ].join("\t"),
                     storeDir: "${results_dir()}${params.cal_suffix}"
                 )
