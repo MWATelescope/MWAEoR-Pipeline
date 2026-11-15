@@ -183,6 +183,11 @@ solutions and what was made from them, or use another `calfit_name`. One night n
 observations and pointings for the median to average the sky-dependent part down; a single
 pointing would keep much of it.
 
+On the command line, do not follow a bare flag by an option whose value holds a space:
+`--calfit --calfit_args='--max-variable 2'` sets `calfit` to that string and leaves `calfit_args`
+empty (Nextflow takes the token as the value of the flag before it). Write `--calfit=true`, or
+put an option without a space in between. The same holds for every boolean param.
+
 ### Night-level bayesian-rfi time mask (`--brfi_apply`)
 
 Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS
