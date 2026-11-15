@@ -152,6 +152,31 @@ with `--apply_pair_timesteps`. The band below the TV channels (167-174 MHz) also
 observations; the gate reads all bands. A significantly negative band in a combine means look
 here first, then at the difference grid per coarse channel.
 
+### Gain structure that follows the sky (`--calfit`)
+
+With the flicker observations out, a ten-night combine (366 obs) is limited by residual power, not
+noise: +2 to +9 sigma in YY at k_parallel 0.24 to 0.35, strongest on the shortest baselines, falling
+with k_parallel, different from night to night, no peak at the coarse channel harmonic. The di-cal
+solutions are solved per 80 kHz channel and applied as solved. Split into (smooth polynomial) x
+(fine structure) per tile and pol, the fine structure of a night (2025-10-07, 59 obs) has a stable
+part (1.5% in amplitude, the 150 m cable reflection, same in both pols) and a part that changes
+from one observation to the next: 0.6% beyond thermal noise, correlated at +0.75 between
+observations 2 minutes apart at one pointing, gone after 15 minutes or a pointing change, with a
+delay spectrum that falls to the noise floor near 0.75 us like the excess does. That is the sky
+model's incompleteness written into the gains, and it multiplies the brightest foregrounds.
+
+`calfit` replaces each observation's fine structure by the median over its night
+(`calNightFit` per night and calibration name, `calFitSol` per observation,
+`templates/calfit.py`), keeps the smooth part per observation, copies the cross terms and keeps
+flags. A tile seen in fewer than 5 observations of the night keeps its own solutions. The fitted
+solutions are `hyp_soln_<obsid>_<name>_nfit.fits` and every later name gains `_nfit`
+(`calfit_name`); the solutions as solved are not applied. `calfit.tsv` lists the stable and
+variable rms per night. The night file name hashes the set of solutions, but the per-observation
+name does not: if the set of observations of a night changes, delete that night's `_nfit`
+solutions and what was made from them, or use another `calfit_name`. One night needs enough
+observations and pointings for the median to average the sky-dependent part down; a single
+pointing would keep much of it.
+
 ### Night-level bayesian-rfi time mask (`--brfi_apply`)
 
 Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS

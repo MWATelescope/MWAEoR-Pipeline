@@ -1974,6 +1974,57 @@ process hypCalSol {
 //     """
 // }
 
+// the night of an observation: its utc date (an MWA night does not cross 00:00 utc)
+def obsNight(obsid, meta) {
+    def start = meta.starttime_utc ?: ''
+    if (start.size() >= 10) {
+        return start.substring(0, 10)
+    }
+    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd")
+    fmt.setTimeZone(TimeZone.getTimeZone("UTC"))
+    fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
+}
+
+// median fine frequency structure of the solutions of a night, per tile and pol
+// (templates/calfit.py, see calfit in nextflow.config)
+process calNightFit {
+    storeDir "${results_dir()}/calfit"
+    tag "${fitset}.${name}"
+    label "python"
+    time { params.scratchFactor * 1.hour }
+
+    input:
+    tuple val(night), val(name), val(fitset), path(solns)
+    output:
+    tuple val(night), val(name), val(fitset), path(fit), path(fit_json)
+
+    script:
+    fit = ''+"calfit_${name}_${fitset}.npz"
+    fit_json = ''+"calfit_${name}_${fitset}.json"
+    args = ''+"night --out ${fit} --json ${fit_json} ${params.calfit_args} --solns ${coerceList(solns).join(' ')}"
+    template "calfit.py"
+}
+
+// solutions of one observation with their fine frequency structure replaced by the night's.
+// meta.name gains the calfit name, so everything made from these solutions is kept apart.
+process calFitSol {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.dical_name}"
+    label "python"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta_), path(soln), path(fit)
+    output:
+    tuple val(obsid), val(meta), path(fit_soln)
+
+    script:
+    meta = mapMerge(meta_, [name: ''+"${meta_.name}_${params.calfit_name}", calfit: true])
+    fit_soln = ''+"${soln.baseName}_${params.calfit_name}.fits"
+    args = ''+"apply --soln ${soln} --fit ${fit} --out ${fit_soln} ${params.calfit_args}"
+    template "calfit.py"
+}
+
 // do fourier fit of calibration solution phases
 // meta is a map containing calibration solution metadata, fields:
 // - name: name of the calibration (dical_name)
@@ -5120,8 +5171,53 @@ workflow cal {
 
         // generate json from solns and fit phases
         eachCal | (solJson & phaseFit)
+
+        // replace the fine frequency structure of each solution by that of its night: the
+        // solutions as solved are then not applied
+        if (params.calfit) {
+            nightCal = eachCal.map { obsid, meta, soln -> [[obsNight(obsid, meta), meta.name], obsid, meta, soln] }
+            nightCal.groupTuple(by: 0)
+                .map { key, _obsids, _metas, solns ->
+                    def (night, name) = key
+                    def names = solns.collect { it.name }.sort()
+                    // the median depends on the set of observations and on the settings
+                    def hash = (names + [params.calfit_args ?: '']).join(' ').md5()[0..7]
+                    [night, name, ''+"${night}_n${names.size()}_${hash}", solns]
+                }
+                | calNightFit
+
+            calNightFit.out
+                .map { night, name, fitset, _fit, fit_json ->
+                    def stats = parseJson(fit_json)
+                    def fmt = { x -> x == null ? 'nan' : String.format('%.4f', x as double) }
+                    ([night, name, fitset, stats.nobs, stats.ntiles]
+                        + ['tiles_fitted', 'stable_amp', 'stable_phase_deg', 'variable_amp', 'variable_phase_deg']
+                            .collectMany { key -> (stats[key] ?: [null, null]).collect { it instanceof Integer ? it : fmt(it) } }
+                    ).join("\t")
+                }
+                .collectFile(
+                    name: "calfit.tsv", newLine: true, sort: true,
+                    seed: [
+                        "NIGHT", "CAL NAME", "FITSET", "SOLNS", "TILES",
+                        "FITTED XX", "FITTED YY", "STABLE AMP XX", "STABLE AMP YY",
+                        "STABLE PHASE XX", "STABLE PHASE YY", "VAR AMP XX", "VAR AMP YY",
+                        "VAR PHASE XX", "VAR PHASE YY",
+                    ].join("\t"),
+                    storeDir: "${results_dir()}${params.cal_suffix}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+
+            nightCal.combine(calNightFit.out.map { night, name, _fitset, fit, _json -> [[night, name], fit] }, by: 0)
+                .map { _key, obsid, meta, soln, fit -> [obsid, meta, soln, fit] }
+                | calFitSol
+            appliedCal = calFitSol.out
+        } else {
+            appliedCal = eachCal
+        }
+
         // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
-        allCal = eachCal.mix(
+        allCal = appliedCal.mix(
             phaseFit.out.map { obsid, meta, soln -> [obsid, meta, soln] }
         )
 
