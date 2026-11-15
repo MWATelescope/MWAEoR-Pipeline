@@ -169,9 +169,12 @@ model's incompleteness written into the gains, and it multiplies the brightest f
 (`calNightFit` per night and calibration name, `calFitSol` per observation,
 `templates/calfit.py`), keeps the smooth part per observation, copies the cross terms and keeps
 flags. A tile seen in fewer than 5 observations of the night keeps its own solutions, and so does
-a tile whose fine structure really changes over the night (`--max-variable 1.5`: the variable
-part, averaged over 8 channels, against the median over tiles; on 2025-10-07 four tiles, up to
-3% against 0.8%), because the median of the night describes none of its observations. The YY
+a tile whose fine structure really changes over the night (`--max-variable 2`: the variable
+part, averaged over 8 channels, against the median over tiles), because the median of the night
+describes none of its observations. On 2025-10-07 that keeps Tile036, Tile086 and HexE11 in XX
+(2.9 to 5.1 times the typical tile) and Tile087 in YY; at 1.5 it kept 13 and 7 tiles, a tail at
+1.4 to 2 times typical that is the sky-dependent structure the fit should remove. Over ten nights
+at 2.0 a night keeps 2 to 7 tiles per pol, the same few tiles recurring. The YY
 terms of all tiles share a phase per channel against XX (15 degrees rms on 2025-10-07, half of
 it changing per observation; the unpolarised sky hardly constrains it). It cancels in the YY
 visibilities, so YY is fitted without it and it is put back on writing. The fitted

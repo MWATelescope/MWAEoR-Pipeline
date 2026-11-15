@@ -61,7 +61,7 @@ def parse_args(argv=None):
     for p in (night, apply):
         p.add_argument('--min-obs', type=int, default=5, help='observations a tile needs for a median')
         p.add_argument(
-            '--max-variable', type=float, default=1.5,
+            '--max-variable', type=float, default=2.0,
             help='a tile and pol keeps its own solutions when the part of its fine structure that varies over '
             'the night, averaged over --variable-chans channels, exceeds this many times the median over tiles '
             '(amplitude or phase). 0 to fit every tile',
