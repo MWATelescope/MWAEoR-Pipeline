@@ -1944,20 +1944,21 @@ def obsNight(obsid, meta) {
     fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
 }
 
-// the set of observations calfit takes one median over (calfit_group): the utc night, or the
-// night and pointing (web-service az/el, as in workflow brfiFlag)
-def calfitGroup(obsid, meta) {
+// the set of observations calfit takes one median over (group, by default calfit_group): the
+// utc night, or the night and pointing (web-service az/el, as in workflow brfiFlag)
+def calfitGroup(obsid, meta, group = null) {
+    group = group ?: params.calfit_group
     def night = obsNight(obsid, meta)
-    if (params.calfit_group == 'night') {
+    if (group == 'night') {
         return night
     }
-    if (params.calfit_group != 'pointing') {
-        throw new IllegalArgumentException(''+"calfit_group must be night or pointing, not ${params.calfit_group}")
+    if (group != 'pointing') {
+        throw new IllegalArgumentException(''+"calfit_group must be night, pointing or hybrid, not ${group}")
     }
     def az = meta.az_pointing
     def el = meta.el_pointing
     if (az == null || el == null || isNaN(az) || isNaN(el)) {
-        throw new IllegalStateException(''+"calfit_group=pointing: no az_pointing, el_pointing in the metadata of ${obsid}")
+        throw new IllegalStateException(''+"calfit per pointing: no az_pointing, el_pointing in the metadata of ${obsid}")
     }
     ''+"${night}_az${String.format('%.1f', az as double)}el${String.format('%.1f', el as double)}"
 }
@@ -1991,14 +1992,16 @@ process calFitSol {
     time { params.scratchFactor * 15.minute }
 
     input:
-    tuple val(obsid), val(meta_), path(soln), path(fit)
+    // fallback: the fit of the observation's pointing for calfit_group=hybrid, else []
+    tuple val(obsid), val(meta_), path(soln), path(fit), path(fallback)
     output:
     tuple val(obsid), val(meta), path(fit_soln)
 
     script:
     meta = mapMerge(meta_, [name: ''+"${meta_.name}_${params.calfit_name}", calfit: true])
     fit_soln = ''+"${soln.baseName}_${params.calfit_name}.fits"
-    args = ''+"apply --soln ${soln} --fit ${fit} --out ${fit_soln} ${params.calfit_args}"
+    fallback_arg = fallback ? ''+"--fallback ${fallback}" : ''
+    args = ''+"apply --soln ${soln} --fit ${fit} --out ${fit_soln} ${fallback_arg} ${params.calfit_args}"
     template "calfit.py"
 }
 
@@ -5213,8 +5216,14 @@ workflow cal {
         // replace the fine frequency structure of each solution by that of its night: the
         // solutions as solved are then not applied
         if (params.calfit) {
-            nightCal = eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta), meta.name], obsid, meta, soln] }
-            nightCal.groupTuple(by: 0)
+            // hybrid: the night median, and for the tiles it keeps as solved that of the pointing
+            def fallbackGroup = params.calfit_group == 'hybrid' ? 'pointing' : null
+            def primaryGroup = fallbackGroup ? 'night' : params.calfit_group
+            nightCal = eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta, primaryGroup), meta.name], obsid, meta, soln] }
+            pointingCal = fallbackGroup
+                ? eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta, fallbackGroup), meta.name], obsid, meta, soln] }
+                : channel.empty()
+            nightCal.mix(pointingCal).groupTuple(by: 0)
                 .map { key, _obsids, _metas, solns ->
                     def (night, name) = key
                     def names = solns.collect { it.name }.sort()
@@ -5254,15 +5263,21 @@ workflow cal {
 
             // an observation whose solutions differ from the rest of its night (calfit.py
             // --max-obs-variable) is left out of the median and is not applied: listed in calfit.tsv
-            nightCal.combine(
-                    calNightFit.out.map { night, name, _fitset, fit, fit_json ->
-                        [[night, name], fit, (parseJson(fit_json).obs_outliers ?: []) as Set]
-                    },
-                    by: 0
-                )
+            nightFits = calNightFit.out.map { night, name, _fitset, fit, fit_json ->
+                [[night, name], fit, (parseJson(fit_json).obs_outliers ?: []) as Set]
+            }
+            fitCal = nightCal.combine(nightFits, by: 0)
                 .filter { _key, _obsid, _meta, soln, _fit, outliers -> !(soln.name in outliers) }
                 .map { _key, obsid, meta, soln, fit, _outliers -> [obsid, meta, soln, fit] }
-                | calFitSol
+            if (fallbackGroup) {
+                fitCal = fitCal
+                    .map { obsid, meta, soln, fit -> [[calfitGroup(obsid, meta, fallbackGroup), meta.name], obsid, meta, soln, fit] }
+                    .combine(nightFits, by: 0)
+                    .map { _key, obsid, meta, soln, fit, fallback, _outliers -> [obsid, meta, soln, fit, fallback] }
+            } else {
+                fitCal = fitCal.map { obsid, meta, soln, fit -> [obsid, meta, soln, fit, []] }
+            }
+            fitCal | calFitSol
             appliedCal = calFitSol.out
         } else {
             appliedCal = eachCal

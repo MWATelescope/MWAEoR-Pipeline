@@ -176,8 +176,12 @@ name does not: if the set of observations of a night changes, delete that night'
 solutions and what was made from them, or use another `calfit_name`. One night needs enough
 observations and pointings for the median to average the sky-dependent part down; a single
 pointing would keep much of it. `--calfit_group=pointing` takes the median per pointing of a night instead, for
-structure that changes with the beamformer delays (Tile086 on 2025-10-07); test it against the
-night median, and for signal loss, before using it.
+structure that changes with the beamformer delays (Tile086 on 2025-10-07). On 2025-10-07 it fixes
+Tile086, Tile036 and HexE11 but is worse for every other tile: a median of 3 to 15 observations
+keeps more noise, and the gain error at k_parallel 0.24 to 0.35 rises (XX 0.72 to 0.86, YY 0.98 to
+1.15 of the part a night median removes). `--calfit_group=hybrid` takes the night median and, for
+the tiles and pols it keeps as solved, the median of their pointing (`calfit.py apply --fallback`;
+the FITS header gets CALFITF, the tile pols fitted from it). Test both for signal loss before use.
 
 On the command line, do not follow a bare flag by an option whose value holds a space:
 `--calfit --calfit_args='--max-variable 2'` sets `calfit` to that string and leaves `calfit_args`

@@ -405,6 +405,8 @@ per observation, so that sky model errors that a per-channel calibration writes 
 not reach the calibrated visibilities. Tiles seen too rarely or whose fine structure changes over
 the night keep their own solutions. Names gain `calfit_name` (`_nfit`); `calfit.tsv` in the
 results dir lists the stable and variable structure of each night and the tiles kept as solved.
+`calfit_group` takes the median per `night` (default), per `pointing` of a night, or `hybrid`: the
+night median, and the pointing median for the tiles the night keeps as solved.
 
 `pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
 of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz

@@ -29,6 +29,11 @@ Flagged (NaN) values stay NaN. A tile keeps its own solutions when it is seen in
 --min-obs observations of the night, or when its fine structure changes over the night
 (--max-variable): for such a tile the median of the night describes no single observation.
 
+With --fallback, a tile and pol that the --fit file keeps as solved takes its fine structure
+from a second night file instead, made over a smaller set (one pointing of the night). That
+serves the few tiles whose structure follows the beamformer delays, while every other tile keeps
+the median of the whole night, which averages more observations down.
+
 example:
     python templates/calfit.py night --out calfit_night.npz --json calfit_night.json --solns hyp_soln_*.fits
     python templates/calfit.py apply --soln hyp_soln_1443896016_30l.fits --fit calfit_night.npz --out hyp_soln_1443896016_30l_nfit.fits
@@ -58,6 +63,11 @@ def parse_args(argv=None):
     apply.add_argument('--soln', required=True)
     apply.add_argument('--fit', required=True, help='npz from the night mode')
     apply.add_argument('--out', required=True, help='output solutions')
+    apply.add_argument(
+        '--fallback', default=None,
+        help='npz from the night mode over another set (e.g. one pointing of the night): its fine structure '
+        'is used for the tiles and pols that --fit keeps as solved',
+    )
     # the same options for both, so that one set of args serves both. apply uses the orders only
     for p in (night, apply):
         p.add_argument('--min-obs', type=int, default=5, help='observations a tile needs for a median')
@@ -298,8 +308,13 @@ def apply(args):
     gains, freqs, names, cplx, common_yy = read_soln(args.soln, args.phase_order)
     if len(freqs) != len(fit["freqs"]) or not np.allclose(freqs, fit["freqs"]) or names != [str(n) for n in fit["tiles"]]:
         raise UserWarning(f"{args.soln}: channels or tiles differ from {args.fit}")
+    fallback = None
+    if args.fallback:
+        fallback = np.load(args.fallback)
+        if len(freqs) != len(fallback["freqs"]) or not np.allclose(freqs, fallback["freqs"]) or names != [str(n) for n in fallback["tiles"]]:
+            raise UserWarning(f"{args.soln}: channels or tiles differ from {args.fallback}")
     x = freq_axis(freqs)
-    fitted = kept = 0
+    fitted = kept = from_fallback = 0
     out = cplx.copy()  # [timeblock, tile, chan, (xx, xy, yx, yy)], common phase removed
     with np.errstate(invalid="ignore", divide="ignore"):
         for p, col in enumerate((0, 3)):
@@ -309,6 +324,12 @@ def apply(args):
                     fine_amp, fine_phase = fit["fine_amp"][p, t], fit["fine_phase"][p, t]
                     if not np.isfinite(gain).any():
                         continue
+                    use_fallback = (
+                        fallback is not None and not np.isfinite(fine_amp).any()
+                        and np.isfinite(fallback["fine_amp"][p, t]).any()
+                    )
+                    if use_fallback:
+                        fine_amp, fine_phase = fallback["fine_amp"][p, t], fallback["fine_phase"][p, t]
                     if not np.isfinite(fine_amp).any():
                         kept += 1
                         continue
@@ -322,6 +343,7 @@ def apply(args):
                     # flagged values stay flagged
                     out[b, t, :, col] = np.where(np.isfinite(gain), new, np.nan)
                     fitted += 1
+                    from_fallback += int(use_fallback)
     jones = np.empty(out.shape[:-1] + (8,))
     jones[..., 0::2] = out.real
     jones[..., 1::2] = out.imag
@@ -330,8 +352,11 @@ def apply(args):
         hdul[0].header["CALFIT"] = (str(args.fit).split("/")[-1][:60], "fine structure of the night")
         hdul[0].header["CALFITN"] = (fitted, "tile pols fitted")
         hdul[0].header["CALFITK"] = (kept, "tile pols kept as solved")
+        if args.fallback:
+            hdul[0].header["CALFITB"] = (str(args.fallback).split("/")[-1][:60], "fine structure for tiles --fit keeps")
+            hdul[0].header["CALFITF"] = (from_fallback, "tile pols fitted from the fallback")
         hdul.writeto(args.out, overwrite=True)
-    print(json.dumps(dict(soln=args.soln, out=args.out, fitted=fitted, kept=kept)))
+    print(json.dumps(dict(soln=args.soln, out=args.out, fitted=fitted, kept=kept, from_fallback=from_fallback)))
 
 
 def main():
