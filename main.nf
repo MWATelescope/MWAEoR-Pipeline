@@ -2838,6 +2838,14 @@ process chipsGrid {
     echo "hashes" >> ${details}
     sha1sum {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${ext}.dat | tee -a ${details}
     tar -zcvf "${grid}" ${details} {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${ext}.dat
+    export ps=\$?
+    if [ \${ps} -ne 0 ]; then
+        echo "tar failed. status=\${ps}"
+        exit \${ps}
+    fi
+    # the tarball is the only output. Without node-local scratch the task directory is on a
+    # shared filesystem, where the uncompressed grids (about 90 GB per task) would stay behind.
+    find . -maxdepth 1 -type f -name '*.dat' -delete
     exit 0
     """
 }
@@ -2927,6 +2935,14 @@ EOF
     echo "hashes" >> ${details}
     sha1sum {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat | tee -a ${details}
     tar -zcvf "${grid}" ${details} {vis_tot,vis_diff,noise_tot,noise_diff,weights}_${pol}.${combined_ext}.dat
+    export ps=\$?
+    if [ \${ps} -ne 0 ]; then
+        echo "tar failed. status=\${ps}"
+        exit \${ps}
+    fi
+    # as in chipsGrid: the tarball is the only grid output, so do not leave the unpacked per-obs
+    # grids and the combined grids (about 9 GB per obs) in a task directory on a shared filesystem.
+    find . -maxdepth 1 -type f -name '*.dat' -delete
     exit 0
     """
 }
@@ -5207,8 +5223,9 @@ workflow uvfits {
                 | view { [it, it.readLines().size()] }
 
             psMeta = psMetrics.out
-                // filter out pol != xx
-                .filter { _o, meta, _dat -> meta.pol == 'xx' }
+                // the gates below read one pol (xx unless params.filter_ps_pol says otherwise)
+                // and pass or fail the visibility in both pols
+                .filter { _o, meta, _dat -> meta.pol == (params.filter_ps_pol ?: 'xx') }
                 // add ps_metrics values to vis meta
                 .map { obsid, meta, dat ->
                     def (p_wedge, num_cells, p_window) = dat.getText().split('\n')[0].split(' ')[1..-1]

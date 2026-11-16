@@ -412,23 +412,26 @@ def prepqa_pass(flagMeta) {
 def calqa_pass(meta) {
     def reasons = []
     def fail_code = 0
-    if (params.filter_max_rms_convg != null && meta.rms_convg != null) {
-        if (meta.rms_convg > params.filter_max_rms_convg) {
-            reasons += "rms_convg(${meta.rms_convg}) > ${params.filter_max_rms_convg}"
-            fail_code = fail_code == 0 ? 64 : fail_code
+    // a gate that is set fails an obs whose metric is NaN or missing: a solution that is all NaN
+    // gives NaN metrics, and NaN > max is false, so it used to pass every gate
+    def gate = { String key, max, int code ->
+        if (max == null) { return }
+        def value = meta[key]
+        if (isNaN(value) || (value as double) > (max as double)) {
+            reasons += ''+"${key}(${value}) > ${max}"
+            fail_code = fail_code == 0 ? code : fail_code
         }
     }
-    if (params.filter_max_unused_bl_frac != null && meta.unused_bl_frac != null) {
-        if (meta.unused_bl_frac > params.filter_max_unused_bl_frac) {
-            reasons += "unused_bl_frac(${meta.unused_bl_frac}) > ${params.filter_max_unused_bl_frac}"
-            fail_code = fail_code == 0 ? 65 : fail_code
-        }
-    }
-    if (params.filter_max_unconvg_chs != null && meta.unconvg_chs != null) {
-        if (meta.unconvg_chs > params.filter_max_unconvg_chs) {
-            reasons += "unconvg_chs(${meta.unconvg_chs}) > ${params.filter_max_unconvg_chs}"
-            fail_code = fail_code == 0 ? 66 : fail_code
-        }
+    gate('rms_convg', params.filter_max_rms_convg, 64)
+    // the metric is stored as unused_bls (fraction); this used to read unused_bl_frac, never set
+    gate('unused_bls', params.filter_max_unused_bl_frac, 65)
+    gate('unconvg_chs', params.filter_max_unconvg_chs, 66)
+    // skewness of the gain amplitudes (calQA): about 1.7 for a normal eor1high obs, under 0.6 for
+    // the few whose solutions differ from the rest of their night while converging normally
+    def min_skew = params.filter_min_cal_skewness
+    if (min_skew != null && (isNaN(meta.skewness) || (meta.skewness as double) < (min_skew as double))) {
+        reasons += ''+"skewness(${meta.skewness}) < ${min_skew}"
+        fail_code = fail_code == 0 ? 69 : fail_code
     }
     def reason = null
     if (reasons.size() > 0) {
@@ -806,8 +809,9 @@ def wsSummarize(_obsid, wsJson, filesJson, tapJson, quality_update, manualAnts) 
     }
     dec_phase_center = wrap_angle(dec_phase_center)
 
-    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing ?: Float.NaN
-    az_pointing = wrap_angle(az_pointing)
+    // not `?: Float.NaN`: an azimuth of 0 (zenith) is false in groovy
+    def az_pointing = (wsStats.metadata ?: [:]).azimuth_pointing
+    az_pointing = az_pointing == null ? Float.NaN : wrap_angle(az_pointing)
     def el_pointing = (wsStats.metadata ?: [:]).elevation_pointing
     def ew_pointing = null
     // pointings: east-west vs EOR1 vs sweet:
