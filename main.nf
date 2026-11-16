@@ -1944,6 +1944,24 @@ def obsNight(obsid, meta) {
     fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
 }
 
+// the set of observations calfit takes one median over (calfit_group): the utc night, or the
+// night and pointing (web-service az/el, as in workflow brfiFlag)
+def calfitGroup(obsid, meta) {
+    def night = obsNight(obsid, meta)
+    if (params.calfit_group == 'night') {
+        return night
+    }
+    if (params.calfit_group != 'pointing') {
+        throw new IllegalArgumentException(''+"calfit_group must be night or pointing, not ${params.calfit_group}")
+    }
+    def az = meta.az_pointing
+    def el = meta.el_pointing
+    if (az == null || el == null || isNaN(az) || isNaN(el)) {
+        throw new IllegalStateException(''+"calfit_group=pointing: no az_pointing, el_pointing in the metadata of ${obsid}")
+    }
+    ''+"${night}_az${String.format('%.1f', az as double)}el${String.format('%.1f', el as double)}"
+}
+
 // median fine frequency structure of the solutions of a night, per tile and pol
 // (templates/calfit.py, see calfit in nextflow.config)
 process calNightFit {
@@ -5195,7 +5213,7 @@ workflow cal {
         // replace the fine frequency structure of each solution by that of its night: the
         // solutions as solved are then not applied
         if (params.calfit) {
-            nightCal = eachCal.map { obsid, meta, soln -> [[obsNight(obsid, meta), meta.name], obsid, meta, soln] }
+            nightCal = eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta), meta.name], obsid, meta, soln] }
             nightCal.groupTuple(by: 0)
                 .map { key, _obsids, _metas, solns ->
                     def (night, name) = key
