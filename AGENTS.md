@@ -175,7 +175,7 @@ describes none of its observations. On 2025-10-07 that keeps Tile036, Tile086 an
 (2.9 to 5.1 times the typical tile) and Tile087 in YY; at 1.5 it kept 13 and 7 tiles, a tail at
 1.4 to 2 times typical that is the sky-dependent structure the fit should remove. Over ten nights
 at 2.0 a night keeps 2 to 7 tiles per pol, the same few tiles recurring. An observation whose
-solutions differ from the rest of its night across most tiles (`--max-obs-variable 3`: the median
+solutions differ from the rest of its night across most tiles (`--max-obs-variable 5`: the median
 over tiles of its variable amplitude against the median over observations) is left out of the
 median and not applied; `calfit.tsv` lists it under OUTLIER SOLNS. Five such obs in batch 3
 (5 to 46% against a normal 0.3 to 0.9%) made their nights keep 26 to 42 tiles. The YY

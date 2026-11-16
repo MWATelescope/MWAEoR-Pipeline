@@ -69,7 +69,7 @@ def parse_args(argv=None):
         )
         p.add_argument('--variable-chans', type=int, default=8, help='channels averaged for --max-variable')
         p.add_argument(
-            '--max-obs-variable', type=float, default=3.0,
+            '--max-obs-variable', type=float, default=5.0,
             help='an observation is left out of the night median, and listed as an outlier, when the median over '
             'tiles of its variable amplitude (averaged over --variable-chans channels) exceeds this many times the '
             'median over observations. 0 to keep every observation',
