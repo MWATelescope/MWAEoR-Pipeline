@@ -1542,7 +1542,11 @@ process brfiWeights {
     tag "${base}"
     label "python"
     label "nvme"
-    time { params.scratchFactor * 15.minute }
+    // memmap read of the whole file: slow when the filesystem is loaded, so retry a timeout (140)
+    // with a longer limit rather than silently dropping the obs from apply_pair_timesteps
+    time { params.scratchFactor * 15.minute * Math.pow(2, task.attempt - 1) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
 
     input:
     tuple val(obsid), val(meta), path(uvfits)
@@ -1564,7 +1568,11 @@ process applyWeights {
     tag "${base}"
     label "python"
     label "nvme"
-    time { params.scratchFactor * 15.minute }
+    // memmap read of the whole file: slow when the filesystem is loaded, so retry a timeout (140)
+    // with a longer limit rather than silently dropping the obs from apply_pair_timesteps
+    time { params.scratchFactor * 15.minute * Math.pow(2, task.attempt - 1) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
 
     input:
     tuple val(obsid), val(meta), path(uvfits)
