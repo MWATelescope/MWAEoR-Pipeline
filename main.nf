@@ -1559,67 +1559,7 @@ process brfiWeights {
     base = uvfits.baseName
     weights = "${base}_time_weights.json"
     args = "--uvfits ${uvfits} --out ${weights}"
-    template "brfi_weights.py"
-}
-
-// the same for the vis that calibration is applied to (see apply_pair_timesteps)
-process applyWeights {
-    storeDir "${params.outdir}/${obsid}/prep_qa"
-    tag "${base}"
-    label "python"
-    label "nvme"
-    // memmap read of the whole file: slow when the filesystem is loaded, so retry a timeout (140)
-    // with a longer limit rather than silently dropping the obs from apply_pair_timesteps
-    time { params.scratchFactor * 15.minute * Math.pow(2, task.attempt - 1) }
-    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
-    maxRetries 2
-
-    input:
-    tuple val(obsid), val(meta), path(uvfits)
-    output:
-    tuple val(obsid), val(meta), path(weights)
-
-    when: params.apply_pair_timesteps
-
-    script:
-    base = uvfits.baseName
-    weights = "${base}_time_weights.json"
-    args = "--uvfits ${uvfits} --out ${weights}"
-    template "brfi_weights.py"
-}
-
-// CHIPS grids the timesteps of a calibrated vis in fixed pairs (0,1), (2,3).. and only the
-// visibilities whose two weights are equal; a timestep without such a partner is lost. Returns
-// [first input timestep to apply, complete pairs it gives, complete pairs when starting at 0]: the
-// start that gives CHIPS the most complete pairs, given the mean weight of each input timestep
-// (templates/brfi_weights.py) and how many of them are averaged into one output timestep.
-// A timestep is whole when its weight is within 1% of the median of the unflagged ones.
-def pairStart(List weights, int factor) {
-    def w = weights.collect { it as double }
-    def pos = w.findAll { it > 0 }.sort()
-    if (!pos) {
-        return [0, 0, 0]
-    }
-    def med = pos[pos.size().intdiv(2)]
-    def whole = w.collect { Math.abs(it - med) <= 0.01 * med }
-    def pairsFrom = { int start ->
-        def groups = []
-        for (int a = start; a + factor <= whole.size(); a += factor) {
-            groups << whole.subList(a, a + factor).every { it }
-        }
-        def pairs = 0
-        for (int g = 0; g + 1 < groups.size(); g += 2) {
-            if (groups[g] && groups[g + 1]) { pairs++ }
-        }
-        pairs
-    }
-    def first = whole.indexOf(true)
-    def best = [0, pairsFrom(0)]
-    (first..<Math.min(first + 2 * factor, whole.size())).each { start ->
-        def pairs = pairsFrom(start)
-        if (pairs > best[1]) { best = [start, pairs] }
-    }
-    best + [pairsFrom(0)]
+    template "time_weights.py"
 }
 
 // name of the vis flagged by workflow brfiFlag: `brfi` and a hash of every setting of the fits and
@@ -2079,6 +2019,66 @@ process phaseFit {
 // }
 
 // ensure calibrated uvfits are present, or apply calsols to prep uvfits with hyperdrive
+// the mean weight of every timestep of the vis that calibration is applied to (see
+// apply_pair_timesteps). A memmap read of the file: slow when the filesystem is loaded, so a
+// timeout (140) is retried with a longer limit rather than leaving the obs out of the pairing
+process applyWeights {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "nvme"
+    time { params.scratchFactor * 15.minute * Math.pow(2, task.attempt - 1) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(weights)
+
+    when: params.apply_pair_timesteps
+
+    script:
+    base = uvfits.baseName
+    weights = "${base}_time_weights.json"
+    args = "--uvfits ${uvfits} --out ${weights}"
+    template "time_weights.py"
+}
+
+// CHIPS grids the timesteps of a calibrated vis in fixed pairs (0,1), (2,3).. and only the
+// visibilities whose two weights are equal; a timestep without such a partner is lost. Returns
+// [first input timestep to apply, complete pairs it gives, complete pairs when starting at 0]: the
+// start that gives CHIPS the most complete pairs, given the mean weight of each input timestep
+// (templates/time_weights.py) and how many of them are averaged into one output timestep.
+// A timestep is whole when its weight is within 1% of the median of the unflagged ones.
+def pairStart(List weights, int factor) {
+    def w = weights.collect { it as double }
+    def pos = w.findAll { it > 0 }.sort()
+    if (!pos) {
+        return [0, 0, 0]
+    }
+    def med = pos[pos.size().intdiv(2)]
+    def whole = w.collect { Math.abs(it - med) <= 0.01 * med }
+    def pairsFrom = { int start ->
+        def groups = []
+        for (int a = start; a + factor <= whole.size(); a += factor) {
+            groups << whole.subList(a, a + factor).every { it }
+        }
+        def pairs = 0
+        for (int g = 0; g + 1 < groups.size(); g += 2) {
+            if (groups[g] && groups[g + 1]) { pairs++ }
+        }
+        pairs
+    }
+    def first = whole.indexOf(true)
+    def best = [0, pairsFrom(0)]
+    (first..<Math.min(first + 2 * factor, whole.size())).each { start ->
+        def pairs = pairsFrom(start)
+        if (pairs > best[1]) { best = [start, pairs] }
+    }
+    best + [pairsFrom(0)]
+}
+
 // meta is a map containing calibration solution metadata, fields:
 // - name: unique name of the calibration ((poly_)?$dical_name)
 // - apply_name: name of the apply arguments used

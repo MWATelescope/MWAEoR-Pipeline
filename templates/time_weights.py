@@ -3,17 +3,17 @@
 """
 Mean visibility weight of every timestep of a uvfits file.
 
-The incoherent noise spectrum (INS) of time-differenced visibilities is only comparable between
-samples when both timesteps of a difference hold the same weight. A timestep that was averaged from
-fewer native samples (the first timestep of an observation, when its first native sample is
-flagged) has more noise, and its difference stands out without any RFI. The INS file holds baseline
-counts, not weights, so brfi_fit.py takes the weights from here and leaves such differences out.
+CHIPS grids the timesteps of a calibrated vis in pairs and only where the two weights are equal, so
+apply_pair_timesteps needs the weight of every timestep of the vis it applies to. A timestep that
+was averaged from fewer native samples (the first timestep of an observation, when its first native
+sample is flagged) has a lower weight than the rest. brfi_fit.py uses the same weights to leave
+out time differences between timesteps of unequal weight, which stand out in the INS without RFI.
 
 Reads a sample of the visibilities (about `--rows` baselines-times, every `--chan-step`th channel)
 straight from the random groups, without loading the file.
 
 example:
-    python templates/brfi_weights.py --uvfits birli_1472670968_8s_80kHz.uvfits --out birli_1472670968_8s_80kHz_time_weights.json
+    python templates/time_weights.py --uvfits birli_1472670968_8s_80kHz.uvfits --out birli_1472670968_8s_80kHz_time_weights.json
 """
 
 import json

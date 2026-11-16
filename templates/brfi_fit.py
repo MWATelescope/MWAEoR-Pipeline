@@ -51,7 +51,7 @@ def parse_args(argv=None):
     parser.add_argument('--rescale-noise', type=float, default=0.335)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--weight-tol', type=float, default=0.01,
-                        help='leave out a difference when the weight of either of its timesteps (brfi_weights.py) '
+                        help='leave out a difference when the weight of either of its timesteps (time_weights.py) '
                              'is further than this fraction from the median of its observation')
     parser.add_argument('--brfi-src', help='a bayesian-rfi checkout, if mixture_model is not already importable')
     return parser.parse_args(argv)

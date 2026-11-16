@@ -114,20 +114,6 @@ Put the launch command and the list of intended differences in the conf header. 
 `eor0low-solint40s.conf` (di-cal solution interval), the removed `eor0low-ionosel-*.conf` at
 commit `e6d8af0` (peel args), the Fornax A model test (`dical_name` + `result_suffix`).
 
-### CHIPS grids timesteps in pairs (`--apply_pair_timesteps`)
-
-`gridvisdiff` reads a calibrated uvfits two timesteps at a time, (0,1), (2,3).., and grids a
-visibility only when the weights of the two timesteps are exactly equal and positive. A last odd
-timestep is never gridded. So a first timestep averaged from fewer native samples (weight 48
-against 64 on files pre-averaged to 8 s, where the first 2 s are flagged) loses pair (0,1), and a
-flagged timestep takes its partner with it: on the 2026-09-05 night 12 of 15 timesteps per
-observation reached the power spectrum, and the noise of masked runs followed the number of
-complete pairs, not the number of unflagged timesteps. `apply_pair_timesteps` picks the first
-timestep per observation that leaves the most complete pairs (`pairStart` in `main.nf`, from the
-`*_time_weights.json` of the vis being applied, after any brfi flags), passes it to
-`solutions-apply` as `--timesteps`, and adds `_pairs` to the apply name. `apply_pairs.tsv` lists
-the start, the pairs and the pairs when starting at 0. When judging a mask, count complete pairs.
-
 ### Emission that varies within a pair (`--pair_diff`, `--filter_max_pair_diff`)
 
 The CHIPS power is the power of the sum grid minus the power of the difference grid, and the
@@ -214,7 +200,7 @@ changing either gives new fit files. Check `brfi_fits.tsv` in the results dir (b
 divergences per fit and pol) before trusting a mask: a wrong block split shows up as rhat far above
 1.01 and tens of percent of samples flagged.
 
-`brfiWeights` (`templates/brfi_weights.py`) reads the mean visibility weight of every timestep from
+`brfiWeights` (`templates/time_weights.py`) reads the mean visibility weight of every timestep from
 the uvfits, and the fit leaves out a difference when either of its timesteps is further than
 `brfi_weight_tol` from the usual weight of its observation. This matters for pre-averaged prep
 files: on 2026-09-05 the first 8 s timestep of every observation holds 3 of 4 native samples
@@ -231,6 +217,20 @@ settings.
   values in a conf file.
 - `--noimg` sets the flag true; use `--noimg=false` to turn an option back on.
 - `-resume` is rarely needed: `storeDir` already makes completed steps skip.
+
+### CHIPS grids timesteps in pairs (`--apply_pair_timesteps`)
+
+`gridvisdiff` reads a calibrated uvfits two timesteps at a time, (0,1), (2,3).., and grids a
+visibility only when the weights of the two timesteps are exactly equal and positive. A last odd
+timestep is never gridded. So a first timestep averaged from fewer native samples (weight 48
+against 64 on files pre-averaged to 8 s, where the first 2 s are flagged) loses pair (0,1), and a
+flagged timestep takes its partner with it: on the 2026-09-05 night 12 of 15 timesteps per
+observation reached the power spectrum, and the noise of masked runs followed the number of
+complete pairs, not the number of unflagged timesteps. `apply_pair_timesteps` picks the first
+timestep per observation that leaves the most complete pairs (`pairStart` in `main.nf`, from the
+`*_time_weights.json` of the vis being applied, after any brfi flags, `templates/time_weights.py`), passes it to
+`solutions-apply` as `--timesteps`, and adds `_pairs` to the apply name. `apply_pairs.tsv` lists
+the start, the pairs and the pairs when starting at 0. When judging a mask, count complete pairs.
 
 ### Gates and fail codes
 
