@@ -35,6 +35,7 @@ example:
 """
 
 import json
+import os
 import shlex
 import sys
 import warnings
@@ -67,6 +68,12 @@ def parse_args(argv=None):
             '(amplitude or phase). 0 to fit every tile',
         )
         p.add_argument('--variable-chans', type=int, default=8, help='channels averaged for --max-variable')
+        p.add_argument(
+            '--max-obs-variable', type=float, default=3.0,
+            help='an observation is left out of the night median, and listed as an outlier, when the median over '
+            'tiles of its variable amplitude (averaged over --variable-chans channels) exceeds this many times the '
+            'median over observations. 0 to keep every observation',
+        )
         p.add_argument('--amp-order', type=int, default=3, help='order of the amplitude polynomial')
         p.add_argument('--phase-order', type=int, default=1, help='order of the phase polynomial')
     return parser.parse_args(argv)
@@ -155,7 +162,7 @@ def freq_axis(freqs):
 
 
 def night(args):
-    obs, yy_phase = [], []
+    obs, yy_phase, src = [], [], []
     freqs = names = None
     for path in args.solns:
         gains, f, n, _c, common_yy = read_soln(path, args.phase_order)
@@ -166,6 +173,7 @@ def night(args):
         # every timeblock is a sample of the night
         obs.extend(gains[:, t] for t in range(gains.shape[1]))
         yy_phase.extend(np.angle(common_yy[t]) for t in range(gains.shape[1]))
+        src.extend(path for _ in range(gains.shape[1]))
     obs = np.array(obs)  # [sample, pol, tile, chan]
     yy_phase = np.array(yy_phase)  # [sample, chan]
     nobs, npol, ntile, nchan = obs.shape
@@ -177,33 +185,57 @@ def night(args):
     fine_phase = np.full((npol, ntile, nchan), np.nan)
     with np.errstate(all="ignore"), warnings.catch_warnings():
         warnings.simplefilter("ignore", category=RuntimeWarning)
-        # second pass: the smooth parts are refitted against the first median
-        for _ in range(2):
-            use_amp = np.where(np.isfinite(fine_amp), fine_amp, 1.0)
-            use_phase = np.where(np.isfinite(fine_phase), fine_phase, 0.0)
-            res_amp = np.full(obs.shape, np.nan)
-            res_phase = np.full(obs.shape, np.nan)
-            for i in range(nobs):
-                for p in range(npol):
-                    for t in range(ntile):
-                        if not np.isfinite(obs[i, p, t]).any():
-                            continue
-                        sa, sp, amp, phase = split(obs[i, p, t], x, use_amp[p, t], use_phase[p, t], args.amp_order, args.phase_order)
-                        res_amp[i, p, t] = amp / sa
-                        res_phase[i, p, t] = phase - sp
-            fine_amp = np.nanmedian(res_amp, axis=0)
-            fine_phase = np.nanmedian(res_phase, axis=0)
-            fine_amp[few] = np.nan
-            fine_phase[few] = np.nan
+        def block_mean(a):
+            n = max(1, args.variable_chans)
+            return np.nanmean(a[..., :(nchan // n) * n].reshape(a.shape[:-1] + (nchan // n, n)), axis=-1)
+
+        def night_median(use):
+            # second pass: the smooth parts are refitted against the first median
+            fa = np.full((npol, ntile, nchan), np.nan)
+            fp = np.full((npol, ntile, nchan), np.nan)
+            for _ in range(2):
+                use_amp = np.where(np.isfinite(fa), fa, 1.0)
+                use_phase = np.where(np.isfinite(fp), fp, 0.0)
+                ra = np.full(obs.shape, np.nan)
+                rp = np.full(obs.shape, np.nan)
+                for i in range(nobs):
+                    for p in range(npol):
+                        for t in range(ntile):
+                            if not np.isfinite(obs[i, p, t]).any():
+                                continue
+                            sa, sp, amp, phase = split(obs[i, p, t], x, use_amp[p, t], use_phase[p, t], args.amp_order, args.phase_order)
+                            ra[i, p, t] = amp / sa
+                            rp[i, p, t] = phase - sp
+                fa = np.nanmedian(ra[use], axis=0)
+                fp = np.nanmedian(rp[use], axis=0)
+                fa[few] = np.nan
+                fp[few] = np.nan
+            return fa, fp, ra, rp
+
+        # an observation whose solutions differ from the rest of the night across most tiles (a
+        # different sky, beam or hardware state) would pull the median, and its data is suspect: it is
+        # left out of the median and listed. Measured per sample as the median over tiles of the rms
+        # over channel blocks of its variable amplitude, against the median over samples
+        use = np.ones(nobs, dtype=bool)
+        fine_amp, fine_phase, res_amp, res_phase = night_median(use)
+        obs_var = np.nanmedian(np.sqrt(np.nanmean(block_mean(res_amp / fine_amp[None] - 1) ** 2, axis=3)), axis=2)  # [sample, pol]
+        typical_obs = np.nanmedian(obs_var, axis=0)  # [pol]
+        if args.max_obs_variable > 0:
+            use = ~(obs_var > args.max_obs_variable * typical_obs[None]).any(axis=1)
+            if not use.all() and use.sum() > 0:
+                fine_amp, fine_phase, res_amp, res_phase = night_median(use)
+        outlier_src = sorted({src[i] for i in np.flatnonzero(~use)})
+        # an outlier is not in any statistic below
+        res_amp[~use] = np.nan
+        res_phase[~use] = np.nan
+        nobs_used = int(use.sum())
         var_amp = res_amp / fine_amp[None] - 1
         var_phase = res_phase - fine_phase[None]
 
         # a tile whose fine structure changes over the night: what varies is averaged over a few
         # channels first, so that a tile which is only noisier than the others still gets the median
         def block_rms(a):
-            n = max(1, args.variable_chans)
-            blocks = a[..., :(nchan // n) * n].reshape(a.shape[:-1] + (nchan // n, n))
-            return np.sqrt(np.nanmean(np.nanmean(blocks, axis=-1) ** 2, axis=(0, 3)))  # [pol, tile]
+            return np.sqrt(np.nanmean(block_mean(a) ** 2, axis=(0, 3)))  # [pol, tile]
 
         tile_var = np.stack([block_rms(var_amp), block_rms(var_phase)])  # [(amp, phase), pol, tile]
         typical = np.nanmedian(tile_var, axis=2, keepdims=True)
@@ -224,6 +256,11 @@ def night(args):
 
         summary = dict(
             nobs=int(nobs), ntiles=int(ntile), nchans=int(nchan),
+            # observations left out of the median (solution files), and the measure per pol: median
+            # over samples, and the largest
+            obs_outliers=[os.path.basename(str(o)) for o in outlier_src], nobs_used=nobs_used,
+            obs_variable=[[float(typical_obs[p]), float(np.nanmax(obs_var[:, p]))] for p in range(npol)],
+            max_obs_variable=args.max_obs_variable,
             tiles_fitted=[int(fitted[p].sum()) for p in range(npol)],
             # tiles that keep their own solutions: [name, variable amplitude, variable phase in
             # degrees] (both averaged over variable_chans channels), next to the median over tiles

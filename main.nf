@@ -5204,6 +5204,8 @@ workflow cal {
                         // tiles that keep their own solutions, and the phase of yy against xx
                         + (stats.tiles_variable ?: [[], []]).collect { tiles -> tiles.collect { it[0] }.join(' ') }
                         + (stats.yy_common_phase_deg ?: [null, null]).collect { fmt(it) }
+                        // observations left out of the median, and not applied
+                        + [(stats.obs_outliers ?: []).collect { it.replaceAll(/\.fits$/, '') }.join(' ')]
                     ).join("\t")
                 }
                 .collectFile(
@@ -5213,15 +5215,23 @@ workflow cal {
                         "FITTED XX", "FITTED YY", "STABLE AMP XX", "STABLE AMP YY",
                         "STABLE PHASE XX", "STABLE PHASE YY", "VAR AMP XX", "VAR AMP YY",
                         "VAR PHASE XX", "VAR PHASE YY",
-                        "KEPT XX", "KEPT YY", "YY COMMON PHASE", "YY COMMON PHASE VAR",
+                        "KEPT XX", "KEPT YY", "YY COMMON PHASE", "YY COMMON PHASE VAR", "OUTLIER SOLNS",
                     ].join("\t"),
                     storeDir: "${results_dir()}${params.cal_suffix}"
                 )
                 // display output path and number of lines
                 | view { [it, it.readLines().size()] }
 
-            nightCal.combine(calNightFit.out.map { night, name, _fitset, fit, _json -> [[night, name], fit] }, by: 0)
-                .map { _key, obsid, meta, soln, fit -> [obsid, meta, soln, fit] }
+            // an observation whose solutions differ from the rest of its night (calfit.py
+            // --max-obs-variable) is left out of the median and is not applied: listed in calfit.tsv
+            nightCal.combine(
+                    calNightFit.out.map { night, name, _fitset, fit, fit_json ->
+                        [[night, name], fit, (parseJson(fit_json).obs_outliers ?: []) as Set]
+                    },
+                    by: 0
+                )
+                .filter { _key, _obsid, _meta, soln, _fit, outliers -> !(soln.name in outliers) }
+                .map { _key, obsid, meta, soln, fit, _outliers -> [obsid, meta, soln, fit] }
                 | calFitSol
             appliedCal = calFitSol.out
         } else {

@@ -174,7 +174,11 @@ part, averaged over 8 channels, against the median over tiles), because the medi
 describes none of its observations. On 2025-10-07 that keeps Tile036, Tile086 and HexE11 in XX
 (2.9 to 5.1 times the typical tile) and Tile087 in YY; at 1.5 it kept 13 and 7 tiles, a tail at
 1.4 to 2 times typical that is the sky-dependent structure the fit should remove. Over ten nights
-at 2.0 a night keeps 2 to 7 tiles per pol, the same few tiles recurring. The YY
+at 2.0 a night keeps 2 to 7 tiles per pol, the same few tiles recurring. An observation whose
+solutions differ from the rest of its night across most tiles (`--max-obs-variable 3`: the median
+over tiles of its variable amplitude against the median over observations) is left out of the
+median and not applied; `calfit.tsv` lists it under OUTLIER SOLNS. Five such obs in batch 3
+(5 to 46% against a normal 0.3 to 0.9%) made their nights keep 26 to 42 tiles. The YY
 terms of all tiles share a phase per channel against XX (15 degrees rms on 2025-10-07, half of
 it changing per observation; the unpolarised sky hardly constrains it). It cancels in the YY
 visibilities, so YY is fitted without it and it is put back on writing. The fitted
