@@ -112,7 +112,10 @@ observations at one pointing is a block with its own background), `brfiMask` fla
 the timesteps where at least `brfi_min_chans` coarse channels (default 1: any) have P(RFI) >=
 `brfi_thresh` in both XX and YY, and the mask is applied to the whole band as a
 `.brfi<settings hash>.uvfits` copy that the later stages use, so that runs with other settings can
-share a data dir. Observations that
+share a data dir. `brfi_stats='mean,max'` also fits the largest standardised fine channel of each
+coarse channel, which finds narrowband RFI that the channel mean dilutes, and `brfi_pols='either'`
+flags a sample that is RFI in XX or YY rather than both (most narrowband RFI is in one pol only).
+Observations that
 would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
 the fit of a night depends on which of its observations are in the run. `brfi_fits.tsv` and
 `brfi<settings hash>_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction

@@ -1527,6 +1527,7 @@ process brfiFit {
         samples: params.brfi_samples,
         chains: params.brfi_chains,
         "weight-tol": params.brfi_weight_tol,
+        stats: params.brfi_stats,
         "brfi-src": params.brfi_src,
         obs: obs,
     ].findAll { _k, v -> v != null }
@@ -1570,7 +1571,16 @@ def brfiFlagName() {
         params.brfi_coarse_chans, params.brfi_terms, params.brfi_warmup, params.brfi_samples,
         params.brfi_chains, params.brfi_weight_tol,
         params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans,
-    ].join(',').md5().substring(0, 6)
+    ].plus(brfiNewSettings()).join(',').md5().substring(0, 6)
+}
+
+// settings added after the first brfi runs: only in the hashes when they are not the default, so
+// that the names of fits, masks and vis made before them stay the same
+def brfiNewSettings() {
+    [
+        params.brfi_stats == 'mean' ? null : "stats=${params.brfi_stats}",
+        params.brfi_pols == 'both' ? null : "pols=${params.brfi_pols}",
+    ].findAll { it != null }
 }
 
 // whole-band time mask of one observation from the night's fits, in the layout of an SSINS mask
@@ -1590,7 +1600,7 @@ process brfiMask {
     base = ins.baseName - '_SSINS_data'
     // the mask depends on the fits and on these settings
     maskset = [params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans]
-        .join(',').md5().substring(0, 6)
+        .plus(brfiNewSettings()).join(',').md5().substring(0, 6)
     mask = ''+"${base}_brfi-${fitset}-m${maskset}_mask.h5"
     occ = ''+"${base}_brfi-${fitset}-m${maskset}_occ.json"
     args = [ //noqa
@@ -1602,6 +1612,7 @@ process brfiMask {
         "step-s": params.brfi_step_s,
         "step-frac": params.brfi_step_frac,
         "min-chans": params.brfi_min_chans,
+        pols: params.brfi_pols,
         fits: coerceList(fits).join(' '),
     ].findAll { _k, v -> v != null }
         .collect { k, v -> ''+"""--${k} ${v} """ }
@@ -4541,7 +4552,7 @@ workflow brfiFlag {
                 def settings = [
                     params.brfi_terms, params.brfi_warmup, params.brfi_samples, params.brfi_chains,
                     params.brfi_weight_tol,
-                ]
+                ] + (params.brfi_stats == 'mean' ? [] : ["stats=${params.brfi_stats}"])
                 def hash = ([labels, pointings].transpose().collect { it.join(':') } + settings)
                     .join(',').md5().substring(0, 8)
                 def fitset = ''+"${night}_n${labels.size()}_${hash}"
@@ -4554,7 +4565,8 @@ workflow brfiFlag {
         // convergence of the fits: one line per fit and pol
         brfiFit.out.flatMap { _night, fitset, _fit, fit_json ->
                 def info = parseJson(fit_json)
-                ["xx", "yy"].collect { pol ->
+                // one entry per pol of each fitted series: xx, yy (channel mean), xx_max, yy_max
+                info.keySet().findAll { it ==~ /(xx|yy)(_[a-z]+)?/ }.sort().collect { pol ->
                     def i = info[pol]
                     [
                         fitset, info.coarse_chan, pol, info.nobs, info.nsamples, info.unequal_weight_samples, i.blocks,

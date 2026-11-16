@@ -14,6 +14,14 @@ Inputs are the per-observation files of `hyperdrive bmetrics --ins` (or `SSINS.I
 every observation of one night. The output holds P(RFI) for each differenced sample of each
 observation, for XX and YY, and is turned into a flag mask by brfi_mask.py.
 
+`--stats` chooses the series that are fitted, each on its own:
+- `mean` (the VS masks): the mean over the fine channels of the coarse channel. Best for broadband
+  RFI, but a line one fine channel wide is diluted by about sqrt(fine channels).
+- `max`: the largest fine channel of each sample, after each fine channel is standardised by its
+  median and robust scatter over the observation. The maximum of n standard normals is mapped
+  back to a standard normal (Phi^-1(Phi(z)^n)), so that a clean series is N(0, 1) and the same
+  mixture model applies with a known noise of 1. It finds narrowband RFI that the mean misses.
+
 Needs numpyro, jax and a bayesian-rfi checkout (`--brfi-src`, or `mixture_model` on the python
 path).
 
@@ -53,6 +61,8 @@ def parse_args(argv=None):
     parser.add_argument('--weight-tol', type=float, default=0.01,
                         help='leave out a difference when the weight of either of its timesteps (time_weights.py) '
                              'is further than this fraction from the median of its observation')
+    parser.add_argument('--stats', default='mean',
+                        help='comma-separated series to fit: mean (channel mean), max (largest fine channel)')
     parser.add_argument('--brfi-src', help='a bayesian-rfi checkout, if mixture_model is not already importable')
     return parser.parse_args(argv)
 
@@ -62,12 +72,44 @@ def coarse_chans(freqs_hz):
     return np.floor(np.asarray(freqs_hz, float) / COARSE_HZ + 0.5 + 1e-6).astype(int)
 
 
-def read_ins_series(path, chan_idx):
+def max_series(m):
     """
-    Channel-mean INS amplitude of one coarse channel.
+    Largest standardised fine channel of each sample, as an equivalent standard normal.
 
-    Returns the centre times (JD) of the differenced samples, {pol: series}, the receiver channel
-    number, the number of baselines and the number of fine channels averaged.
+    m: [sample, fine channel] INS amplitudes of one coarse channel over the whole night, NaN where
+    flagged. Each sample is divided by its median over the fine channels (which takes out the
+    background and anything broadband), each fine channel by its median over the night (the
+    passband), and each fine channel's residual by its robust scatter (1.4826 MAD) over the night.
+    The largest z of a sample over its n finite channels is mapped through Phi(z)^n, the
+    distribution of the maximum of n independent standard normals, and back through Phi^-1.
+    """
+    import warnings
+    from scipy.special import log_ndtr, ndtri
+    with np.errstate(invalid="ignore", divide="ignore"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        a = m / np.nanmedian(m, axis=1, keepdims=True)
+        a = a / np.nanmedian(a, axis=0, keepdims=True)
+        r = a - np.nanmedian(a, axis=1, keepdims=True)
+        mad = 1.4826 * np.nanmedian(np.abs(r - np.nanmedian(r, axis=0)), axis=0)
+        good = np.isfinite(mad) & (mad > 0)
+        z = np.where(good, (r - np.nanmedian(r, axis=0)) / np.where(good, mad, 1), np.nan)
+    n = np.isfinite(z).sum(axis=1)
+    out = np.full(len(m), np.nan)
+    ok = n > 0
+    if ok.any():
+        zmax = np.nanmax(z[ok], axis=1)
+        # upper tail probability of the maximum, then the normal with the same upper tail
+        p_upper = -np.expm1(n[ok] * log_ndtr(zmax))
+        out[ok] = np.clip(-ndtri(np.clip(p_upper, 1e-300, 1)), -37, 37)
+    return out
+
+
+def read_ins_series(path, chan_idx, stats=("mean",)):
+    """
+    Series of one coarse channel of the INS amplitude, one per statistic.
+
+    Returns the centre times (JD) of the differenced samples, {(stat, pol): series}, the receiver
+    channel number, the number of baselines and the number of fine channels averaged.
     """
     with h5py.File(path, "r") as h5:
         metric = np.asarray(h5["Data/metric_array"], float)
@@ -87,8 +129,12 @@ def read_ins_series(path, chan_idx):
         w = weights[:, sel, ip]
         m = np.where(np.isfinite(m) & (w > 0), m, np.nan)
         counts = np.isfinite(m).sum(axis=1)
-        with np.errstate(invalid="ignore"):
-            series[name] = np.where(counts > 0, np.nansum(m, axis=1) / np.maximum(counts, 1), np.nan)
+        if "mean" in stats:
+            with np.errstate(invalid="ignore"):
+                series[("mean", name)] = np.where(counts > 0, np.nansum(m, axis=1) / np.maximum(counts, 1), np.nan)
+        if "max" in stats:
+            # standardised at the night level, in night_series
+            series[("fine", name)] = m
         if (counts > 0).any():
             nchans.append(np.median(counts[counts > 0]))
             nbls.append(np.median(w[w > 0]))
@@ -123,17 +169,17 @@ def comparable_samples(times, weights_path, tol):
     return ok
 
 
-def night_series(obs, chan_idx, weight_tol=0.01):
+def night_series(obs, chan_idx, weight_tol=0.01, stats=("mean",)):
     """Stack the observations in time order; a block is a run of observations at one pointing."""
     rows, nunequal = [], 0
     for spec in obs:
         label, pointing, path = spec.split(":", 2)
         path, _, weights_path = path.partition(":")
-        times, series, chan, nbls, nchan = read_ins_series(path, chan_idx)
+        times, series, chan, nbls, nchan = read_ins_series(path, chan_idx, stats)
         if weights_path:
             ok = comparable_samples(times, weights_path, weight_tol)
             nunequal += int((~ok).sum())
-            series = {k: np.where(ok, v, np.nan) for k, v in series.items()}
+            series = {k: np.where(ok.reshape((-1,) + (1,) * (v.ndim - 1)), v, np.nan) for k, v in series.items()}
         order = np.argsort(times)
         rows.append(dict(label=label, pointing=pointing, times=times[order], chan=chan, nbls=nbls, nchan=nchan,
                          series={k: v[order] for k, v in series.items()}))
@@ -149,17 +195,27 @@ def night_series(obs, chan_idx, weight_tol=0.01):
             start = n
         n += len(r["times"])
     blocks.append((start, n))
+    series = {key: np.concatenate([r["series"][key] for r in rows]) for key in rows[0]["series"]}
+    for pol in POLS:
+        fine = series.pop(("fine", pol), None)
+        if fine is not None:
+            series[("max", pol)] = max_series(fine)
     return dict(
         label=np.concatenate([np.full(len(r["times"]), r["label"]) for r in rows]),
         time_jd=np.concatenate([r["times"] for r in rows]),
-        series={pol: np.concatenate([r["series"][pol] for r in rows]) for pol in POLS},
+        series=series,
         blocks=blocks, block_pointings=block_pointings, chan=chans[0], unequal_weight_samples=nunequal,
         nbls=int(np.median([r["nbls"] for r in rows])), nchan=int(np.median([r["nchan"] for r in rows])),
     )
 
 
-def fit_series(t, y_all, blocks, nbls, nchan, args):
-    """P(RFI) of each sample of one series. Samples that are not finite get NaN."""
+def fit_series(t, y_all, blocks, nbls, nchan, args, sigma=None):
+    """
+    P(RFI) of each sample of one series. Samples that are not finite get NaN.
+
+    sigma: the clean noise of the series when it is known (1 for a standardised series); by
+    default it is computed from the number of baselines and fine channels averaged.
+    """
     import jax
     import jax.numpy as jnp
     import numpyro
@@ -180,8 +236,11 @@ def fit_series(t, y_all, blocks, nbls, nchan, args):
     # a block with no finite sample cannot be fitted: leave its samples at NaN
     blocks_fit = [(a, b) for a, b in blocks if np.isfinite(y_all[a:b]).any()]
     samples = [y_all[a:b] for a, b in blocks_fit]
-    sigma_clean = mm.calculate_sigma_clean(samples, None, None, nbls=[nbls] * len(blocks_fit),
-                                           nchans=[nchan] * len(blocks_fit))
+    if sigma is None:
+        sigma_clean = mm.calculate_sigma_clean(samples, None, None, nbls=[nbls] * len(blocks_fit),
+                                               nchans=[nchan] * len(blocks_fit))
+    else:
+        sigma_clean = np.full(len(blocks_fit), float(sigma))
     sigma_raw = np.asarray(sigma_clean)
     samples, sigma_clean, scale = mm.rescale_to_noise(samples, sigma_clean, args.rescale_noise)
     Nb, T = len(blocks_fit), max(b - a for a, b in blocks_fit)
@@ -274,18 +333,25 @@ def main():
     import numpyro
     numpyro.set_host_device_count(args.chains)
 
-    night = night_series(args.obs, args.chan_idx, args.weight_tol)
+    stats = [s.strip() for s in args.stats.split(",") if s.strip()]
+    if not stats or set(stats) - {"mean", "max"}:
+        raise UserWarning(f"--stats must be a comma-separated list of mean and max, not {args.stats!r}")
+    night = night_series(args.obs, args.chan_idx, args.weight_tol, stats)
     t = night["time_jd"]
-    result = dict(label=night["label"], time_jd=t, coarse_chan=night["chan"])
+    result = dict(label=night["label"], time_jd=t, coarse_chan=night["chan"], stats=np.array(stats))
     info = dict(coarse_chan=night["chan"], chan_idx=args.chan_idx, nobs=len(args.obs), nsamples=len(t),
-                block_pointings=night["block_pointings"],
+                block_pointings=night["block_pointings"], stats=stats,
                 unequal_weight_samples=night["unequal_weight_samples"])
-    for pol in POLS:
-        out, pol_info = fit_series(t, night["series"][pol], night["blocks"], night["nbls"], night["nchan"], args)
-        for k, v in out.items():
-            result[f"{k}_{pol}"] = v
-        result[f"ins_{pol}"] = night["series"][pol]
-        info[pol] = pol_info
+    for stat in stats:
+        # keys of the channel mean keep their names (p_rfi_xx), the others carry the statistic
+        suffix = "" if stat == "mean" else f"_{stat}"
+        for pol in POLS:
+            out, pol_info = fit_series(t, night["series"][(stat, pol)], night["blocks"], night["nbls"],
+                                       night["nchan"], args, sigma=None if stat == "mean" else 1.0)
+            for k, v in out.items():
+                result[f"{k}{suffix}_{pol}"] = v
+            result[f"ins{suffix}_{pol}"] = night["series"][(stat, pol)]
+            info[f"{pol}{suffix}"] = pol_info
     result["info"] = json.dumps(info)
     np.savez(args.out, **result)
     if args.json:

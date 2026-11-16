@@ -4,7 +4,8 @@
 Whole-band time mask for one observation from the night-level bayesian-rfi fits (brfi_fit.py).
 
 Rule (the VS mask): in a fitted coarse channel, a time-differenced sample is RFI if P(RFI) >=
-threshold in both XX and YY. It flags the later of the two timesteps it spans. Timesteps are
+threshold in both XX and YY (`--pols either`: in XX or YY). When a fit holds more than one series
+(brfi_fit.py `--stats`), a sample is RFI if any series says so. It flags the later of the two timesteps it spans. Timesteps are
 grouped into steps of `--step-s` seconds from the start of the observation (the resolution the
 visibilities are averaged to later), and a step is RFI in that channel if at least `--step-frac`
 of its timesteps are (2 of 4 for 2 s data and 8 s steps). The whole band is flagged at a step if
@@ -35,15 +36,22 @@ def parse_args(argv=None):
     parser.add_argument('--out', required=True, help='output mask h5')
     parser.add_argument('--json', required=True, help='output occupancy json')
     parser.add_argument('--thresh', type=float, default=0.9, help='P(RFI) needed in both XX and YY')
+    parser.add_argument('--pols', default='both', choices=['both', 'either'],
+                        help='a sample is RFI when P(RFI) >= thresh in both XX and YY, or in either')
     parser.add_argument('--step-s', type=float, default=8.0, help='length of the steps flagged as a whole (s)')
     parser.add_argument('--step-frac', type=float, default=0.5, help='fraction of timesteps that flags a step')
     parser.add_argument('--min-chans', type=int, default=1, help='fitted coarse channels that must agree to flag a step')
     return parser.parse_args(argv)
 
 
-def step_mask(p_xx, p_yy, thresh, per_step, step_frac):
+def sample_rfi(p_xx, p_yy, thresh, pols="both"):
+    """Which differenced samples are RFI in one series."""
+    xx, yy = np.nan_to_num(p_xx) >= thresh, np.nan_to_num(p_yy) >= thresh
+    return (xx | yy) if pols == "either" else (xx & yy)
+
+
+def step_mask(rfi, per_step, step_frac):
     """Flags of the timesteps (one more than the differenced samples), whole steps at a time."""
-    rfi = (np.nan_to_num(p_xx) >= thresh) & (np.nan_to_num(p_yy) >= thresh)
     samp = np.zeros(len(rfi) + 1, bool)
     samp[1:] |= rfi
     need = max(1, int(np.ceil(step_frac * per_step - 1e-9)))
@@ -82,8 +90,13 @@ def main():
             if len(order) != len(mid_jd):
                 raise UserWarning(f"{path} has {len(order)} samples for {args.label}, {args.ins} has {len(mid_jd)}")
             chan = int(fit["coarse_chan"])
-            times, steps = step_mask(fit["p_rfi_xx"][sel][order], fit["p_rfi_yy"][sel][order],
-                                     args.thresh, per_step, args.step_frac)
+            stats = [str(x) for x in fit["stats"]] if "stats" in fit.files else ["mean"]
+            rfi = np.zeros(len(order), bool)
+            for stat in stats:
+                suffix = "" if stat == "mean" else f"_{stat}"
+                rfi |= sample_rfi(fit[f"p_rfi{suffix}_xx"][sel][order], fit[f"p_rfi{suffix}_yy"][sel][order],
+                                  args.thresh, args.pols)
+            times, steps = step_mask(rfi, per_step, args.step_frac)
         by_chan[chan] = [int(i) for i in np.flatnonzero(steps)]
         nchans += times
     flagged = nchans >= max(1, args.min_chans)
@@ -98,7 +111,7 @@ def main():
 
     occ = dict(
         label=args.label, thresh=args.thresh, step_s=args.step_s, timesteps_per_step=per_step,
-        min_chans=args.min_chans,
+        min_chans=args.min_chans, pols=args.pols,
         ntimes=len(times_jd), nflagged=int(flagged.sum()), occupancy=float(flagged.mean()),
         flagged_timesteps=[int(i) for i in np.flatnonzero(flagged)],
         chans_per_timestep={str(i): int(nchans[i]) for i in np.flatnonzero(nchans)},
