@@ -106,9 +106,8 @@ def read_uvfits(uvfile):
     return uvdata
 
 
-def set_weights(uvfile, uvdata, weights, new_uvfile=None):
-    if new_uvfile is None:
-        new_uvfile = uvfile.replace('.uvfits', '.ssins.uvfits')
+def set_weights(uvfile, uvdata, weights):
+    new_uvfile = uvfile.replace('.uvfits', '.ssins.uvfits')
     print(f"saving to {new_uvfile}")
     with fits.open(uvfile) as hdus:
         vis_hdu = hdus['PRIMARY']
@@ -121,7 +120,6 @@ def parse_args(argv=sys.argv[1:]):
     parser = argparse.ArgumentParser()
     parser.add_argument('--src', nargs="+", help='source uvfits files')
     parser.add_argument('--dst', help='destination uvfits files')
-    parser.add_argument('--out', help='flagged uvfits to write (default: <dst>.ssins.uvfits)')
     return parser.parse_args(argv)
 
 
@@ -240,7 +238,7 @@ def main():
         # assert np.all(dst_data['freq_array'] == src_freqs), f"{dst_data['freq_array']} != {src_freqs}" # RTS has different freqs?
         print("mixing")
         # mixed_weights = np.prod(np.stack([src_data['weights'], dst_data['weights']]), axis=0)
-        set_weights(args.dst, dst_data, src_data['weights'] * dst_data['weights'], args.out)
+        set_weights(args.dst, dst_data, src_data['weights'] * dst_data['weights'])
 
 if __name__ == '__main__':
     main()

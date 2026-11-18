@@ -6,8 +6,7 @@ Mean visibility weight of every timestep of a uvfits file.
 CHIPS grids the timesteps of a calibrated vis in pairs and only where the two weights are equal, so
 apply_pair_timesteps needs the weight of every timestep of the vis it applies to. A timestep that
 was averaged from fewer native samples (the first timestep of an observation, when its first native
-sample is flagged) has a lower weight than the rest. brfi_fit.py uses the same weights to leave
-out time differences between timesteps of unequal weight, which stand out in the INS without RFI.
+sample is flagged) has a lower weight than the rest.
 
 Reads a sample of the visibilities (about `--rows` baselines-times, every `--chan-step`th channel)
 straight from the random groups, without loading the file.
