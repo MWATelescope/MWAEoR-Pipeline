@@ -67,10 +67,10 @@ Outbound traffic needs the site proxy. Processes that download or upload prepend
 
 - Singularity only, no Docker. The profile binds `/data` into containers; when you run an image by
   hand on the login node add `--bind /data` yourself, or files will "not exist".
-- Default process image is the mwa-demo CUDA image; `mwa_qa` tasks use the mwa_qa image; GPU
-  hyperdrive tasks use `params.hyperdrive_sif`, set inside the `dug` profile; CPU hyperdrive tasks
-  (`solutions-apply`, `solutions-plot`) use `docker://mwatelescope/hyperdrive:autos-dev` from the
-  cache dir.
+- Default process image is the mwa-demo CUDA image; `mwa_qa` tasks use the mwa_qa image; every
+  hyperdrive step, GPU and CPU, uses `params.hyperdrive_sif`, set inside the `dug` profile. The
+  CUDA image runs on `nogpu` nodes (tested on clx, icx, genoa). `solutions-apply` needs `--autos`
+  to keep autocorrelations, which the profile sets through `apply_args`.
 - Container selection is resolved when the config is parsed. A `-c` conf overrides ordinary params
   at run time (its `beam_path` wins over the profile's), but changing which image a process uses
   has to be done in the profile block, or in a separate git worktree with its own profile edit.

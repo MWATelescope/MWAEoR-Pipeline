@@ -52,6 +52,12 @@ def stageBeam() {
     trap 'rm -f "\${beam_file}"' EXIT"""
 }
 
+// filename of the DP3 di-cal solution (dp3CalSol), named like hypCalSol's plus params.dp3cal_suffix
+def dp3SolnName(obsid, meta) {
+    def prefix = (meta.name?:'') != '' ? "${meta.name}_" : ''
+    return ''+"hyp_soln_${obsid}${meta.subobs?:''}_${prefix}${params.dical_name}${params.dp3cal_suffix}.fits"
+}
+
 def ssinsMetricTsvByPol(rows, metric) {
     def polOrder = ['xx', 'xy', 'yx', 'yy']
     def typeOrder = ['SL', 'TV', 'narrow', 'streak']
@@ -1900,6 +1906,121 @@ process hypCalSol {
     fi
 
     exit \$result
+    """
+}
+
+// tile and fine-channel flag arguments for hyperdrive, as hypCalSol builds them
+def hypFlagArgs(meta) {
+    def args = ""
+    if ((meta.prepFlags?:[]).size() > 0) {
+        args += " --tile-flags ${meta.prepFlags.join(' ')}"
+    }
+    if ((meta.fineChanFlags?:[]).size() > 0) {
+        args += " --fine-chan-flags-per-coarse-chan ${meta.fineChanFlags.join(' ')}"
+    }
+    return args
+}
+
+// first half of the DP3 di-cal (parallel to hypCalSol, off unless --nodp3cal=false).
+// hyperdrive di-calibrate with one iteration writes the model visibilities that hypCalSol
+// calibrates against (same sky model, beam file, dead dipoles and flags) as an MS, and a solutions
+// file that dp3CalSol uses as a template; the data are converted to a matching MS.
+process dp3Model {
+    tag "${obsid}${meta.subobs?:''}"
+    label "hyperdrive"
+    label "cpu_quarter"
+    label "gpu_nvme"
+    // uvfits copy + two MS in the RAM-disk scratch
+    memory { MemoryUnit.of(3 * uvfits.size()) }
+    time { params.scratchFactor * 4.hour * Math.pow(task.attempt, 4) }
+    errorStrategy {
+        task.exitStatus in 137..140 ? 'retry' : 'ignore'
+    }
+    maxRetries 2
+    stageInMode "copy"
+
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(metafits), path("data.ms"), path("model.ms"), path("template.fits"), path("dp3_model.log")
+
+    when: !params.nodp3cal
+
+    script:
+    flag_args = hypFlagArgs(meta)
+    // same selection and averaging as hypCalSol; iteration controls dropped (one is enough here)
+    model_args = params.dical_args
+        .replaceAll(/--max-iterations\s+\S+/, '')
+        .replaceAll(/--stop-thresh(old)?\s+\S+/, '')
+    freq_avg = (params.dical_args =~ /--freq-average\s+(\S+)/)
+    freq_args = freq_avg ? "--freq-average ${freq_avg[0][1]}" : ""
+    model_freq_args = freq_avg ? "--output-model-freq-average ${freq_avg[0][1]}" : ""
+    """
+    #!/bin/bash -eux
+    set -o pipefail
+    ${params.hyperdrive} di-calibrate ${model_args} --max-iterations 1 \
+        ${params.hyp_srclist_args} \
+        ${params.hyp_dical_args} \
+        --data "${metafits}" ${uvfits} \
+        --beam-file "${params.beam_path}" \
+        --source-list "${params.sourcelist}" \
+        --outputs template.fits \
+        --model-filenames model.ms \
+        --output-model-time-average ${params.dp3_time_res} ${model_freq_args} \
+        ${flag_args} \
+        | tee dp3_model.log
+    ${params.hyperdrive} vis-convert \
+        --data "${metafits}" ${uvfits} \
+        --time-average ${params.dp3_time_res} ${freq_args} \
+        --outputs data.ms \
+        ${flag_args} \
+        | tee -a dp3_model.log
+    """
+}
+
+// second half of the DP3 di-cal: DDECal, one direction, against hyperdrive's model in MODEL_DATA,
+// one solution per channel over the whole obs, with params.dp3_ddecal_args (spectral smoothness
+// etc.). The h5parm is converted to a hyperdrive solutions FITS (J = G^-1, see
+// bin/h5parm_to_hypsoln.py) named like hypCalSol's with params.dp3cal_suffix, so apply, peel, QA
+// and CHIPS treat it as one more calibration.
+process dp3CalSol {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}"
+    label "dp3"
+    label "cpu_full"
+    label "mem_quarter"
+    time { params.scratchFactor * 2.hour * task.attempt }
+    errorStrategy {
+        task.exitStatus in 137..140 ? 'retry' : 'ignore'
+    }
+    maxRetries 1
+    // DP3 and ms_copy_model.py write into the data MS
+    stageInMode "copy"
+
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(data_ms), path(model_ms), path(template), path(model_log)
+    output:
+    tuple val(obsid), val(meta), path(soln), path(h5), path(dp3_log)
+
+    when: !params.nodp3cal
+
+    script:
+    soln = dp3SolnName(obsid, meta)
+    h5 = soln.replaceFirst(/^hyp_soln_/, 'dp3_soln_').replaceFirst(/\.fits$/, '.h5')
+    dp3_log = soln.replaceFirst(/^hyp_soln_/, 'dp3_di-cal_').replaceFirst(/\.fits$/, '.log')
+    """
+    #!/bin/bash -eux
+    set -o pipefail
+    export OPENBLAS_NUM_THREADS=1
+    {
+        cat "${model_log}"
+        ms_copy_model.py "${data_ms}" "${model_ms}"
+        DP3 msin="${data_ms}" msin.datacolumn=DATA msout= numthreads=${task.cpus} steps=[ddecal] \
+            ddecal.type=ddecal ddecal.modeldatacolumns=[MODEL_DATA] ddecal.h5parm="${h5}" \
+            ddecal.solint=0 ddecal.nchan=1 ddecal.propagatesolutions=false ddecal.flagunconverged=false \
+            ${params.dp3_ddecal_args}
+        h5parm_to_hypsoln.py "${h5}" "${template}" "${data_ms}" "${soln}"
+    } 2>&1 | tee "${dp3_log}"
     """
 }
 
@@ -5140,6 +5261,26 @@ workflow cal {
             }
             | hypCalSol
 
+        // DP3 DDECal di-cal in parallel (params.nodp3cal = false). dp3Model's MS are not kept, so
+        // obs whose DP3 solution is already in storeDir skip both steps.
+        dp3Cal = Channel.empty()
+        if (!params.nodp3cal) {
+            dp3In = subobsMetaMetafitsVis.branch { obsid, meta, _metafits, _uvfits ->
+                done: file("${params.outdir}/${obsid}/cal${params.cal_suffix}/${dp3SolnName(obsid, meta)}").exists()
+                todo: true
+            }
+            dp3In.todo | dp3Model | dp3CalSol
+            dp3Cal = dp3CalSol.out.map { obsid, meta, soln, _h5, _log -> [obsid, meta, soln] }
+                .mix(dp3In.done.map { obsid, meta, _metafits, _uvfits ->
+                    [obsid, meta, file("${params.outdir}/${obsid}/cal${params.cal_suffix}/${dp3SolnName(obsid, meta)}")]
+                })
+                .map { obsid, meta, soln ->
+                    def dical_name = soln.baseName.split('_')[3..-1].join('_')
+                    // cal_prog stays "hyp": it is a filename prefix downstream, and the file is a hyperdrive solution
+                    [obsid, mapMerge(meta, [dical_name: dical_name, name: dical_name, cal_prog: "hyp"]), soln]
+                }
+        }
+
         // - hypCalSol gives multiple solutions, flatMap gives 1 tuple per solution.
         hypCalSol.out.flatMap { obsid, meta, solns, _log ->
                 coerceList(solns).unique().collect { soln ->
@@ -5155,6 +5296,7 @@ workflow cal {
                     [obsid, mapMerge(meta, newMeta), soln]
                 }
             }
+            .mix(dp3Cal)
             // channel of individual dical solutions: tuple(obsid, meta, soln)
             .tap { eachCal }
 
