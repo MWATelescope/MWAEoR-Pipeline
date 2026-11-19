@@ -82,6 +82,13 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   `peel_suffix`, `img_suffix`, `ionosub_nsrcs`), the old product is reused. Example: every EoR0
   low product made before 2026-10-14 was calibrated with the 167-197 MHz interpolated beam (wrong
   for 139-170 MHz); fixing `beam_path` alone would have reused them.
+- storeDir does not cascade: rerunning an upstream step (e.g. deleting solutions so `hypCalSol`
+  reruns) does not rerun downstream steps whose outputs still exist under the same names. This is
+  how the 2026-10-15/16 EoR0 low reprocessing got correct-beam solutions (10-15) while apply,
+  peel and CHIPS reused the wrong-beam uvfits from 10-08..10-11 (all 286 obs in groups
+  `eor0low_phase3_{7d8b808d,164a18b0,bde72c0a,29c53ac1}`). To redo a stage, change the name that
+  reaches the filename (e.g. `dical_name`) or remove every downstream product too, including the
+  copies on Acacia, which `pull*` steps and later runs would otherwise pick up.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
   - solution: `cal<cal_suffix>/hyp_soln_<obsid>_ssins_<dical_name>.fits` (+ `hyp_di-cal_*.log`)
@@ -144,6 +151,13 @@ grouped by stage (`modules/utils.nf: getFailReason`):
 | 064-079 | calQA | `filter_max_rms_convg`, `filter_max_unused_bl_frac`, `filter_max_unconvg_chs`, `filter_max_cal_amp_rms` |
 | 096-103 | ps_metrics window/wedge | `filter_{max,min}_ps_window_unsub`, `filter_{max,min}_ps_ratio_unsub`, `filter_{max,min}_ps_{win,wedge}_ratio_sub` |
 | 112-121 | imgQA | `filter_{max,min}_vrms_box_nosub`, `filter_*_pks_int_*` |
+
+calQA's "RMS convergence" (`filter_max_rms_convg`) is the RMS over channels of hyperdrive's
+`RESULTS`: the change in the gains between the last two of the 300 iterations (the stop threshold
+1e-20 is never reached). It measures how settled the solver is, not how well the model fits. On
+EoR0 low obs 1474306888 the correct full beam fitted the data 10% better at 140 MHz than the
+167 MHz interpolated beam, yet its RMS convergence was worse (5.9e-5 vs 4.8e-5;
+`nfresults/beamfit-20261019/`). Judge sky-model or beam changes by residuals or power spectra.
 
 A gate tuned for one configuration can block a variant: 40 s calibration timeblocks hold a third of
 the data, so their RMS convergence sits above the 1e-5 `filter_max_rms_convg` of the ph3 confs

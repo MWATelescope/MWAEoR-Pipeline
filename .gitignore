@@ -24,3 +24,6 @@ test/logs/*
 .local
 .casa/**
 nfwork/**
+.ej-*/**
+obsids-*.csv
+.ej-*
