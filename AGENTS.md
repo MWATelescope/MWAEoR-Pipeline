@@ -27,18 +27,19 @@ nextflow run main.nf -profile setonix -c eor1high-ph3.conf -entry extPrep \
     --obsids_suffix=-eor1high-zenith20260905 --visName=noflag \
     --prep_time_res_s=8 --prep_freq_res_khz=80 \
     --sourcelist=<FnxA-v2 source list> --beam_path=<mwa_full_embedded_element_pattern.h5> \
-    --dical_name=30l_srcall_300it \
-    --dical_args='--uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
+    --dical_name=30l_src16k_300it \
+    --dical_args='-n 16000 --uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
     --novideo --nodemo --lssa_bias_mode=10
 ```
 
 `visName` names the flagging state of the prep file (`noflag`: Birli `--no-rfi --flag-edge-chans 0
 --no-flag-dc`, no SSINS). `--freq-average 40kHz` is dropped from `dical_args` because these MS are
-already 80 kHz. There is no `-n`: di-cal uses every source above the veto threshold (about 29,000
-of the FnxA-v2 list for EoR1), which costs about 1.4 times the GPU time of `-n 8000` and no CPU
-time. Solutions made with `-n 8000` are stored as `30l_src8k_300it_fnxav2`; with `--calfit`, give
-`--calfit_name` a new value so the night fit is not reused from those. hyperdrive must include
-mwa_hyperdrive#118 to use the full FEE beam file.
+already 80 kHz. `-n 16000` and the name follow `eor1high-ph3.conf` (the brightest 16000 sources;
+8000 leave 22-25% of the apparent flux unmodelled). Earlier Setonix solutions are stored under
+other names: `30l_src8k_300it_fnxav2` (`-n 8000`) and `30l_srcall_300it` (no `-n`, the about
+29,000 sources above the veto, 1.4 times the GPU time of 8000). With `--calfit`, give
+`--calfit_name` a new value whenever the source count changes, so the night fit is not reused
+from other solutions. hyperdrive must include mwa_hyperdrive#118 to use the full FEE beam file.
 
 ## 2. Running the pipeline
 
