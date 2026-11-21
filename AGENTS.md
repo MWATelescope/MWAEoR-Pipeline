@@ -27,14 +27,19 @@ nextflow run main.nf -profile setonix -c eor1high-ph3.conf -entry extPrep \
     --obsids_suffix=-eor1high-zenith20260905 --visName=noflag \
     --prep_time_res_s=8 --prep_freq_res_khz=80 \
     --sourcelist=<FnxA-v2 source list> --beam_path=<mwa_full_embedded_element_pattern.h5> \
-    --dical_name=30l_src8k_300it_fnxav2 \
-    --dical_args='-n 8000 --uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
+    --dical_name=30l_src16k_300it \
+    --dical_args='-n 16000 --uvw-min 30l --max-iterations 300 --stop-thresh 1e-20' \
     --novideo --nodemo --lssa_bias_mode=10
 ```
 
 `visName` names the flagging state of the prep file (`noflag`: Birli `--no-rfi --flag-edge-chans 0
 --no-flag-dc`, no SSINS). `--freq-average 40kHz` is dropped from `dical_args` because these MS are
-already 80 kHz. hyperdrive must include mwa_hyperdrive#118 to use the full FEE beam file.
+already 80 kHz. `-n 16000` and the name follow `eor1high-ph3.conf` (the brightest 16000 sources;
+8000 leave 22-25% of the apparent flux unmodelled). Earlier Setonix solutions are stored under
+other names: `30l_src8k_300it_fnxav2` (`-n 8000`) and `30l_srcall_300it` (no `-n`, the about
+29,000 sources above the veto, 1.4 times the GPU time of 8000). With `--calfit`, give
+`--calfit_name` a new value whenever the source count changes, so the night fit is not reused
+from other solutions. hyperdrive must include mwa_hyperdrive#118 to use the full FEE beam file.
 
 ## 2. Running the pipeline
 
@@ -91,6 +96,14 @@ nextflow run main.nf -profile <profile> -c <field>.conf --obsids_suffix=-<name> 
   copies on Acacia, which `pull*` steps and later runs would otherwise pick up.
 - Product names, for grepping `nfdata`:
   - prep: `prep/birli_<obsid><prep_suffix>.uvfits` and `.ssins.uvfits` (SSINS-flagged copy)
+  - with `--brfi_apply`: `prep_qa/<vis>_SSINS_data.h5` (INS), `prep_qa/<vis>_time_weights.json`,
+    `prep_qa/<vis>_brfi-<fitset>-m<maskset>_mask.h5` and `_occ.json`, `prep/<vis>.<brfi>.uvfits`,
+    night fits `results*/brfi/brfi_<fitset>_ch<NN>.npz` and `results*/<brfi>_occupancy.tsv`.
+    `<fitset>` is `<utc date>_n<obs>_<hash of the vis names, pointings and fit settings>`, so a
+    different set of observations refits; `<maskset>` hashes the mask settings; `<brfi>` is
+    `brfi<hash of all fit and mask settings>` (`brfiFlagName()`), the same for every night, so
+    runs with other settings share a data dir. It does not cover the set of observations: delete
+    the `.<brfi>.uvfits` of a night if its set changes. Later product names gain `.<brfi>`.
   - solution: `cal<cal_suffix>/hyp_soln_<obsid>_ssins_<dical_name>.fits` (+ `hyp_di-cal_*.log`)
   - calibrated vis: `cal<cal_suffix>/hyp_<obsid>_ssins_<dical_name>_<apply_time>s_<apply_freq>kHz.uvfits`
   - iono-subtracted vis: `..._ionosub_ssins_<dical_name>_8s_80kHz<peel_suffix>_i<ionosub_nsrcs>.uvfits` + `hyp_peel_..._uv.json`
@@ -113,6 +126,108 @@ Put the launch command and the list of intended differences in the conf header. 
 `eor0low-solint40s.conf` (di-cal solution interval), the removed `eor0low-ionosel-*.conf` at
 commit `e6d8af0` (peel args), the Fornax A model test (`dical_name` + `result_suffix`).
 
+### Emission that varies within a pair (`--pair_diff`, `--filter_max_pair_diff`)
+
+The CHIPS power is the power of the sum grid minus the power of the difference grid, and the
+difference of the two timesteps of a pair is assumed to be noise. A transmitter that flickers on
+the scale of a timestep breaks that: on EoR1 high, TV channel 7 (181-188 MHz) appears for seconds
+at a time in a few observations, differs between the two 8 s steps of a pair, and
+fills the difference grid. The band whose taper is centred on it (`lssa_bias_mode=12`, 175-190 MHz)
+then has more difference than sum power from k_parallel 0.24 upward and the 1D power goes
+significantly negative; the other two bands hold it at their taper edges and look normal. One
+observation is enough: 1472671688 alone turned the middle band of the first 32 observations of
+2026-09-05 negative by up to 13 sigma. Neither the ps_metrics window power nor the SSINS
+occupancies see it (DAB occupancy of the worst observation of 2025-09-29: 0.00).
+
+`pairDiff` (`templates/pair_diff.py`) measures it on every unsubtracted calibrated vis: the power
+of the pair differences averaged over 640 kHz, over the thermal power from adjacent channels of the
+same differences, on the 20-50 wavelength baselines, per pol and 7 MHz band (aligned to 174 MHz, the
+TV channel raster). 1 is noise, quiet observations give 1.03-1.05, the flickering ones 2 to 200.
+`pair_diff.tsv` in the results dir lists every band; `--filter_max_pair_diff=1.5` rejects an
+observation (fail code 104) when any band of either pol is above it, and an observation whose
+measurement failed does not pass. It measures the pairs of the file as written, so use it together
+with `--apply_pair_timesteps`. The band below the TV channels (167-174 MHz) also varies in many
+observations; the gate reads all bands. A significantly negative band in a combine means look
+here first, then at the difference grid per coarse channel.
+
+### Gain structure that follows the sky (`--calfit`)
+
+With the flicker observations out, a ten-night combine (366 obs) is limited by residual power, not
+noise: +2 to +9 sigma in YY at k_parallel 0.24 to 0.35, strongest on the shortest baselines, falling
+with k_parallel, different from night to night, no peak at the coarse channel harmonic. The di-cal
+solutions are solved per 80 kHz channel and applied as solved. Split into (smooth polynomial) x
+(fine structure) per tile and pol, the fine structure of a night (2025-10-07, 59 obs) has a stable
+part (1.5% in amplitude, the 150 m cable reflection, same in both pols) and a part that changes
+from one observation to the next: 0.6% beyond thermal noise, correlated at +0.75 between
+observations 2 minutes apart at one pointing, gone after 15 minutes or a pointing change, with a
+delay spectrum that falls to the noise floor near 0.75 us like the excess does. That is the sky
+model's incompleteness written into the gains, and it multiplies the brightest foregrounds.
+
+`calfit` replaces each observation's fine structure by the median over its night
+(`calNightFit` per night and calibration name, `calFitSol` per observation,
+`templates/calfit.py`), keeps the smooth part per observation, copies the cross terms and keeps
+flags. A tile seen in fewer than 5 observations of the night keeps its own solutions, and so does
+a tile whose fine structure really changes over the night (`--max-variable 2`: the variable
+part, averaged over 8 channels, against the median over tiles), because the median of the night
+describes none of its observations. On 2025-10-07 that keeps Tile036, Tile086 and HexE11 in XX
+(2.9 to 5.1 times the typical tile) and Tile087 in YY; at 1.5 it kept 13 and 7 tiles, a tail at
+1.4 to 2 times typical that is the sky-dependent structure the fit should remove. Over ten nights
+at 2.0 a night keeps 2 to 7 tiles per pol, the same few tiles recurring. An observation whose
+solutions differ from the rest of its night across most tiles (`--max-obs-variable 5`: the median
+over tiles of its variable amplitude against the median over observations) is left out of the
+median and not applied; `calfit.tsv` lists it under OUTLIER SOLNS. Four such obs in batch 3
+(17 to 91 times the night median; every other obs of six nights at most 2.4) made their nights
+keep 26 to 42 tiles. The YY
+terms of all tiles share a phase per channel against XX (15 degrees rms on 2025-10-07, half of
+it changing per observation; the unpolarised sky hardly constrains it). It cancels in the YY
+visibilities, so YY is fitted without it and it is put back on writing. The fitted
+solutions are `hyp_soln_<obsid>_<name>_nfit.fits` and every later name gains `_nfit`
+(`calfit_name`); the solutions as solved are not applied. `calfit.tsv` lists the stable and
+variable rms per night, the tiles kept as solved and the YY common phase. The night file name hashes the set of solutions, but the per-observation
+name does not: if the set of observations of a night changes, delete that night's `_nfit`
+solutions and what was made from them, or use another `calfit_name`. One night needs enough
+observations and pointings for the median to average the sky-dependent part down; a single
+pointing would keep much of it. `--calfit_group=pointing` takes the median per pointing of a night instead, for
+structure that changes with the beamformer delays (Tile086 on 2025-10-07). On 2025-10-07 it fixes
+Tile086, Tile036 and HexE11 but is worse for every other tile: a median of 3 to 15 observations
+keeps more noise, and the gain error at k_parallel 0.24 to 0.35 rises (XX 0.72 to 0.86, YY 0.98 to
+1.15 of the part a night median removes). `--calfit_group=hybrid` takes the night median and, for
+the tiles and pols it keeps as solved, the median of their pointing (`calfit.py apply --fallback`;
+the FITS header gets CALFITF, the tile pols fitted from it). Test both for signal loss before use.
+
+On the command line, do not follow a bare flag by an option whose value holds a space:
+`--calfit --calfit_args='--max-variable 2'` sets `calfit` to that string and leaves `calfit_args`
+empty (Nextflow takes the token as the value of the flag before it). Write `--calfit=true`, or
+put an option without a space in between. The same holds for every boolean param.
+
+### Night-level bayesian-rfi time mask (`--brfi_apply`)
+
+Works in the default, `extRaw` and `extPrep` entries, between flag/SSINS QA and `qaPrep`. The INS
+is made from the prep uvfits at its own resolution, so the fit sees native 2 s samples when prep is
+2 s and 8 s samples for an 8 s prep (as with `extPrep` on pre-averaged files); timesteps are flagged
+in whole `brfi_step_s` steps. `brfiFit` runs once per night and coarse channel (`brfi_coarse_chans`,
+4 chains of 1000 + 1000 by default, about a minute each) and needs numpyro, jax and
+`/opt/bayesian-rfi` (`brfi_src`) in the python container. A fit is split by pointing: each run of
+observations at one pointing is a block with its own Legendre background, and the blocks of a
+night share the RFI component, as in the published night fits (`fit.py --pool-pointings`). The
+pointing is the web-service azimuth and elevation (`az_pointing`, `el_pointing` in the obs meta,
+copied there in workflow `ws`); `ew_pointing` is null off the east-west track, so it cannot be the
+key, and the run stops if an observation has no az/el instead of merging pointings. Nights come
+from the utc date of `starttime_utc`. The fit set name hashes the vis names and pointings, so
+changing either gives new fit files. Check `brfi_fits.tsv` in the results dir (blocks, max rhat,
+divergences per fit and pol) before trusting a mask: a wrong block split shows up as rhat far above
+1.01 and tens of percent of samples flagged.
+
+`brfiWeights` (`templates/time_weights.py`) reads the mean visibility weight of every timestep from
+the uvfits, and the fit leaves out a difference when either of its timesteps is further than
+`brfi_weight_tol` from the usual weight of its observation. This matters for pre-averaged prep
+files: on 2026-09-05 the first 8 s timestep of every observation holds 3 of 4 native samples
+(weight 48 against 64), its difference is 8% high (sqrt((1/48 + 1/64) / (2/64)) = 1.08, far outside
+the noise of the series) and was flagged in 70 of 70 observations before this check. The INS file
+of `hyperdrive bmetrics` holds baseline counts, not weights, so it cannot tell. At native
+resolution the flagged first sample is simply missing. The fit set name also hashes the fit
+settings.
+
 ### Command line gotchas
 
 - A number in scientific notation on the command line stays a String
@@ -131,7 +246,7 @@ flagged timestep takes its partner with it: on the 2026-09-05 night 12 of 15 tim
 observation reached the power spectrum, and the noise of masked runs followed the number of
 complete pairs, not the number of unflagged timesteps. `apply_pair_timesteps` picks the first
 timestep per observation that leaves the most complete pairs (`pairStart` in `main.nf`, from the
-`*_time_weights.json` of the vis being applied, `templates/time_weights.py`), passes it to
+`*_time_weights.json` of the vis being applied, after any brfi flags, `templates/time_weights.py`), passes it to
 `solutions-apply` as `--timesteps`, and adds `_pairs` to the apply name. `apply_pairs.tsv` lists
 the start, the pairs and the pairs when starting at 0. When judging a mask, count complete pairs.
 
@@ -150,6 +265,7 @@ grouped by stage (`modules/utils.nf: getFailReason`):
 | 063 | prepVisQA bad tiles | `filter_bad_tile_frac`, `noprepqafilter` |
 | 064-079 | calQA | `filter_max_rms_convg`, `filter_max_unused_bl_frac`, `filter_max_unconvg_chs`, `filter_max_cal_amp_rms` |
 | 096-103 | ps_metrics window/wedge | `filter_{max,min}_ps_window_unsub`, `filter_{max,min}_ps_ratio_unsub`, `filter_{max,min}_ps_{win,wedge}_ratio_sub` |
+| 104 | pair differences | `filter_max_pair_diff` (`pair_diff`, `pair_diff_args`) |
 | 112-121 | imgQA | `filter_{max,min}_vrms_box_nosub`, `filter_*_pks_int_*` |
 
 calQA's "RMS convergence" (`filter_max_rms_convg`) is the RMS over channels of hyperdrive's

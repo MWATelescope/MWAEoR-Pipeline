@@ -8,6 +8,7 @@ include {
     cmt_imgqa_pass;
     cmt_ps_metrics_pass_sub;
     cmt_ps_metrics_pass;
+    cmt_pair_diff_pass;
     coerceList;
     contigRanges;
     decomposeImg;
@@ -123,7 +124,14 @@ workflow {
         )
         | view { [it, it.readLines().size()] }
 
-    qaPrep( prep.out.subobsMetaVisPass, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(prep.out.subobsMetaVisPass, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = prep.out.subobsMetaVisPass
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
     if (params.archive) {
         prep.out.archive | archive
     }
@@ -733,7 +741,14 @@ workflow extRaw {
         }
         | ssinsQA
 
-    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = ssinsQA.out.subobsMetaVisSSINs
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
 
     if (!params.novideo) {
         ws.out.frame.mix(flag.out.frame)
@@ -1061,7 +1076,14 @@ workflow asvoRawFlow {
             | archive
     }
 
-    qaPrep( ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits )
+    if (params.brfi_apply) {
+        brfiFlag(ssinsQA.out.subobsMetaVisSSINs, ws.out.obsMetafits)
+        subobsMetaVisPrep = brfiFlag.out.subobsMetaVis
+    } else {
+        subobsMetaVisPrep = ssinsQA.out.subobsMetaVisSSINs
+    }
+
+    qaPrep( subobsMetaVisPrep, ws.out.obsMetafits )
 
     ws.out.frame.mix(flag.out.frame)
         .mix(ssinsQA.out.frame)
@@ -1435,19 +1457,173 @@ process absolve {
     output:
     tuple val(obsid), val(meta), path(flagged)
 
-    when: params.ssins_apply
+    when: params.ssins_apply || params.brfi_apply
 
     script:
     base = uvfits.baseName
+    // which flags are being applied: ssins, or brfi (see workflow brfiFlag)
+    flag_name = meta_.flag_name ?: "ssins"
     meta = deepcopy(meta_)
     if (meta_.name?:'' != '') {
-        meta['name'] = ''+"${meta_.name}.ssins"
+        meta['name'] = ''+"${meta_.name}.${flag_name}"
     } else {
-        meta['name'] = "ssins"
+        meta['name'] = flag_name
     }
-    flagged = "${base}.ssins.uvfits"
-    args = "--src ${mask} --dst ${uvfits}"
+    flagged = "${base}.${flag_name}.uvfits"
+    args = "--src ${mask} --dst ${uvfits} --out ${flagged}"
     template "ssins_apply.py"
+}
+
+// SSINS incoherent noise spectrum of the cross-correlations, at the resolution of the visibilities
+process hypIns {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "hyperdrive_cpu"
+    label "cpu_half"
+    label "nvme"
+    memory { MemoryUnit.of(2 * uvfits.size()) }
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(metafits), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(ins)
+
+    when: params.brfi_apply
+
+    script:
+    base = uvfits.baseName
+    ins = "${base}_SSINS_data.h5"
+    """
+    #!/bin/bash -eux
+    ${params.hyperdrive_cpu} bmetrics --data "${uvfits}" --metafits "${metafits}" --ins "${ins}"
+    """
+}
+
+// bayesian-rfi mixture model of one coarse channel over all the observations of a night, split
+// into one block per run of observations at the same pointing: P(RFI) of every time-differenced
+// sample, for XX and YY.
+// needs numpyro, jax and bayesian-rfi's mixture_model in the python container.
+process brfiFit {
+    storeDir "${results_dir()}/brfi"
+    tag "${fitset}.ch${chan_idx}"
+    label "python"
+    label "brfi"
+    cpus { params.brfi_chains }
+    memory 8.GB
+    time { params.scratchFactor * 2.hour }
+
+    input:
+    tuple val(night), val(fitset), val(labels), val(pointings), path(inss), path(weights), val(chan_idx)
+    output:
+    tuple val(night), val(fitset), path(fit), path(fit_json)
+
+    script:
+    fit = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.npz"
+    fit_json = ''+"brfi_${fitset}_ch${String.format('%02d', chan_idx)}.json"
+    obs = [labels, pointings, coerceList(inss), coerceList(weights)].transpose()
+        .collect { label, pointing, ins, weight -> ''+"${label}:${pointing}:${ins}:${weight}" }
+        .join(' ')
+    args = [ //noqa
+        "chan-idx": chan_idx,
+        out: fit,
+        json: fit_json,
+        terms: params.brfi_terms,
+        warmup: params.brfi_warmup,
+        samples: params.brfi_samples,
+        chains: params.brfi_chains,
+        "weight-tol": params.brfi_weight_tol,
+        stats: params.brfi_stats,
+        "brfi-src": params.brfi_src,
+        obs: obs,
+    ].findAll { _k, v -> v != null }
+        .collect { k, v -> ''+"""--${k} ${v} """ }
+        .join(" ")
+    template "brfi_fit.py"
+}
+
+// mean visibility weight of each timestep, so that the fit can leave out the differences that
+// involve a timestep averaged from fewer native samples
+process brfiWeights {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "nvme"
+    // memmap read of the whole file: slow when the filesystem is loaded, so retry a timeout (140)
+    // with a longer limit rather than silently dropping the obs from apply_pair_timesteps
+    time { params.scratchFactor * 15.minute * Math.pow(2, task.attempt - 1) }
+    errorStrategy { task.exitStatus in 137..140 ? 'retry' : 'ignore' }
+    maxRetries 2
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(weights)
+
+    when: params.brfi_apply
+
+    script:
+    base = uvfits.baseName
+    weights = "${base}_time_weights.json"
+    args = "--uvfits ${uvfits} --out ${weights}"
+    template "time_weights.py"
+}
+
+// name of the vis flagged by workflow brfiFlag: `brfi` and a hash of every setting of the fits and
+// of the masks, the same for all nights of a run, so that vis flagged with other settings is not
+// reused. (not of the set of observations of a night: see the fitset in workflow brfiFlag)
+def brfiFlagName() {
+    'brfi' + [
+        params.brfi_coarse_chans, params.brfi_terms, params.brfi_warmup, params.brfi_samples,
+        params.brfi_chains, params.brfi_weight_tol,
+        params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans,
+    ].plus(brfiNewSettings()).join(',').md5().substring(0, 6)
+}
+
+// settings added after the first brfi runs: only in the hashes when they are not the default, so
+// that the names of fits, masks and vis made before them stay the same
+def brfiNewSettings() {
+    [
+        params.brfi_stats == 'mean' ? null : "stats=${params.brfi_stats}",
+        params.brfi_pols == 'both' ? null : "pols=${params.brfi_pols}",
+    ].findAll { it != null }
+}
+
+// whole-band time mask of one observation from the night's fits, in the layout of an SSINS mask
+process brfiMask {
+    storeDir "${params.outdir}/${obsid}/prep_qa"
+    tag "${base}"
+    label "python"
+    label "brfi"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(ins), val(fitset), path(fits)
+    output:
+    tuple val(obsid), val(meta), path(mask), path(occ)
+
+    script:
+    base = ins.baseName - '_SSINS_data'
+    // the mask depends on the fits and on these settings
+    maskset = [params.brfi_thresh, params.brfi_step_s, params.brfi_step_frac, params.brfi_min_chans]
+        .plus(brfiNewSettings()).join(',').md5().substring(0, 6)
+    mask = ''+"${base}_brfi-${fitset}-m${maskset}_mask.h5"
+    occ = ''+"${base}_brfi-${fitset}-m${maskset}_occ.json"
+    args = [ //noqa
+        label: base,
+        ins: ins,
+        out: mask,
+        json: occ,
+        thresh: params.brfi_thresh,
+        "step-s": params.brfi_step_s,
+        "step-frac": params.brfi_step_frac,
+        "min-chans": params.brfi_min_chans,
+        pols: params.brfi_pols,
+        fits: coerceList(fits).join(' '),
+    ].findAll { _k, v -> v != null }
+        .collect { k, v -> ''+"""--${k} ${v} """ }
+        .join(" ")
+    template "brfi_mask.py"
 }
 
 process autoplot {
@@ -1877,6 +2053,78 @@ process dp3CalSol {
 //     fi
 //     """
 // }
+
+// the night of an observation: its utc date (an MWA night does not cross 00:00 utc)
+def obsNight(obsid, meta) {
+    def start = meta.starttime_utc ?: ''
+    if (start.size() >= 10) {
+        return start.substring(0, 10)
+    }
+    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd")
+    fmt.setTimeZone(TimeZone.getTimeZone("UTC"))
+    fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
+}
+
+// the set of observations calfit takes one median over (group, by default calfit_group): the
+// utc night, or the night and pointing (web-service az/el, as in workflow brfiFlag)
+def calfitGroup(obsid, meta, group = null) {
+    group = group ?: params.calfit_group
+    def night = obsNight(obsid, meta)
+    if (group == 'night') {
+        return night
+    }
+    if (group != 'pointing') {
+        throw new IllegalArgumentException(''+"calfit_group must be night, pointing or hybrid, not ${group}")
+    }
+    def az = meta.az_pointing
+    def el = meta.el_pointing
+    if (az == null || el == null || isNaN(az) || isNaN(el)) {
+        throw new IllegalStateException(''+"calfit per pointing: no az_pointing, el_pointing in the metadata of ${obsid}")
+    }
+    ''+"${night}_az${String.format('%.1f', az as double)}el${String.format('%.1f', el as double)}"
+}
+
+// median fine frequency structure of the solutions of a night, per tile and pol
+// (templates/calfit.py, see calfit in nextflow.config)
+process calNightFit {
+    storeDir "${results_dir()}/calfit"
+    tag "${fitset}.${name}"
+    label "python"
+    time { params.scratchFactor * 1.hour }
+
+    input:
+    tuple val(night), val(name), val(fitset), path(solns)
+    output:
+    tuple val(night), val(name), val(fitset), path(fit), path(fit_json)
+
+    script:
+    fit = ''+"calfit_${name}_${fitset}.npz"
+    fit_json = ''+"calfit_${name}_${fitset}.json"
+    args = ''+"night --out ${fit} --json ${fit_json} ${params.calfit_args} --solns ${coerceList(solns).join(' ')}"
+    template "calfit.py"
+}
+
+// solutions of one observation with their fine frequency structure replaced by the night's.
+// meta.name gains the calfit name, so everything made from these solutions is kept apart.
+process calFitSol {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.dical_name}"
+    label "python"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    // fallback: the fit of the observation's pointing for calfit_group=hybrid, else []
+    tuple val(obsid), val(meta_), path(soln), path(fit), path(fallback)
+    output:
+    tuple val(obsid), val(meta), path(fit_soln)
+
+    script:
+    meta = mapMerge(meta_, [name: ''+"${meta_.name}_${params.calfit_name}", calfit: true])
+    fit_soln = ''+"${soln.baseName}_${params.calfit_name}.fits"
+    fallback_arg = fallback ? ''+"--fallback ${fallback}" : ''
+    args = ''+"apply --soln ${soln} --fit ${fit} --out ${fit_soln} ${fallback_arg} ${params.calfit_args}"
+    template "calfit.py"
+}
 
 // solutions of one observation with their fine frequency structure taken from the
 // autocorrelations of the visibilities they were solved from (templates/autofit.py, see autofit
@@ -2418,6 +2666,28 @@ process visQA {
     #!/bin/bash -eux
     run_visqa.py ${uvfits} --out "${json}"
     """
+}
+
+// power of the differences between the timesteps CHIPS pairs, over thermal noise, per pol and
+// frequency band (templates/pair_diff.py). Emission that varies within a pair fills CHIPS'
+// difference grid and drives the power negative: see filter_max_pair_diff
+process pairDiff {
+    storeDir "${params.outdir}/${obsid}/vis_qa${params.cal_suffix}"
+    tag "${obsid}${meta.subobs?:''}.${meta.name}"
+    label "python"
+    label "nvme"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(json)
+
+    script:
+    base = uvfits.baseName
+    json = ''+"${base}_pair_diff.json"
+    args = "--uvfits ${uvfits} --out ${json} ${params.pair_diff_args}"
+    template "pair_diff.py"
 }
 
 process uvMeta {
@@ -4032,7 +4302,8 @@ workflow ws {
             def meta = [:]
             [
                 // "groupid", "starttime_mjd", "obs_name"
-                "ew_pointing", "centre_freq", "starttime_utc",
+                "ew_pointing", "az_pointing", "el_pointing", "sweet_pointing",
+                "centre_freq", "starttime_utc",
                 "n_tiles", "bad_ants", "manual_ants", "tile_nums",
                 "eorband", "eorfield", "lst", "int_time",
                 "ra_phase_center", "dec_phase_center",
@@ -4383,6 +4654,139 @@ workflow ssinsQA {
 }
 
 // ensure preprocessed uvfits are downloaded
+// Flag whole timesteps with bayesian-rfi (https://github.com/d3v-null/bayesian-rfi), without witnesses.
+// - an incoherent noise spectrum for each observation (hypIns)
+// - for each night and coarse channel, a mixture model fit over all of the night's observations
+//   (brfiFit). Within a fit, each run of observations at one pointing is a block with its own
+//   background; the RFI component is shared by the blocks of the night.
+// - for each observation, the timesteps where any coarse channel is RFI in XX and YY (brfiMask)
+// - the mask is applied to the whole band (absolve), named `brfi`
+// The fit of a night depends on which observations are given, so the fits and masks carry a hash
+// of that set in their names. The flagged visibilities do not: delete them from `prep/` if the
+// set changes.
+workflow brfiFlag {
+    take:
+        subobsMetaVis
+        obsMetafits
+
+    main:
+        // the night of an observation: its utc date (an MWA night does not cross 00:00 utc)
+        def nightOf = { obsid, meta ->
+            def start = meta.starttime_utc ?: ''
+            if (start.size() >= 10) {
+                return start.substring(0, 10)
+            }
+            def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd")
+            fmt.setTimeZone(TimeZone.getTimeZone("UTC"))
+            fmt.format(new Date(((obsid as long) + 315964782L) * 1000L))
+        }
+
+        subobsMetaVis.combine(obsMetafits, by: 0)
+            .map { obsid, meta, uvfits, metafits -> [obsid, meta, metafits, uvfits] }
+            | hypIns
+
+        // the pointing of an observation: the fit gives each run of observations at one pointing
+        // its own block, with its own background. There is no fallback: observations at different
+        // pointings must never share a block.
+        def pointingOf = { obsid, meta ->
+            def az = meta.az_pointing
+            def el = meta.el_pointing
+            if (az == null || el == null || isNaN(az) || isNaN(el)) {
+                throw new IllegalStateException(
+                    ''+"brfi_apply: no az_pointing, el_pointing in the metadata of ${obsid}, cannot split the night by pointing"
+                )
+            }
+            String.format("az%.1fel%.1f", az as double, el as double)
+        }
+
+        subobsMetaVis | brfiWeights
+
+        // [night, fitset, labels, pointings, inss, weights], an observation's label is the name of its vis
+        nightObs = hypIns.out.map { obsid, meta, ins -> [[obsid, ins.baseName - '_SSINS_data'], meta, ins] }
+            .join(brfiWeights.out.map { obsid, _m, weights -> [[obsid, weights.baseName - '_time_weights'], weights] })
+            .map { key, meta, ins, weights ->
+                [nightOf(key[0], meta), [key[1], pointingOf(key[0], meta), ins, weights]]
+            }
+            .groupTuple(by: 0)
+            .map { night, obs ->
+                def sorted = obs.sort(false) { it[0] }
+                def labels = sorted.collect { it[0] }
+                def pointings = sorted.collect { it[1] }
+                // the fits depend on which observations are in the night, on their pointings and on
+                // the settings of the fit
+                def settings = [
+                    params.brfi_terms, params.brfi_warmup, params.brfi_samples, params.brfi_chains,
+                    params.brfi_weight_tol,
+                ] + (params.brfi_stats == 'mean' ? [] : ["stats=${params.brfi_stats}"])
+                def hash = ([labels, pointings].transpose().collect { it.join(':') } + settings)
+                    .join(',').md5().substring(0, 8)
+                def fitset = ''+"${night}_n${labels.size()}_${hash}"
+                [night, fitset, labels, pointings, sorted.collect { it[2] }, sorted.collect { it[3] }]
+            }
+
+        nightObs.combine(channel.fromList((0..<(params.brfi_coarse_chans as int)).toList()))
+            | brfiFit
+
+        // convergence of the fits: one line per fit and pol
+        brfiFit.out.flatMap { _night, fitset, _fit, fit_json ->
+                def info = parseJson(fit_json)
+                // one entry per pol of each fitted series: xx, yy (channel mean), xx_max, yy_max
+                info.keySet().findAll { it ==~ /(xx|yy)(_[a-z]+)?/ }.sort().collect { pol ->
+                    def i = info[pol]
+                    [
+                        fitset, info.coarse_chan, pol, info.nobs, info.nsamples, info.unequal_weight_samples, i.blocks,
+                        String.format("%.3f", i.rhat.values().max() as double), i.divergences,
+                        String.format("%.4f", i.frac_rfi as double), String.format("%.0f", i.wall_s as double),
+                    ].join("\t")
+                }
+            }
+            .collectFile(
+                name: "brfi_fits.tsv", newLine: true, sort: true,
+                seed: ([ "FITSET", "COARSE CHAN", "POL", "N OBS", "N SAMPLES", "N LEFT OUT", "N BLOCKS", "MAX RHAT", "DIVERGENCES", "FRAC RFI", "WALL S" ]).join("\t"),
+                storeDir: "${results_dir()}"
+            )
+            | view { [it, it.readLines().size()] }
+
+        // every observation with all of its night's fits
+        hypIns.out.map { obsid, meta, ins -> [nightOf(obsid, meta), obsid, meta, ins] }
+            .combine(
+                brfiFit.out.map { night, fitset, fit, _json -> [night, fitset, fit] }.groupTuple(by: [0, 1]),
+                by: 0
+            )
+            .map { _night, obsid, meta, ins, fitset, fits -> [obsid, meta, ins, fitset, fits] }
+            | brfiMask
+
+        brfiOcc = brfiMask.out.map { obsid, meta, mask, occ_json ->
+                [obsid, meta, mask, parseJson(occ_json)]
+            }
+
+        brfiOcc.map { obsid, meta, _mask, occ ->
+                [obsid, meta.subobs?:'', occ.label, occ.ntimes, occ.nflagged, occ.occupancy].join("\t")
+            }
+            .collectFile(
+                name: "${brfiFlagName()}_occupancy.tsv", newLine: true, sort: true,
+                seed: ([ "OBS", "SUBOBS", "VIS", "N TIMES", "N FLAGGED", "OCCUPANCY" ]).join("\t"),
+                storeDir: "${results_dir()}"
+            )
+            | view { [it, it.readLines().size()] }
+
+        // apply the masks, dropping observations that would lose too many timesteps
+        subobsMetaVis.map { obsid, meta, uvfits -> [[obsid, uvfits.baseName], meta, uvfits] }
+            .join(
+                brfiOcc.filter { _o, _m, _mask, occ ->
+                        params.brfi_occupancy_threshold == null || occ.occupancy <= params.brfi_occupancy_threshold
+                    }
+                    .map { obsid, _m, mask, occ -> [[obsid, occ.label], mask] }
+            )
+            .map { key, meta, uvfits, mask ->
+                [key[0], mapMerge(meta, [flag_name: brfiFlagName()]), uvfits, mask]
+            }
+            | absolve
+
+    emit:
+        subobsMetaVis = absolve.out
+}
+
 workflow prep {
     take:
         // channel of obsids with their metafits: tuple(obsid, metafits)
@@ -4973,10 +5377,81 @@ workflow cal {
 
         // generate json from solns and fit phases
         eachCal | (solJson & phaseFit)
-        // take the fine frequency structure of each solution from the autocorrelations of the
-        // visibilities it was solved from
+
+        // replace the fine frequency structure of each solution by that of its night: the
+        // solutions as solved are then not applied
+        if (params.calfit) {
+            // hybrid: the night median, and for the tiles it keeps as solved that of the pointing
+            def fallbackGroup = params.calfit_group == 'hybrid' ? 'pointing' : null
+            def primaryGroup = fallbackGroup ? 'night' : params.calfit_group
+            nightCal = eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta, primaryGroup), meta.name], obsid, meta, soln] }
+            pointingCal = fallbackGroup
+                ? eachCal.map { obsid, meta, soln -> [[calfitGroup(obsid, meta, fallbackGroup), meta.name], obsid, meta, soln] }
+                : channel.empty()
+            nightCal.mix(pointingCal).groupTuple(by: 0)
+                .map { key, _obsids, _metas, solns ->
+                    def (night, name) = key
+                    def names = solns.collect { it.name }.sort()
+                    // the median depends on the set of observations and on the settings
+                    def hash = (names + [params.calfit_args ?: '']).join(' ').md5()[0..7]
+                    [night, name, ''+"${night}_n${names.size()}_${hash}", solns]
+                }
+                | calNightFit
+
+            calNightFit.out
+                .map { night, name, fitset, _fit, fit_json ->
+                    def stats = parseJson(fit_json)
+                    def fmt = { x -> x == null ? 'nan' : String.format('%.4f', x as double) }
+                    ([night, name, fitset, stats.nobs, stats.ntiles]
+                        + ['tiles_fitted', 'stable_amp', 'stable_phase_deg', 'variable_amp', 'variable_phase_deg']
+                            .collectMany { key -> (stats[key] ?: [null, null]).collect { it instanceof Integer ? it : fmt(it) } }
+                        // tiles that keep their own solutions, and the phase of yy against xx
+                        + (stats.tiles_variable ?: [[], []]).collect { tiles -> tiles.collect { it[0] }.join(' ') }
+                        + (stats.yy_common_phase_deg ?: [null, null]).collect { fmt(it) }
+                        // observations left out of the median, and not applied
+                        + [(stats.obs_outliers ?: []).collect { it.replaceAll(/\.fits$/, '') }.join(' ')]
+                    ).join("\t")
+                }
+                .collectFile(
+                    name: "calfit.tsv", newLine: true, sort: true,
+                    seed: [
+                        "NIGHT", "CAL NAME", "FITSET", "SOLNS", "TILES",
+                        "FITTED XX", "FITTED YY", "STABLE AMP XX", "STABLE AMP YY",
+                        "STABLE PHASE XX", "STABLE PHASE YY", "VAR AMP XX", "VAR AMP YY",
+                        "VAR PHASE XX", "VAR PHASE YY",
+                        "KEPT XX", "KEPT YY", "YY COMMON PHASE", "YY COMMON PHASE VAR", "OUTLIER SOLNS",
+                    ].join("\t"),
+                    storeDir: "${results_dir()}${params.cal_suffix}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+
+            // an observation whose solutions differ from the rest of its night (calfit.py
+            // --max-obs-variable) is left out of the median and is not applied: listed in calfit.tsv
+            nightFits = calNightFit.out.map { night, name, _fitset, fit, fit_json ->
+                [[night, name], fit, (parseJson(fit_json).obs_outliers ?: []) as Set]
+            }
+            fitCal = nightCal.combine(nightFits, by: 0)
+                .filter { _key, _obsid, _meta, soln, _fit, outliers -> !(soln.name in outliers) }
+                .map { _key, obsid, meta, soln, fit, _outliers -> [obsid, meta, soln, fit] }
+            if (fallbackGroup) {
+                fitCal = fitCal
+                    .map { obsid, meta, soln, fit -> [[calfitGroup(obsid, meta, fallbackGroup), meta.name], obsid, meta, soln, fit] }
+                    .combine(nightFits, by: 0)
+                    .map { _key, obsid, meta, soln, fit, fallback, _outliers -> [obsid, meta, soln, fit, fallback] }
+            } else {
+                fitCal = fitCal.map { obsid, meta, soln, fit -> [obsid, meta, soln, fit, []] }
+            }
+            fitCal | calFitSol
+            appliedCal = calFitSol.out
+        } else {
+            appliedCal = eachCal
+        }
+
+        // take the fine frequency structure of each solution (as solved, or as fitted by calfit)
+        // from the autocorrelations of the visibilities it was solved from
         if (params.autofit) {
-            eachCal
+            appliedCal
                 .map { obsid, meta, soln -> [[obsid, meta.subobs?:''], obsid, meta, soln] }
                 .combine(
                     subobsMetaMetafitsVis.map { obsid, meta, _metafits, uvfits -> [[obsid, meta.subobs?:''], uvfits] },
@@ -4986,7 +5461,7 @@ workflow cal {
                 | calAutoFit
             finalCal = calAutoFit.out.soln
         } else {
-            finalCal = eachCal
+            finalCal = appliedCal
         }
 
         // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
@@ -5505,6 +5980,70 @@ workflow uvfits {
                     def (obsid, _m, vis) = obsMetaUV_
                     def (_o, meta) = obsMetaPass_
                     [obsid, meta, vis]
+                }
+        }
+
+        // pair differences: emission that varies between the two timesteps of a CHIPS pair, in the
+        // unsubtracted vis. The gate rejects the observation, with all of its visibilities.
+        if (params.pair_diff || params.filter_max_pair_diff != null) {
+            obsMetaUVEoR.filter { _o, meta, _vis -> meta.sub == null } | pairDiff
+
+            pairDiffReasons = pairDiff.out.map { obsid, meta, json ->
+                def stats = parseJson(json)
+                def (fail_code, reason) = cmt_pair_diff_pass(stats)
+                [obsid, meta, stats, fail_code, reason]
+            }
+
+            pairDiffReasons
+                .map { obsid, meta, stats, fail_code, reason ->
+                    def fmt = { x -> x == null ? 'nan' : String.format('%.4f', x as double) }
+                    [
+                        obsid, meta.name, meta.subobs?:'', stats.npairs,
+                        fmt(stats.max_r), stats.max_pol?:'', stats.max_band?:'',
+                        getFailReason(fail_code), reason?:'',
+                        stats.bands.join(' '),
+                        (stats.r?.xx ?: []).collect(fmt).join(' '),
+                        (stats.r?.yy ?: []).collect(fmt).join(' '),
+                    ].join("\t")
+                }
+                .collectFile(
+                    name: "pair_diff.tsv", newLine: true, sort: true,
+                    seed: [
+                        "OBS", "VIS NAME", "SUBOBS", "PAIRS", "MAX", "MAX POL", "MAX BAND",
+                        "FAIL CODE", "REASON", "BANDS", "XX", "YY",
+                    ].join("\t"),
+                    storeDir: "${results_dir()}${params.cal_suffix}"
+                )
+                // display output path and number of lines
+                | view { [it, it.readLines().size()] }
+
+            pairDiffFail = pairDiffReasons
+                .filter { _o, _m, _stats, _fail_code, reason -> reason != null }
+                .map { obsid, _m, _stats, fail_code, _reason -> [obsid, getFailReason(fail_code)] }
+                .unique()
+
+            // with the gate on, wait for every measurement and keep the observations that passed.
+            // an observation without a measurement (failed task) does not pass
+            if (params.filter_max_pair_diff != null) {
+                pairDiffPass = pairDiffReasons
+                    .map { obsid, _m, _stats, _fail_code, reason -> [obsid, reason == null] }
+                    .groupTuple(by: 0)
+                    .filter { _o, passes -> passes.every { it } }
+                    .map { obsid, _passes -> obsid }
+                    .toList()
+                    .map { [it] }
+                subobsMetaUVPass_ = subobsMetaUVPass_
+                    .combine(pairDiffPass)
+                    .filter { obsid, _meta, _vis, passed -> obsid in passed }
+                    .map { obsid, meta, vis, _passed -> [obsid, meta, vis] }
+            }
+
+            // one fail code per obs: the ps_metrics one first
+            fail_codes = fail_codes.mix(pairDiffFail)
+                .groupTuple(by: 0)
+                .map { obsid, obs_fail_codes ->
+                    def failed = coerceList(obs_fail_codes).findAll { it != getFailReason(0x00) }.sort()
+                    [obsid, failed ? failed[0] : getFailReason(0x00)]
                 }
         }
 
@@ -7475,7 +8014,14 @@ workflow extPrep {
                 [obsid, meta, uvfits]
             }
 
-    qaPrep(obsFlagmetaVis, ws.out.obsMetafits)
+    if (params.brfi_apply) {
+        brfiFlag(obsFlagmetaVis, ws.out.obsMetafits)
+        obsPrepMetaVis = brfiFlag.out.subobsMetaVis
+    } else {
+        obsPrepMetaVis = obsFlagmetaVis
+    }
+
+    qaPrep(obsPrepMetaVis, ws.out.obsMetafits)
 
     ws.out.fail_codes
         .join(flag.out.fail_codes, remainder: true)

@@ -102,6 +102,25 @@ every later stage uses. `flagGate` rejects observations whose total, RFI or SSIN
 streak, narrow-band or DAB fractions, or bad-tile fraction exceed the conf thresholds. Manual flags
 from `tile-updates.csv` and the prepVisQA outliers are carried forward as calibration tile flags.
 
+With `brfi_apply` (off by default), whole timesteps are also flagged from a night-level
+[bayesian-rfi](https://github.com/d3v-null/bayesian-rfi) fit (workflow `brfiFlag`):
+`hyperdrive bmetrics --ins` writes an incoherent noise spectrum for each observation,
+`brfiWeights` reads the weight of each timestep so that differences involving a timestep averaged
+from fewer native samples are left out, `brfiFit`
+fits the mixture model to each coarse channel over all of a night's observations (each run of
+observations at one pointing is a block with its own background), `brfiMask` flags
+the timesteps where at least `brfi_min_chans` coarse channels (default 1: any) have P(RFI) >=
+`brfi_thresh` in both XX and YY, and the mask is applied to the whole band as a
+`.brfi<settings hash>.uvfits` copy that the later stages use, so that runs with other settings can
+share a data dir. `brfi_stats='mean,max'` also fits the largest standardised fine channel of each
+coarse channel, which finds narrowband RFI that the channel mean dilutes, and `brfi_pols='either'`
+flags a sample that is RFI in XX or YY rather than both (most narrowband RFI is in one pol only).
+Observations that
+would lose more than `brfi_occupancy_threshold` of their timesteps are dropped. Give it whole nights:
+the fit of a night depends on which of its observations are in the run. `brfi_fits.tsv` and
+`brfi<settings hash>_occupancy.tsv` in the results dir list the convergence of every fit and the flagged fraction
+of every observation.
+
 ### Direction independent calibration
 
 ```mermaid
@@ -287,7 +306,8 @@ and the task is skipped. Suffix params (`prep_suffix`, `cal_suffix`, `img_suffix
     - `raw_qa/` - antenna and channel tables
     - `meta/` - `${obsid}_meta.json` from web services and TAP, inputs tsv, sky map png
     - `prep/` - `birli_${obsid}${prep_suffix}.uvfits` and the SSINS-flagged `.ssins.uvfits`
-    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv
+    - `prep_qa/` - SSINS mask, match events and plots, prepVisQA metrics json and flag tsv,
+      `*_SSINS_data.h5`, `*_time_weights.json` and `*_brfi-<night>_n<obs>_<hash>-m<hash>_{mask.h5,occ.json}` with `brfi_apply`
     - `cal${cal_suffix}/` - `hyp_soln_*.fits`, di-cal, apply and peel logs, calibrated and
       ionosub uvfits, `hyp_peel_*_uv.json` ionospheric constants
     - `cal_qa${cal_suffix}/` - calQA metrics json, solution amp/phase plots (one per timeblock),
@@ -379,11 +399,27 @@ and each observation is applied from the timestep that leaves the most complete 
 `groupByDate`, `groupByPointing`, `groupByLst` and `groupSuffix` control CHIPS grouping; `kperp_*`
 and `kparra_*` set the 1D cuts.
 
+`calfit` (off by default) replaces the fine frequency structure of each di-cal solution by the
+median over its night per tile and pol (`calNightFit`, `calFitSol`), keeping a smooth polynomial
+per observation, so that sky model errors that a per-channel calibration writes into the gains do
+not reach the calibrated visibilities. Tiles seen too rarely or whose fine structure changes over
+the night keep their own solutions. Names gain `calfit_name` (`_nfit`); `calfit.tsv` in the
+results dir lists the stable and variable structure of each night and the tiles kept as solved.
+`calfit_group` takes the median per `night` (default), per `pointing` of a night, or `hybrid`: the
+night median, and the pointing median for the tiles the night keeps as solved.
+
 `autofit` (off by default) takes the fine frequency structure of each solution from the
 autocorrelations of the visibilities it was solved from (`calAutoFit`, after Li et al. 2019):
 above `--delay-cut` (0.1 microseconds) the amplitude is that of the autocorrelation and the phase
 is the one a causal analogue chain has for that amplitude; below it the solution is kept. It
-needs no other observation and no sky model. Names gain `autofit_name` (`_auto`); `autofit_args` go to `templates/autofit.py`.
+needs no other observation and no sky model, and with `calfit` it runs on the calfit solutions.
+Names gain `autofit_name` (`_auto`); `autofit_args` go to `templates/autofit.py`.
+
+`pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
+of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz
+band (`pair_diff.tsv` in the results dir). Emission that varies within a pair, such as a flickering
+TV channel, ends up in the CHIPS difference grid and drives the power of that band negative.
+`filter_max_pair_diff` (e.g. 1.5) rejects observations above it in any band (fail code 104).
 
 ### switches and suffixes
 
