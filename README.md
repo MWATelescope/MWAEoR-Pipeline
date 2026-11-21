@@ -408,6 +408,13 @@ results dir lists the stable and variable structure of each night and the tiles 
 `calfit_group` takes the median per `night` (default), per `pointing` of a night, or `hybrid`: the
 night median, and the pointing median for the tiles the night keeps as solved.
 
+`autofit` (off by default) takes the fine frequency structure of each solution from the
+autocorrelations of the visibilities it was solved from (`calAutoFit`, after Li et al. 2019):
+above `--delay-cut` (0.1 microseconds) the amplitude is that of the autocorrelation and the phase
+is the one a causal analogue chain has for that amplitude; below it the solution is kept. It
+needs no other observation and no sky model, and with `calfit` it runs on the calfit solutions.
+Names gain `autofit_name` (`_auto`); `autofit_args` go to `templates/autofit.py`.
+
 `pair_diff` (off by default) `pairDiff` measures, for every unsubtracted calibrated vis, the power
 of the differences between the timesteps CHIPS pairs relative to thermal noise, per pol and 7 MHz
 band (`pair_diff.tsv` in the results dir). Emission that varies within a pair, such as a flickering
