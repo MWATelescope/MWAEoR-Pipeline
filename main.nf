@@ -1878,6 +1878,29 @@ process dp3CalSol {
 //     """
 // }
 
+// solutions of one observation with their fine frequency structure taken from the
+// autocorrelations of the visibilities they were solved from (templates/autofit.py, see autofit
+// in nextflow.config). meta.name gains the autofit name.
+process calAutoFit {
+    storeDir "${params.outdir}/${obsid}/cal${params.cal_suffix}"
+    tag "${obsid}${meta_.subobs?:''}.${meta_.name}"
+    label "python"
+    time { params.scratchFactor * 15.minute }
+
+    input:
+    tuple val(obsid), val(meta_), path(soln), path(uvfits)
+    output:
+    tuple val(obsid), val(meta), path(fit_soln), emit: soln
+    tuple val(obsid), val(meta), path(fit_json), emit: json
+
+    script:
+    meta = mapMerge(meta_, [name: ''+"${meta_.name}_${params.autofit_name}", autofit: true])
+    fit_soln = ''+"${soln.baseName}_${params.autofit_name}.fits"
+    fit_json = ''+"${soln.baseName}_${params.autofit_name}.json"
+    args = ''+"--uvfits ${uvfits} --soln ${soln} --out ${fit_soln} --json ${fit_json} ${params.autofit_args}"
+    template "autofit.py"
+}
+
 // do fourier fit of calibration solution phases
 // meta is a map containing calibration solution metadata, fields:
 // - name: name of the calibration (dical_name)
@@ -4950,8 +4973,24 @@ workflow cal {
 
         // generate json from solns and fit phases
         eachCal | (solJson & phaseFit)
+        // take the fine frequency structure of each solution from the autocorrelations of the
+        // visibilities it was solved from
+        if (params.autofit) {
+            eachCal
+                .map { obsid, meta, soln -> [[obsid, meta.subobs?:''], obsid, meta, soln] }
+                .combine(
+                    subobsMetaMetafitsVis.map { obsid, meta, _metafits, uvfits -> [[obsid, meta.subobs?:''], uvfits] },
+                    by: 0
+                )
+                .map { _key, obsid, meta, soln, uvfits -> [obsid, meta, soln, uvfits] }
+                | calAutoFit
+            finalCal = calAutoFit.out.soln
+        } else {
+            finalCal = eachCal
+        }
+
         // channel of all dical (and polyfit) solutions: tuple(obsid, meta, soln)
-        allCal = eachCal.mix(
+        allCal = finalCal.mix(
             phaseFit.out.map { obsid, meta, soln -> [obsid, meta, soln] }
         )
 

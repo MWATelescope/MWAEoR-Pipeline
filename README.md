@@ -379,6 +379,12 @@ and each observation is applied from the timestep that leaves the most complete 
 `groupByDate`, `groupByPointing`, `groupByLst` and `groupSuffix` control CHIPS grouping; `kperp_*`
 and `kparra_*` set the 1D cuts.
 
+`autofit` (off by default) takes the fine frequency structure of each solution from the
+autocorrelations of the visibilities it was solved from (`calAutoFit`, after Li et al. 2019):
+above `--delay-cut` (0.1 microseconds) the amplitude is that of the autocorrelation and the phase
+is the one a causal analogue chain has for that amplitude; below it the solution is kept. It
+needs no other observation and no sky model. Names gain `autofit_name` (`_auto`); `autofit_args` go to `templates/autofit.py`.
+
 ### switches and suffixes
 
 Most stages have a `no*` switch (`noprep`, `nossins`, `nocal`, `noapply`, `noimg`, `nochips`,
